@@ -31,6 +31,10 @@ Assert-Equal '.csv' ([System.IO.Path]::GetExtension($csvOnly[0])) 'Csv saves .cs
 Assert-Equal 1 $csvOnly.Count 'Csv saves one file'
 Assert-Equal 4 @(Get-ChildItem -LiteralPath $reportFolder).Count 'No report overwritten'
 Assert-Equal 'Both' (Select-ReportFormat 'Both') 'Given choice used without asking'
+Assert-Equal 'Csv' (Select-ReportFormat 'csv') 'Choice accepted in any case'
+$typoRefused = $false
+try { Select-ReportFormat 'Txt' | Out-Null } catch { $typoRefused = $true }  # the refusal is the expected result
+Assert-Equal $true $typoRefused 'A report choice that is not Both, Text or Csv is refused before the scan'
 
 # ---- The readable report ----
 $text = Get-Content -LiteralPath ($both | Where-Object { $_ -like '*.txt' }) -Raw
@@ -38,7 +42,7 @@ Assert-Equal $true ($text.Contains('ITEMS WITH POSSIBLE PII') -and $text.Contain
 Assert-Equal $true ($text -match 'SSN\s+High\s+1') 'Hits-per-type table filled'
 Assert-Equal $true $text.Contains('scan.pdf') 'Not-scanned item listed'
 Assert-Equal $false $text.Contains($Sample.Ssn) 'Text report has no full SSN'
-Assert-Equal $true ($text -match 'servicing Privacy Manager/Monitor without delay' -and $text -match 'para 3\.1\.2') 'Text report gives the cited breach step'
+Assert-Equal $true ($text -match 'potential or actual breach; report it to your servicing Privacy' -and $text -match 'para 3\.1\.2') 'Text report gives the cited breach step'
 
 # ---- The CSV ----
 $csv = Get-Content -LiteralPath ($both | Where-Object { $_ -like '*.csv' }) -Raw

@@ -63,6 +63,14 @@ $null = Find-PiiInText $longRun
 $timer.Stop()
 Assert-Equal $true ($timer.Elapsed.TotalSeconds -lt 2) "Long glued run scanned in under 2 s (took $([int]$timer.Elapsed.TotalMilliseconds) ms)"
 
+# ---- Speed: a long dotted run glued with '@' must not stall either detection or masking (bounded domain) ----
+$dottedRun = 'x' + '@' + ('ab.' * 40000) + 'cc' + '@'
+$timer = [System.Diagnostics.Stopwatch]::StartNew()
+$null = Find-PiiInText $dottedRun
+$null = Protect-PiiText $dottedRun
+$timer.Stop()
+Assert-Equal $true ($timer.Elapsed.TotalSeconds -lt 2) "Long dotted run found and masked in under 2 s (took $([int]$timer.Elapsed.TotalMilliseconds) ms)"
+
 # ---- Masking: snippets never show digits, e-mail names or found names ----
 $hits = @(Find-PiiInText "SSN $($Sample.Ssn) then contact person: $($Sample.Email) later")
 Assert-Equal $false ($hits[0].Context -match '\d') 'Snippet has no digits'
@@ -80,6 +88,17 @@ Assert-Equal 1 (Get-HitSummary "mail $($Sample.EmailIdn) here").Count 'E-mail wi
 Assert-Equal 1 (Get-HitSummary ("see " + $Sample.MilEmail + '/' + $Sample.Email)).Count 'E-mail right after a slash'
 $afterAt = Get-HitSummary ('note x' + '@' + $Sample.Email)
 Assert-Equal 'Personal e-mail/Medium/***@example.com' ($afterAt -join ',') 'E-mail right after an @: only the real address, masked'
+# An address that ends a sentence and then has a closing quote, a dash or a star is still found. (A letter or digit
+# right after the final period reads as more domain, so such an address is not reported: an accepted loss.)
+foreach ($tail in @(".$([char]0x201D)", ".$([char]0x2019)", ".'", '.*', '.-')) {
+    Assert-Equal 'Personal e-mail/Medium/***@example.com' ((Get-HitSummary ("mail me at " + $Sample.Email + $tail + ' soon')) -join ',') "E-mail followed by [$tail]"
+}
+# A long run of short addresses glued by '@' is read in linear time.
+$gluedRun = (('ab' + '.cd' + '@') * 60000)
+$timer = [System.Diagnostics.Stopwatch]::StartNew()
+$null = Find-PiiInText $gluedRun
+$timer.Stop()
+Assert-Equal $true ($timer.Elapsed.TotalSeconds -lt 2) "Long glued run of addresses scanned in under 2 s (took $([int]$timer.Elapsed.TotalMilliseconds) ms)"
 # An address followed by punctuation is still found: ? ! ' curly quote ... ellipsis -ok * 's .
 foreach ($tail in @('?', '!', "'", [string][char]0x201D, '...', [string][char]0x2026, '-ok', '*', "'s", '.')) {
     Assert-Equal 'Personal e-mail/Medium/***@example.com' ((Get-HitSummary ("mail me at " + $Sample.Email + $tail + ' soon')) -join ',') "E-mail followed by [$tail]"

@@ -39,8 +39,8 @@ Needs: Windows PowerShell 5.1 and PnP.PowerShell 1.12.0. No other modules, no ad
 1. Open the paste text: [paste/33332Z-pii-spot-check.ps1](https://raw.githubusercontent.com/rhope-ops/33-332.Z/main/paste/33332Z-pii-spot-check.ps1). Select all (Ctrl+A) and copy (Ctrl+C).
 2. Open **Windows PowerShell ISE**, choose **File > New**, and paste into the script pane (Ctrl+V).
 3. Optional: fill in the **Settings** lines at the top (site address, channel, posts, report). Anything left empty is asked for when it runs.
-4. Press **F5** and sign in with your CAC in the window that opens.
-5. Answer the questions it asks: the team's site address (in Teams: the channel's **Files** tab > **Open in SharePoint**, then copy the address up to the site name, `https://usaf.dps.mil/sites/<team-site>`), the channels (a number, several numbers such as `1,3`, or `A` for all), and what to save (**1** Both, press Enter; **2** Text; **3** CSV).
+4. Press **F5**. It first asks for anything you left empty in the Settings: the team's site address (in Teams: the channel's **Files** tab > **Open in SharePoint**, then copy the address up to the site name, `https://usaf.dps.mil/sites/<team-site>`) and what to save (**1** Both, press Enter; **2** Text; **3** CSV).
+5. Sign in with your CAC in the window that opens, then pick the channels: a number, several numbers such as `1,3`, or `A` for all.
 6. Read the summary on screen. The saved file paths are printed at the end (default folder: `Documents\PII-Scan`).
 
 What each report holds:
@@ -70,7 +70,7 @@ Settings at the top of the paste text:
 - **Safe CSV:** a cell that Excel would read as a formula gets a leading `'`.
 - **Stops cleanly:** if something fails part way or you press Ctrl+C, the report is still saved and says INCOMPLETE; the script signs out even if the report cannot be saved.
 - **Handle the reports as CUI anyway:** file names and masked fragments still point to where PII is.
-- If it finds PII where it should not be (a potential or actual breach): report it to your servicing Privacy Manager/Monitor without delay. Only the Privacy Manager/Monitor enters it in DPIMS. Source: AFI 33-332 para 3.1.2, as changed by AFI33-332_DAFGM2026-01 (7 July 2026).
+- PII where it should not be is a potential or actual breach; report it to your servicing Privacy Manager/Monitor without delay (AFI 33-332 para 3.1.2, as changed by AFI33-332_DAFGM2026-01, 7 July 2026).
 
 ## Files
 

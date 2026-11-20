@@ -34,7 +34,9 @@ $script:KeepLastPassportChars = 3
 # An e-mail local part: everything before "@domain.tld" that is not a space, a delimiter or a path slash.
 # Broad on purpose (apostrophes, accents, non-ASCII domains), so no part of a name in an address stays
 # visible; slashes are excluded so the folders before an address in a path stay readable.
-$script:EmailLocalPartPattern = '[^\s@<>()\[\],;:"/\\]+(?=@[^\s@<>()\[\],;:"/\\.]+\.)'
+# It starts only at the start of a word (after a space, a delimiter, a slash or an '@'), so a long run of text is read
+# once, not once per character.
+$script:EmailLocalPartPattern = '(?<=^|[\s@<>()\[\],;:"/\\])[^\s@<>()\[\],;:"/\\]+(?=@[^\s@<>()\[\],;:"/\\.]+\.)'
 
 # =====================================================================================
 # Masking one value
