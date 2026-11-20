@@ -290,7 +290,8 @@ function Find-PersonalEmailHits {
     # starting after a space, a delimiter, a slash, an '@' or the start of the text. Domain: any such
     # characters too (non-ASCII domains), ending in a top-level label of 2 or more letters. The address must
     # end there: at the end of the text, a space or delimiter, or a final period; never another '@' or label
-    # character (so 'x@jo.doe' is not taken out of a longer run like 'x@jo.doe@example.com').
+    # character (so in a run of two addresses glued by '@', the first part is not taken for an address
+    # whose 'domain' is the second address's local part).
     $notInAddress = '\s@<>()\[\],;:"/\\'
     $endsAddress = '(?=$|[\s<>()\[\],;:"/\\]|\.(?:$|[\s<>()\[\],;:"/\\]))'
     $pattern = '(?<=^|[' + $notInAddress + '])[^' + $notInAddress + ']+@((?:[^' + $notInAddress + '.]+\.)+(\p{L}{2,}))' + $endsAddress
