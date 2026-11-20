@@ -3,8 +3,8 @@ Bundle.Tests.ps1 - runs the paste bundle (paste/33332Z-pii-spot-check.ps1) from 
 the fake site.
 
   Purpose:     The text a person pastes works by itself: no module files, no script file of its own (the modules of
-               the earlier test files are unloaded first). The Settings block is filled in the way the site page fills
-               it in (plain value replacement); the text then runs dot-sourced, as ISE runs an untitled pane, and must
+               the earlier test files are unloaded first). The Settings block is filled in as a person would edit it
+               in ISE (plain value replacement); the text then runs dot-sourced, as ISE runs an untitled pane, and must
                leave the session's error setting and strict mode as they were.
   Inputs:      paste/33332Z-pii-spot-check.ps1; $Sample, $Docx, $Txt (earlier test files); the fakes.
   Outputs:     passes and failures counted by Assert-Equal.
@@ -20,10 +20,9 @@ $bundleFolder = Join-Path ([System.IO.Path]::GetTempPath()) ('piitest-bundle-' +
 New-Item -ItemType Directory -Path $bundleFolder | Out-Null
 $library = '/sites/TeamA/Shared Documents'
 
-# Fill in the Settings exactly as the page does: replace the empty values of the four setting lines.
+# Fill in the Settings as a person would in ISE: the site and the report folder.
 $text = Get-Content -LiteralPath $bundlePath -Raw
-$filled = $text.Replace("`$SiteUrl = ''", "`$SiteUrl = '$($Sample.Site)'").Replace("`$Channel = ''", "`$Channel = 'All'")
-$filled = $filled.Replace('$IncludePosts = $false', '$IncludePosts = $true').Replace("`$Report = ''", "`$Report = 'Both'")
+$filled = $text.Replace("`$SiteUrl = ''", "`$SiteUrl = '$($Sample.Site)'")
 $filled = $filled.Replace("`$OutputFolder = (Join-Path ([Environment]::GetFolderPath('MyDocuments')) 'PII-Scan')",
     "`$OutputFolder = '$bundleFolder'")
 Assert-Equal $true ($filled -ne $text) 'Settings filled in'

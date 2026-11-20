@@ -1,7 +1,7 @@
 <#
 ChannelScan.Tests.ps1 - tests of ChannelScan.psm1 against the fake PnP cmdlets (FakePnP.ps1).
 
-  Purpose:     Site address check; channel pick; file scan (hits, NOT SCANNED, masked file names, links);
+  Purpose:     Site address check; the progress meter text; file scan (hits, NOT SCANNED, masked file names, links);
                the download fallback without -AsMemoryStream; posts refused and posts allowed.
   Inputs:      $Sample, $Docx, $Txt (earlier test files); the fakes.
   Outputs:     passes and failures counted by Assert-Equal.
@@ -80,8 +80,10 @@ Assert-Equal $Sample.Site (Connect-TeamSite (Get-ScanTarget $Sample.Site) 6>$nul
 Assert-Equal $false (Test-FakePnPCall 'Read-Host') 'Site address: no address prompt'
 Assert-Equal $false (Test-FakePnPCall 'Disconnect-PnPOnline') 'Site address: still signed in after success'
 Assert-Equal $Sample.Site ((Get-FakePnPConnection) -join ' ') 'Site address: one sign-in, to that site'
-Assert-Equal 'General' (Select-ChannelFolders -Available @('General', 'Ops') -Requested 'general') 'Channel by name, any case'
-Assert-Equal 'General Ops' (Select-ChannelFolders -Available @('General', 'Ops') -Requested 'All') 'All channels'
+$meter = @{ Total = 40; Done = 10; Read = 8; Skipped = 2; Hits = 3; HitItems = 2; Clock = [Diagnostics.Stopwatch]::new() }
+Assert-Equal '10 of 40 files done | read 8 | not scanned 2 | possible PII 3 in 2 files | 00:00 used, about 00:00 left' (Get-ScanMeterText $meter 'file') 'Meter text: counts and time'
+$meter.Total = 0
+Assert-Equal '10 posts done | read 8 | not scanned 2 | possible PII 3 in 2 posts | 00:00 used' (Get-ScanMeterText $meter 'post') 'Meter text: no total, no time left'
 
 # ---- File scan ----
 $library = '/sites/TeamA/Shared Documents'
@@ -95,7 +97,7 @@ Reset-FakePnP @{
 $lib = Get-TeamDocumentLibrary
 Assert-Equal 'General Ops' (Get-ChannelFolderNames $lib) 'Channel folders without Forms'
 $rows = New-Object System.Collections.Generic.List[object]
-Assert-Equal 3 (Invoke-FileScan -Library $lib -Channels @('General', 'Ops') -SiteUrl $Sample.Site -MaxFileMB 25 -Rows $rows) 'Files scanned'
+Assert-Equal 3 (Invoke-FileScan -Library $lib -Channels @('General', 'Ops') -SiteUrl $Sample.Site -MaxFileMB 25 -Rows $rows 6>$null) 'Files scanned'
 Assert-Equal 1 @($rows | Where-Object { $_.Detector -eq 'SSN' -and $_.Item -eq 'Roster.docx' }).Count 'SSN found in docx'
 Assert-Equal 1 @($rows | Where-Object { $_.Detector -eq 'Phone' -and $_.Item -eq 'notes.txt' }).Count 'Phone found in txt'
 Assert-Equal 1 @($rows | Where-Object { $_.Detector -eq 'NOT SCANNED' -and $_.Item -eq 'scan #A.pdf' }).Count 'pdf listed'
@@ -116,7 +118,8 @@ Assert-Equal 'https://tenant.example.com/sites/TeamA/Shared%20Documents/General'
 # A channel named with PII: masked in every row.
 Reset-FakePnP @{ "$library/SSN $($Sample.Ssn)/a.txt" = $Txt }
 $rows = New-Object System.Collections.Generic.List[object]
-$null = Invoke-FileScan -Library $lib -Channels @("SSN $($Sample.Ssn)") -SiteUrl $Sample.Site -MaxFileMB 25 -Rows $rows
+$shown = (Invoke-FileScan -Library $lib -Channels @("SSN $($Sample.Ssn)") -SiteUrl $Sample.Site -MaxFileMB 25 -Rows $rows 6>&1 | ForEach-Object { [string]$_ }) -join ' '
+Assert-Equal $false $shown.Contains($Sample.Ssn) 'Channel lines never show the SSN'
 Assert-Equal 'SSN ***-**-####' (($rows | Select-Object -ExpandProperty Channel -Unique) -join ',') 'Channel name masked'
 Assert-Equal $false ((($rows | ForEach-Object { $_.Link }) -join ' ').Contains('6789')) 'Channel link holds no SSN digits'
 Assert-Equal $true ((Get-FakeProgressText) -match 'SSN \*\*\*-\*\*-####') 'Progress bar shows the masked channel name'
@@ -131,21 +134,22 @@ Reset-FakePnP @{
 # ---- Download fallback: a PnP version without -AsMemoryStream ----
 Remove-FakeMemoryStreamSwitch
 $rows = New-Object System.Collections.Generic.List[object]
-Assert-Equal 3 (Invoke-FileScan -Library $lib -Channels @('General', 'Ops') -SiteUrl $Sample.Site -MaxFileMB 25 -Rows $rows) 'Fallback download scans'
+Assert-Equal 3 (Invoke-FileScan -Library $lib -Channels @('General', 'Ops') -SiteUrl $Sample.Site -MaxFileMB 25 -Rows $rows 6>$null) 'Fallback download scans'
 Assert-Equal $true (Test-FakePnPCall 'Get-PnPContext') 'Fallback used the client context'
 Assert-Equal 1 @($rows | Where-Object { $_.Detector -eq 'SSN' -and $_.Item -eq 'Roster.docx' }).Count 'Fallback finds the SSN'
 . (Join-Path $PSScriptRoot 'FakePnP.ps1')  # put the full fake Get-PnPFile back for the next tests
 
 # ---- Posts refused, then allowed ----
 $rows = New-Object System.Collections.Generic.List[object]
-Assert-Equal 0 (Invoke-PostScan -SiteUrl $Sample.Site -Channels @('General') -Rows $rows) 'Refused posts give 0'
+Assert-Equal 0 (Invoke-PostScan -SiteUrl $Sample.Site -Channels @('General') -Rows $rows 6>$null) 'Refused posts give 0'
 Assert-Equal 1 @($rows | Where-Object { $_.Detector -eq 'BLOCKED' }).Count 'BLOCKED row added'
 Assert-Equal $false ($rows[0].Context -match '\d') 'Error text in a BLOCKED row is masked'
 Set-FakePnPOption PostsAllowed $true
 $rows = New-Object System.Collections.Generic.List[object]
-Assert-Equal 2 (Invoke-PostScan -SiteUrl $Sample.Site -Channels @('General', 'Ops') -Rows $rows) 'Post and reply scanned'
+Assert-Equal 2 (Invoke-PostScan -SiteUrl $Sample.Site -Channels @('General', 'Ops') -Rows $rows 6>$null) 'Post and reply scanned'
 Assert-Equal 'DoD ID Personal e-mail NOT SCANNED' (($rows | ForEach-Object { $_.Detector }) -join ' ') 'Post hits; Ops has no Teams channel'
 $rows = New-Object System.Collections.Generic.List[object]
-$null = Invoke-PostScan -SiteUrl $Sample.Site -Channels @("SSN $($Sample.Ssn)") -Rows $rows
+$shown = (Invoke-PostScan -SiteUrl $Sample.Site -Channels @("SSN $($Sample.Ssn)") -Rows $rows 6>&1 | ForEach-Object { [string]$_ }) -join ' '
+Assert-Equal $false $shown.Contains($Sample.Ssn) 'Posts channel lines never show the SSN'
 Assert-Equal $false (Get-FakeProgressText).Contains($Sample.Ssn) 'Posts progress bar never shows the SSN'
 Assert-Equal $false (($rows | ForEach-Object { $_.Channel }) -join ' ').Contains($Sample.Ssn) 'Posts rows never show the SSN'

@@ -9,7 +9,9 @@ Title: 33-332.Z · <task> · <date>. Read AGENTS.md first.
 3. Done 2026-11-20: PR #5 review minors, Key Facts and hint wording, Public repo rule with the /teams/
    placeholder (PR #7, merged 1b79fa8).
 4. 2026-11-20: the first Teams-link run on DoD365 hung at the tenant-root lookup; the lookup is removed (a Teams
-   link now asks for the site address, then checks its group ID). The PAM: test one run again.
+   link now asks for the site address, then checks its group ID). Same PR: no choices (all channels, posts always
+   tried, both reports), progress bar and per-channel counts, page without Configuration. The PAM: approve the page
+   preview, then test one run again.
 5. The PAM: turn on GitHub Pages (main, / root) if not on yet. (Denylist secret: added 2026-11-20.)
 6. Known gap (MINOR, safe): pasted text with a second address after a Teams link without a groupId can supply
    that later groupId; the site-group check still holds.

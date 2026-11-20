@@ -37,9 +37,6 @@ $script:BreachAdvice = 'PII where it should not be is a potential or actual brea
                        'Manager/Monitor without delay (AFI 33-332 para 3.1.2, as changed by AFI33-332_DAFGM2026-01, page 1, ' +
                        'second paragraph).'
 
-# Report choices (Select-ReportFormat): what is saved besides the on-screen summary.
-$script:ReportFormats = @('Both', 'Text', 'Csv')
-
 # =====================================================================================
 # Rows and summary
 # =====================================================================================
@@ -279,60 +276,29 @@ function Export-ScanText {
     return $path
 }
 
-function Select-ReportFormat {
-    <#
-    .SYNOPSIS
-      Which files to save: 'Both' (readable .txt and .csv), 'Text' or 'Csv'. Uses -Report when the
-      person gave it; else asks, and Enter means Both.
-    .PARAMETER Requested
-      The -Report value, or empty.
-    .OUTPUTS
-      [string] Both, Text or Csv.
-    #>
-    param([string]$Requested)
-    if ($Requested) {
-        # A typo in the paste bundle's Settings (for example 'Txt') must stop before the scan, not after it.
-        $match = @($script:ReportFormats | Where-Object { $_ -ieq $Requested })
-        if ($match.Count -eq 0) { throw "Not a valid report choice: '$Requested'. Use Both, Text or Csv." }
-        return $match[0]
-    }
-    Write-Host 'Save the results as:'
-    Write-Host '  1. Both - readable text report (.txt) and spreadsheet (.csv)   [Enter]'
-    Write-Host '  2. Text - readable text report (.txt) only'
-    Write-Host '  3. Csv  - spreadsheet (.csv) only'
-    $answer = (Read-Host 'Type 1, 2 or 3').Trim()
-    if ($answer -eq '') { return $script:ReportFormats[0] }
-    $number = 0
-    if ([int]::TryParse($answer, [ref]$number) -and $number -ge 1 -and $number -le $script:ReportFormats.Count) {
-        return $script:ReportFormats[$number - 1]
-    }
-    throw "Not a valid choice: '$answer'. Type 1, 2 or 3."
-}
-
 function Publish-ScanReport {
     <#
     .SYNOPSIS
-      Shows the summary on screen and saves the files the person chose.
+      Shows the summary on screen and saves both files: the readable report (.txt) and the spreadsheet (.csv).
     .PARAMETER Rows
       All report rows.
     .PARAMETER ItemsScanned
       How many files and posts were read.
     .PARAMETER Header
       Lines for the top of the report.
-    .PARAMETER Format
-      Both, Text or Csv (Select-ReportFormat).
     .PARAMETER OutputFolder
       The folder for the reports.
     .OUTPUTS
       [string[]] the paths of the saved files.
     #>
-    param([object[]]$Rows, [int]$ItemsScanned, [string[]]$Header, [string]$Format, [string]$OutputFolder)
+    param([object[]]$Rows, [int]$ItemsScanned, [string[]]$Header, [string]$OutputFolder)
     $lines = Get-ScanSummaryText -Rows $Rows -ItemsScanned $ItemsScanned -Header $Header
     $lines | ForEach-Object { Write-Host $_ }
     $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
-    $saved = @()
-    if ($Format -eq 'Both' -or $Format -eq 'Text') { $saved += Export-ScanText -Lines $lines -OutputFolder $OutputFolder -Stamp $stamp }
-    if ($Format -eq 'Both' -or $Format -eq 'Csv') { $saved += Export-ScanCsv -Rows $Rows -OutputFolder $OutputFolder -Stamp $stamp }
+    $saved = @(
+        (Export-ScanText -Lines $lines -OutputFolder $OutputFolder -Stamp $stamp),
+        (Export-ScanCsv -Rows $Rows -OutputFolder $OutputFolder -Stamp $stamp)
+    )
     Write-Host ''
     foreach ($path in $saved) { Write-Host "Saved (values masked): $path" -ForegroundColor Cyan }
     Write-Host 'Handle these files as CUI: they show where PII is.' -ForegroundColor Yellow
@@ -340,4 +306,4 @@ function Publish-ScanReport {
 }
 
 Export-ModuleMember -Function New-ReportRow, Add-IncompleteRow, Get-ReportSummary, Get-ScanSummaryText, Export-ScanCsv, Export-ScanText,
-Select-ReportFormat, Publish-ScanReport
+Publish-ScanReport

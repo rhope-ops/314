@@ -1,5 +1,5 @@
 <#
-Report.Tests.ps1 - tests of Report.psm1: the readable text report, the CSV and the report choice.
+Report.Tests.ps1 - tests of Report.psm1: the readable text report, the CSV, and that both are always saved.
 
   Purpose:     The choice (Both, Text, Csv) saves the right files; reports are never overwritten; the CSV
                holds masked values only and no cell Excel would read as a formula; empty results still
@@ -21,20 +21,12 @@ $reportRows = @(
     (New-ReportRow 'File' 'Ops' 'scan.pdf' '' '' 'NOT SCANNED' '' '' 'File type is not read by this script')
 )
 
-# ---- The choice decides which files are saved ----
-$both = @(Publish-ScanReport -Rows $reportRows -ItemsScanned 2 -Header @('Site: test') -Format 'Both' -OutputFolder $reportFolder 6>$null)
-Assert-Equal '.csv .txt' (($both | ForEach-Object { [System.IO.Path]::GetExtension($_) } | Sort-Object) -join ' ') 'Both saves .txt and .csv'
-$textOnly = @(Publish-ScanReport -Rows $reportRows -ItemsScanned 2 -Header @() -Format 'Text' -OutputFolder $reportFolder 6>$null)
-Assert-Equal '.txt' ([System.IO.Path]::GetExtension($textOnly[0])) 'Text saves .txt only'
-$csvOnly = @(Publish-ScanReport -Rows $reportRows -ItemsScanned 2 -Header @() -Format 'Csv' -OutputFolder $reportFolder 6>$null)
-Assert-Equal '.csv' ([System.IO.Path]::GetExtension($csvOnly[0])) 'Csv saves .csv only'
-Assert-Equal 1 $csvOnly.Count 'Csv saves one file'
+# ---- Both files are always saved ----
+$both = @(Publish-ScanReport -Rows $reportRows -ItemsScanned 2 -Header @('Site: test') -OutputFolder $reportFolder 6>$null)
+Assert-Equal '.csv .txt' (($both | ForEach-Object { [System.IO.Path]::GetExtension($_) } | Sort-Object) -join ' ') 'Saves both .txt and .csv'
+$again = @(Publish-ScanReport -Rows $reportRows -ItemsScanned 2 -Header @() -OutputFolder $reportFolder 6>$null)
+Assert-Equal 2 $again.Count 'A second run saves two files too'
 Assert-Equal 4 @(Get-ChildItem -LiteralPath $reportFolder).Count 'No report overwritten'
-Assert-Equal 'Both' (Select-ReportFormat 'Both') 'Given choice used without asking'
-Assert-Equal 'Csv' (Select-ReportFormat 'csv') 'Choice accepted in any case'
-$typoRefused = $false
-try { Select-ReportFormat 'Txt' | Out-Null } catch { $typoRefused = $true }  # the refusal is the expected result
-Assert-Equal $true $typoRefused 'A report choice that is not Both, Text or Csv is refused before the scan'
 
 # ---- The readable report ----
 $text = Get-Content -LiteralPath ($both | Where-Object { $_ -like '*.txt' }) -Raw
