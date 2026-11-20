@@ -47,4 +47,14 @@ Assert-Equal $true $csv.Contains("""'=HYPERLINK") 'Formula-like cell made plain 
 $empty = Export-ScanCsv -Rows @() -OutputFolder $reportFolder -Stamp 'empty'
 Assert-Equal 1 @(Get-Content -LiteralPath $empty).Count 'Empty CSV has the header row'
 
+# ---- A run that did not reach its end (Ctrl+C runs 'finally' but not 'catch') ----
+$cancelRows = New-Object System.Collections.Generic.List[object]
+Add-IncompleteRow -Rows $cancelRows -Finished $false
+Assert-Equal 'INCOMPLETE' $cancelRows[0].Detector 'Unfinished run gets an INCOMPLETE row'
+Add-IncompleteRow -Rows $cancelRows -Finished $false
+Assert-Equal 1 $cancelRows.Count 'Only one INCOMPLETE row'
+$doneRows = New-Object System.Collections.Generic.List[object]
+Add-IncompleteRow -Rows $doneRows -Finished $true
+Assert-Equal 0 $doneRows.Count 'Finished run gets no INCOMPLETE row'
+
 Remove-Item -LiteralPath $reportFolder -Recurse -Force

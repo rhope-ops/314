@@ -101,9 +101,7 @@ catch {
 }
 finally {
     # ---- Step 6: the report (also after an error or a cancel), then sign out ----
-    if (-not $finished -and -not @($rows | Where-Object { $_.Detector -eq 'INCOMPLETE' })) {
-        $rows.Add((New-ReportRow 'Scan' '(all)' '(scan)' '' '' 'INCOMPLETE' '' '' 'Stopped before the end (cancelled?)'))
-    }
+    Add-IncompleteRow -Rows $rows -Finished $finished
     $postsLine = 'not scanned (-IncludePosts not used)'
     if ($IncludePosts) { $postsLine = 'tried (see BLOCKED rows if refused)' }
     $header = @(

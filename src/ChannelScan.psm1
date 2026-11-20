@@ -286,12 +286,13 @@ function Invoke-FileScan {
     $scanned = 0
     foreach ($channel in $Channels) {
         $prefix = $Library.ServerRelativeUrl + '/' + $channel + '/'
+        $shownChannel = Protect-PiiText $channel   # the progress bar is on screen too
         $files = @(Get-ChannelFiles $allItems $prefix)
         for ($i = 0; $i -lt $files.Count; $i++) {
-            Write-Progress -Activity "Scanning files in '$channel'" -Status ('{0} of {1}' -f ($i + 1), $files.Count) -PercentComplete ([int](100 * ($i + 1) / $files.Count))
+            Write-Progress -Activity "Scanning files in '$shownChannel'" -Status ('{0} of {1}' -f ($i + 1), $files.Count) -PercentComplete ([int](100 * ($i + 1) / $files.Count))
             $scanned += Invoke-OneFileScan $files[$i] $channel $prefix $origin $MaxFileMB $Rows
         }
-        Write-Progress -Activity "Scanning files in '$channel'" -Completed
+        Write-Progress -Activity "Scanning files in '$shownChannel'" -Completed
     }
     return $scanned
 }
@@ -412,7 +413,7 @@ function Invoke-PostScan {
     }
     $scanned = 0
     foreach ($channel in $Channels) {
-        Write-Progress -Activity 'Scanning posts' -Status $channel
+        Write-Progress -Activity 'Scanning posts' -Status (Protect-PiiText $channel)
         $scanned += Invoke-ChannelPostScan $team $channel $Rows
     }
     Write-Progress -Activity 'Scanning posts' -Completed

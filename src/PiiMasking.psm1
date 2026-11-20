@@ -31,9 +31,10 @@ $script:SnippetRadiusChars = 30
 $script:KeepLastDigits = 4
 $script:KeepLastPassportChars = 3
 
-# An e-mail local part: everything before "@domain.tld" that is not a space or a delimiter.
-# Broad on purpose (apostrophes, accents), so no part of a name in an address stays visible.
-$script:EmailLocalPartPattern = '[^\s@<>()\[\],;:"]+(?=@[A-Za-z0-9-]+\.)'
+# An e-mail local part: everything before "@domain.tld" that is not a space, a delimiter or a path slash.
+# Broad on purpose (apostrophes, accents, non-ASCII domains), so no part of a name in an address stays
+# visible; slashes are excluded so the folders before an address in a path stay readable.
+$script:EmailLocalPartPattern = '[^\s@<>()\[\],;:"/\\]+(?=@[^\s@<>()\[\],;:"/\\.]+\.)'
 
 # =====================================================================================
 # Masking one value

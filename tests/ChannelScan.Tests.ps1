@@ -56,6 +56,8 @@ $rows = New-Object System.Collections.Generic.List[object]
 $null = Invoke-FileScan -Library $lib -Channels @("SSN $($Sample.Ssn)") -SiteUrl $Sample.Site -MaxFileMB 25 -Rows $rows
 Assert-Equal 'SSN ***-**-####' (($rows | Select-Object -ExpandProperty Channel -Unique) -join ',') 'Channel name masked'
 Assert-Equal $false ((($rows | ForEach-Object { $_.Link }) -join ' ').Contains('6789')) 'Channel link holds no SSN digits'
+Assert-Equal $true ((Get-FakeProgressText) -match 'SSN \*\*\*-\*\*-####') 'Progress bar shows the masked channel name'
+Assert-Equal $false (Get-FakeProgressText).Contains($Sample.Ssn) 'Progress bar never shows the SSN'
 Reset-FakePnP @{
     "$library/General/Roster.docx"  = $Docx
     "$library/General/notes.txt"    = $Txt

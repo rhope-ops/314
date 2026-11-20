@@ -69,6 +69,8 @@ Assert-Equal $false (($named | ForEach-Object { $_.Context }) -join ' ' -match '
 Assert-Equal 'DoD ID/High/******7890' (Get-HitSummary "CAC_$($Sample.DodId).docx") 'DoD ID after an underscore'
 Assert-Equal 'Date of birth/High/[date masked]' (Get-HitSummary 'Roster DOB_01-02-1990.xlsx') 'DOB after an underscore'
 Assert-Equal 'Personal e-mail/Medium/***@example.net' (Get-HitSummary "notes $($Sample.EmailAccent) here") 'E-mail with accents'
+Assert-Equal 1 (Get-HitSummary "mail $($Sample.EmailIdn) here").Count 'E-mail with a non-ASCII domain'
+Assert-Equal 1 (Get-HitSummary ("see " + $Sample.MilEmail + '/' + $Sample.Email)).Count 'E-mail right after a slash'
 
 # ---- Protect-PiiText: names and messages shown as they are; every digit and e-mail name hidden ----
 Assert-Equal 'Roster ***-**-####.docx' (Protect-PiiText "Roster $($Sample.Ssn).docx") 'File name with SSN masked'
@@ -77,6 +79,8 @@ Assert-Equal 'Team Roster.docx' (Protect-PiiText 'Team Roster.docx') 'Name with 
 Assert-Equal '***@example.org.docx' (Protect-PiiText "$($Sample.EmailQuote).docx") 'E-mail name with apostrophe hidden'
 Assert-Equal '***@example.net notes.txt' (Protect-PiiText "$($Sample.EmailAccent) notes.txt") 'E-mail name with accents hidden'
 Assert-Equal 'CAC_******####.docx' (Protect-PiiText "CAC_$($Sample.DodId).docx") 'DoD ID after an underscore hidden'
+Assert-Equal $false (Protect-PiiText "$($Sample.EmailIdn) notes.txt").Contains('john') 'E-mail name with a non-ASCII domain hidden'
+Assert-Equal 'Folder/***@example.com.docx' (Protect-PiiText "Folder/$($Sample.Email).docx") 'Folders before an address stay readable'
 
 # ---- Validators ----
 Assert-Equal $true (Test-Luhn '4111111111111111') 'Luhn true'

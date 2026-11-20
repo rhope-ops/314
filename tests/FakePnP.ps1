@@ -36,6 +36,7 @@ function Reset-FakePnP {
         PostsAllowed = $false
         ListFails   = $false
         Calls       = New-Object System.Collections.Generic.List[string]
+        Progress    = New-Object System.Collections.Generic.List[string]
     }
 }
 
@@ -43,6 +44,11 @@ function Set-FakePnPOption {
     # Changes one switch of the fake site: PostsAllowed or ListFails.
     param([ValidateSet('PostsAllowed', 'ListFails')][string]$Name, [bool]$Value)
     $global:FakePnP[$Name] = $Value
+}
+
+function Get-FakeProgressText {
+    # Everything the progress bar showed since the last Reset-FakePnP, as one string.
+    return ($global:FakePnP.Progress -join ' | ')
 }
 
 function Test-FakePnPCall {
@@ -115,6 +121,13 @@ function global:Get-PnPContext {
     $context = [pscustomobject]@{ Web = $web }
     $context | Add-Member -MemberType ScriptMethod -Name ExecuteQuery -Value { }
     return $context
+}
+
+# The progress bar is on screen too: the fake records its text so tests can check it is masked.
+function global:Write-Progress {
+    # Fake: records the activity and status text instead of drawing a bar.
+    [CmdletBinding()] param($Activity, $Status, $PercentComplete, [switch]$Completed)
+    $global:FakePnP.Progress.Add(('{0} {1}' -f $Activity, $Status))
 }
 
 # Sign-in, sign-out and the team behind the site.

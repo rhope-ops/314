@@ -72,6 +72,24 @@ function New-ReportRow {
     }
 }
 
+function Add-IncompleteRow {
+    <#
+    .SYNOPSIS
+      Adds one INCOMPLETE row when the scan did not reach its end and no INCOMPLETE row is there yet.
+      Called from the script's 'finally' block, which also runs after Ctrl+C (when 'catch' does not).
+    .PARAMETER Rows
+      The list of report rows (changed in place).
+    .PARAMETER Finished
+      True when every step ran.
+    .OUTPUTS
+      None.
+    #>
+    param($Rows, [bool]$Finished)
+    if ($Finished) { return }
+    if (@($Rows | Where-Object { $_.Detector -eq 'INCOMPLETE' }).Count -gt 0) { return }
+    $Rows.Add((New-ReportRow 'Scan' '(all)' '(scan)' '' '' 'INCOMPLETE' '' '' 'Stopped before the end (cancelled?)'))
+}
+
 function Get-ReportSummary {
     <#
     .SYNOPSIS
@@ -308,5 +326,5 @@ function Publish-ScanReport {
     return $saved
 }
 
-Export-ModuleMember -Function New-ReportRow, Get-ReportSummary, Get-ScanSummaryText, Export-ScanCsv, Export-ScanText,
+Export-ModuleMember -Function New-ReportRow, Add-IncompleteRow, Get-ReportSummary, Get-ScanSummaryText, Export-ScanCsv, Export-ScanText,
 Select-ReportFormat, Publish-ScanReport
