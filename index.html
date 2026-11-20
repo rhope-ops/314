@@ -68,6 +68,10 @@ main{padding-block:32px 48px}
 .mut{color:var(--mut)}
 .small{font-size:.875rem}
 ul.plain{margin:0;padding-left:1.15em;display:flex;flex-direction:column;gap:4px}
+/* Key Facts: labels in one column, every value starting at the same indent (the PAM, 2026-11-20) */
+.facts{display:grid;grid-template-columns:max-content 1fr;gap:6px 14px;margin:0}
+.facts dt{font-weight:600}
+.facts dd{margin:0}
 
 /* The two buttons and the status line. */
 .go{display:flex;flex-wrap:wrap;align-items:center;gap:12px}
@@ -100,6 +104,7 @@ tr:last-child td{border-bottom:0}
 
 /* Phones: a smaller card padding and logos. */
 @media (max-width:640px){
+  .facts{grid-template-columns:1fr;gap:0}.facts dd{margin-bottom:8px}
   .tool{padding:18px}
   .logo{width:48px;height:48px}
 }
@@ -133,13 +138,14 @@ tr:last-child td{border-bottom:0}
 
       <section aria-labelledby="h-ok">
         <h3 id="h-ok">Key Facts</h3>
-        <ul class="plain">
-          <li>Read-only: it changes nothing in Teams or SharePoint.</li>
-          <li>Your own CAC sign-in and your own access; nothing is stored.</li>
-          <li>Data stays within DoD365; the only export is the results workbook saved on your machine.</li>
-          <li>Pasted into PowerShell ISE: no download, no admin rights, no policy change.</li>
-          <li>Verifiable: inspect the commented code yourself within a .txt before execution.</li>
-        </ul>
+        <dl class="facts">
+          <dt>Universal:</dt><dd>Ion scans <strong>everything</strong> it can access.</dd>
+          <dt>Your access:</dt><dd>uses your CAC sign-on to scan, and saves nothing between sessions.</dd>
+          <dt>Read-only:</dt><dd>it makes no changes to your Teams or SharePoint content.</dd>
+          <dt>Data boundary:</dt><dd>nothing leaves DoD365; the export is saved to your computer.</dd>
+          <dt>Verifiable:</dt><dd>inspect the commented code yourself within a .txt before execution.</dd>
+          <dt>Accessible:</dt><dd>paste and run via ISE; no download, no admin rights, no policy change.</dd>
+        </dl>
         <p class="small mut">Have concerns? Speak with your WCO.</p>
       </section>
 
