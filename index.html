@@ -62,6 +62,7 @@ main{padding-block:32px 48px}
 .tool{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:26px;display:flex;flex-direction:column;gap:26px}
 .tool > header{display:flex;flex-direction:column;gap:8px}
 .tool h2{font-size:1.5rem}
+.tool h2 .sub2{display:block;font-size:.95rem;font-weight:600;color:var(--mut);margin-top:4px}   /* the subtitle under the name */
 .tool h3{font-size:1.05rem}
 .tool section{display:flex;flex-direction:column;gap:12px;min-width:0}
 .mut{color:var(--mut)}
@@ -80,10 +81,11 @@ ul.plain{margin:0;padding-left:1.15em;display:flex;flex-direction:column;gap:4px
 .status{font-size:.9rem}
 .status.ok{color:var(--fg);font-weight:600}
 .status.err{color:var(--err)}
-/* The fold-out box (what it looks for) and its table. */
-details{border:1px solid var(--line);border-radius:8px;background:var(--bg)}
-summary{cursor:pointer;padding:10px 12px;font-weight:600;font-size:.92rem;min-height:24px}
-details .tbl{padding:0 12px 12px;overflow-x:auto}
+/* The "What it looks for" box and its table. */
+/* What it looks for: always shown (the PAM, 2026-11-20), in a framed box. */
+.looks{border:1px solid var(--line);border-radius:8px;background:var(--bg)}
+.looks-title{padding:10px 12px;font-weight:600;font-size:.92rem}
+.looks .tbl{padding:0 12px 12px;overflow-x:auto}
 table{border-collapse:collapse;width:100%;font-size:.9rem;min-width:480px}
 th,td{text-align:left;padding:7px 10px;border-bottom:1px solid var(--line);vertical-align:top}
 th{font-family:var(--display);font-weight:600}
@@ -125,8 +127,8 @@ tr:last-child td{border-bottom:0}
   <div class="wrap">
     <article class="tool" aria-labelledby="t1">
       <header>
-        <h2 id="t1">PII Scan</h2>
-        <p>Checks the files and posts in one Teams team you are a member of for personal data (SSNs, DoD IDs, dates of birth and more) and gives you a short report. It only reads, and every value it finds is masked.</p>
+        <h2 id="t1">Ion <span class="sub2">DoD365 PII Reporter</span></h2>
+        <p>Keep your eyes on the files in one Teams team or SharePoint site you can access. Ion checks them for Personally Identifiable Information (PII) and gives you a comprehensive report: an Excel workbook that summarizes and categorizes its findings. It only reads, and every value it finds is masked.</p>
       </header>
 
       <section aria-labelledby="h-ok">
@@ -134,9 +136,9 @@ tr:last-child td{border-bottom:0}
         <ul class="plain">
           <li>Read-only: it changes nothing in Teams or SharePoint.</li>
           <li>Your own CAC sign-in and your own access; nothing is stored.</li>
-          <li>Data stays within DoD365; the only export is the report saved on your machine.</li>
+          <li>Data stays within DoD365; the only export is the results workbook saved on your machine.</li>
           <li>Pasted into PowerShell ISE: no download, no admin rights, no policy change.</li>
-          <li>Inspect the output code yourself within a .txt before execution.</li>
+          <li>Verifiable: inspect the commented code yourself within a .txt before execution.</li>
         </ul>
         <p class="small mut">Have concerns? Speak with your WCO.</p>
       </section>
@@ -155,24 +157,24 @@ tr:last-child td{border-bottom:0}
         <div class="flow" aria-label="Steps the script takes">
           <span>Sign in</span><i aria-hidden="true">&rarr;</i><span>Read files in memory</span><i aria-hidden="true">&rarr;</i><span>Find PII</span><i aria-hidden="true">&rarr;</i><span class="key">Mask it</span><i aria-hidden="true">&rarr;</i><span>Report</span>
         </div>
-        <details>
-          <summary>What it looks for</summary>
+        <div class="looks" role="group" aria-labelledby="h-looks">
+          <p class="looks-title" id="h-looks">What it looks for</p>
           <div class="tbl"><table>
             <thead><tr><th scope="col">Type</th><th scope="col">Found when</th><th scope="col">Shown as</th></tr></thead>
             <tbody>
               <tr><td>SSN</td><td>3-2-4 digits the SSA could issue</td><td><code>***-**-1234</code></td></tr>
               <tr><td>DoD ID</td><td>10 digits after "DoD ID", "EDIPI" or "CAC"</td><td><code>******7890</code></td></tr>
               <tr><td>Date of birth</td><td>A date after "DOB" or "born"</td><td><code>[date masked]</code></td></tr>
-              <tr><td>Payment card</td><td>13 to 19 digits that pass the card check</td><td><code>************1111</code></td></tr>
+              <tr><td>Payment card</td><td>13 to 19 digits with a card network's prefix that pass the card check</td><td><code>************1111</code></td></tr>
               <tr><td>Passport</td><td>Letters and digits after "passport"</td><td><code>*****567</code></td></tr>
               <tr><td>Phone</td><td>A US 10-digit number</td><td><code>***-***-0142</code></td></tr>
-              <tr><td>Personal e-mail</td><td>Any address not ending in .gov or .mil</td><td><code>***@domain</code></td></tr>
+              <tr><td>Personal e-mail</td><td>Any address not ending in .gov or .mil (Gmail, Yahoo and the like rank higher)</td><td><code>***@domain</code></td></tr>
               <tr><td>Home address</td><td>Number, street name and street type</td><td><code>[address masked]</code></td></tr>
               <tr><td>Name</td><td>After "Name:", "Spouse:", "NOK:" and similar</td><td>Initials</td></tr>
             </tbody>
           </table></div>
-          <p class="small mut" style="padding:0 12px 12px">Not read: PDFs, images, old Office files and files over 25 MB (each is listed in the report, to check by hand), and chats (not checked at all).</p>
-        </details>
+          <p class="small mut" style="padding:0 12px 12px">Not read: PDFs, images, old Office files and files over 25 MB (each is listed in the workbook, to check by hand), and channel posts and chats (not checked at all).</p>
+        </div>
       </section>
 
       <section aria-labelledby="h-found">
@@ -188,7 +190,7 @@ tr:last-child td{border-bottom:0}
 /*
   The two buttons of this page.
 
-  What it does: loads the PII Scan paste script from this site (paste/33332Z-pii-spot-check.ps1) as it is, and then
+  What it does: loads the Ion paste script from this site (paste/33332Z-pii-spot-check.ps1) as it is, and then
   either copies the whole script ("Copy the script") or saves it as a .txt file to read first ("Open the script").
   The page adds nothing to the script: the script asks for the Teams link or site address when it runs.
   Text is only ever shown with textContent, never as HTML.
@@ -199,7 +201,7 @@ tr:last-child td{border-bottom:0}
   // ---- Settings ----------------------------------------------------------------------------------------------
   var SCRIPT_PATH = 'paste/33332Z-pii-spot-check.ps1';                     // served next to this page
   var RAW_URL = 'https://raw.githubusercontent.com/rhope-ops/33-332.Z/main/' + SCRIPT_PATH;   // the fallback link
-  var TXT_NAME = '33332Z-pii-spot-check.txt';                              // the name of the saved .txt file
+  var TXT_NAME = 'Ion-script.txt';                                         // the name of the saved .txt file
 
   // ---- The page elements -------------------------------------------------------------------------------------
   var copyButton = document.getElementById('copy');

@@ -90,3 +90,60 @@ function New-ZipBytes {
     $zip.Dispose()
     return $memory.ToArray()
 }
+
+function Get-XlsxSheets {
+    <#
+    .SYNOPSIS
+      Reads a workbook back for the tests: tab name -> rows, each row an array of cell texts (inline strings
+      and numbers). Only the parts XlsxWriter.psm1 writes are read.
+    .PARAMETER Path
+      The .xlsx file.
+    .OUTPUTS
+      [System.Collections.Specialized.OrderedDictionary]
+    #>
+    param([string]$Path)
+    Add-Type -AssemblyName System.IO.Compression
+    $stream = [System.IO.File]::OpenRead($Path)
+    $zip = New-Object System.IO.Compression.ZipArchive($stream, [System.IO.Compression.ZipArchiveMode]::Read)
+    try {
+        # Reads one part of the zip as text.
+        $read = { param($name) $r = New-Object System.IO.StreamReader($zip.GetEntry($name).Open()); try { $r.ReadToEnd() } finally { $r.Dispose() } }
+        $sheets = [ordered]@{}
+        $names = @([regex]::Matches((& $read 'xl/workbook.xml'), '<sheet name="([^"]*)"') | ForEach-Object { [System.Net.WebUtility]::HtmlDecode($_.Groups[1].Value) })
+        for ($i = 0; $i -lt $names.Count; $i++) {
+            $rows = foreach ($row in [regex]::Matches((& $read ('xl/worksheets/sheet' + ($i + 1) + '.xml')), '(?s)<row[^>]*>(.*?)</row>')) {
+                , @([regex]::Matches($row.Groups[1].Value, '(?s)<c [^>]*>(?:<is><t[^>]*>(.*?)</t></is>|<v>(.*?)</v>)</c>') |
+                    ForEach-Object { [System.Net.WebUtility]::HtmlDecode($_.Groups[1].Value + $_.Groups[2].Value) })
+            }
+            $sheets[$names[$i]] = @($rows)
+        }
+        return $sheets
+    }
+    finally { $zip.Dispose(); $stream.Dispose() }
+}
+
+function Get-ResultFiles {
+    # Every results workbook under a folder (the script saves them in <site>\<day> folders).
+    param([string]$Folder)
+    return @(Get-ChildItem -LiteralPath $Folder -Recurse -Filter 'Ion Results *.xlsx' -ErrorAction SilentlyContinue)
+}
+
+function Get-WorkbookTypes {
+    <#
+    .SYNOPSIS
+      The PII types and note words in a workbook, sorted, one each: the type tabs, the Type column of the Low
+      confidence tab and the Status column of the Not scanned tab.
+    .PARAMETER Path
+      The .xlsx file.
+    .OUTPUTS
+      [string] the names, joined with spaces.
+    #>
+    param([string]$Path)
+    $book = Get-XlsxSheets $Path
+    $types = foreach ($tab in $book.Keys) {
+        if ($tab -eq 'Low confidence' -or $tab -eq 'Not scanned') { $book[$tab] | Select-Object -Skip 1 | ForEach-Object { $_[0] } }
+        elseif ($tab -ne 'Summary') { $tab }
+    }
+    return (@($types | Sort-Object -Unique) -join ' ')
+}
+

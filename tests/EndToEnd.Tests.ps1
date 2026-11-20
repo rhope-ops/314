@@ -1,9 +1,9 @@
 <#
 EndToEnd.Tests.ps1 - runs Find-ChannelPII.ps1 from start to end against the fake site.
 
-  Purpose:     The whole script: all channels and the posts are scanned with no question asked, both report
-               files are written, every planted type is found, the progress bar shows the counts, a refused posts
-               sign-in keeps the file results, and a failure part way still saves a report that says INCOMPLETE.
+  Purpose:     The whole script: every folder is scanned with no question asked and one sign-in, one workbook is
+               written, every planted type is found, the progress bars show the counts, a plain site gets a Folder
+               column, and a failure part way still saves results that say INCOMPLETE.
   Inputs:      $Sample, $Docx, $Txt (earlier test files); the fakes.
   Outputs:     passes and failures counted by Assert-Equal.
   How to run:  dot-sourced by tests/Run-Tests.ps1.
@@ -17,48 +17,73 @@ $script = Join-Path (Join-Path (Split-Path $PSScriptRoot -Parent) 'src') 'Find-C
 $runFolder = Join-Path ([System.IO.Path]::GetTempPath()) ('piitest-e2e-' + [guid]::NewGuid())
 $library = '/sites/TeamA/Shared Documents'
 
-# ---- A full run with posts allowed ----
+# ---- A full run: one workbook, every planted type, no question, the progress bars ----
 Reset-FakePnP @{ "$library/General/Roster.docx" = $Docx; "$library/General/notes.txt" = $Txt; "$library/Ops/scan.pdf" = $Txt }
-Set-FakePnPOption PostsAllowed $true
 & $script -SiteUrl $Sample.Site -OutputFolder $runFolder 6>$null
-$csvFiles = @(Get-ChildItem -LiteralPath $runFolder -Filter 'PIIScan-*.csv')
-Assert-Equal 1 $csvFiles.Count 'Script saved one CSV'
-Assert-Equal 1 @(Get-ChildItem -LiteralPath $runFolder -Filter 'PIIScan-*.txt').Count 'Script saved one text report'
-$types = (Import-Csv -LiteralPath $csvFiles[0].FullName | ForEach-Object { $_.Detector } | Sort-Object -Unique) -join ' '
-Assert-Equal 'DoD ID NOT SCANNED Personal e-mail Phone SSN' $types 'Script found every planted type'
-Assert-Equal $false (Test-FakePnPCall 'Read-Host') 'No question asked when the site is given'
+$results = @(Get-ResultFiles $runFolder)
+Assert-Equal 1 $results.Count 'Script saved one workbook'
+# -Include is ignored with -LiteralPath in Windows PowerShell 5.1, so the extension is checked after the listing.
+Assert-Equal 0 @(Get-ChildItem -LiteralPath $runFolder -Recurse | Where-Object { $_.Extension -in @('.txt', '.csv') }).Count 'No .txt or .csv any more'
+Assert-Equal 'NOT SCANNED Phone SSN' (Get-WorkbookTypes $results[0].FullName) 'Script found every planted type'
+Assert-Equal 'Channel' (Get-XlsxSheets $results[0].FullName)['SSN'][0][1] 'A team: the folder column is named Channel'
+Assert-Equal 1 (Get-FakeCallCount 'Read-Host') 'Only one question when the site is given: another site or exit'
+Assert-Equal 1 @(Get-FakePnPConnection).Count 'One sign-in only: no posts sign-in'
 Assert-Equal $true ((Get-FakeProgressText) -match '2 of 3 files done \| read \d+ \| not scanned 0 \| possible PII \d+ in \d+ files') 'Progress bar shows the file counts'
-Assert-Equal $true ((Get-FakeProgressText) -match "channel 2 of 2: 'Ops'") 'Progress bar names the channel and its number'
-Assert-Equal $true ((Get-FakeProgressText) -match 'Scanning posts') 'Posts tried without being asked'
+Assert-Equal $true ((Get-FakeProgressText) -match "folder 2 of 2: 'Ops'") 'Progress bar names the folder and its number'
+Assert-Equal $false ((Get-FakeProgressText) -match 'This file (Downloading|Reading|Checking)') 'Small files: no per-file bar (it would only slow the scan)'
 
-# ---- Posts refused: the file results and both reports stay ----
+# ---- A plain SharePoint site (no team): Folder column, top-of-library files ----
+Reset-FakePnP @{ "$library/top.txt" = $Txt }
+Set-FakeSiteAnswer -TypedSite '' -SiteGroupId ([guid]::Empty)
+$siteFolder = Join-Path $runFolder 'site'
+& $script -SiteUrl $Sample.Site -OutputFolder $siteFolder 6>$null
+$siteBook = Get-XlsxSheets (Get-ResultFiles $siteFolder)[0].FullName
+Assert-Equal 'Folder|(top of the library)' (($siteBook['Phone'][0][1], $siteBook['Phone'][1][1]) -join '|') 'A plain site: Folder column; top-of-library file reported'
+
+# ---- The team check fails: the scan goes on, and the column is named Folder ----
 Reset-FakePnP @{ "$library/General/notes.txt" = $Txt }
-$blockedFolder = Join-Path $runFolder 'blocked'
-& $script -SiteUrl $Sample.Site -OutputFolder $blockedFolder 6>$null
-$blockedCsv = @(Get-ChildItem -LiteralPath $blockedFolder -Filter 'PIIScan-*.csv')
-$blockedRows = @(Import-Csv -LiteralPath $blockedCsv[0].FullName)
-Assert-Equal 1 @($blockedRows | Where-Object { $_.Detector -eq 'BLOCKED' }).Count 'Refused posts: one BLOCKED row'
-Assert-Equal $true (@($blockedRows | Where-Object { $_.Source -eq 'File' -and $_.Confidence }).Count -gt 0) 'Refused posts: the file hits stay'
-Assert-Equal 1 @(Get-ChildItem -LiteralPath $blockedFolder -Filter 'PIIScan-*.txt').Count 'Refused posts: the text report is saved too'
+Set-FakePnPOption SiteFails $true
+$checkFolder = Join-Path $runFolder 'teamcheck'
+& $script -SiteUrl $Sample.Site -OutputFolder $checkFolder 6>$null
+$checkBook = Get-XlsxSheets (Get-ResultFiles $checkFolder)[0].FullName
+Assert-Equal 'Folder' $checkBook['Phone'][0][1] 'Team check failed: scan went on with the Folder label'
+Assert-Equal $false (@($checkBook.Keys) -contains 'Not scanned') 'Team check failed: the scan is not INCOMPLETE'
+
+# ---- No access to the site: a clear message, nothing saved, signed out, another site offered ----
+Reset-FakePnP @{ "$library/General/notes.txt" = $Txt }
+Set-FakePnPOption NoAccess $true
+$noAccessFolder = Join-Path $runFolder 'noaccess'
+$shown = (& $script -SiteUrl $Sample.Site -OutputFolder $noAccessFolder 6>&1 | ForEach-Object { [string]$_ }) -join ' '
+Assert-Equal $true ($shown -match 'No access: your account cannot open this site') 'No access: the person is told'
+Assert-Equal 0 @(Get-ResultFiles $noAccessFolder).Count 'No access: nothing saved'
+Assert-Equal $true ((Test-FakePnPCall 'Disconnect-PnPOnline') -and (Get-FakeCallCount 'Read-Host') -eq 1) 'No access: signed out, another site offered'
+
+# ---- A wrong paste is explained and asked again; Enter exits ----
+Reset-FakePnP @{ "$library/General/notes.txt" = $Txt }
+Set-FakeSiteAnswer -TypedSite @('not a link', $Sample.Site)
+$retryFolder = Join-Path $runFolder 'retry'
+$shown = (& $script -OutputFolder $retryFolder 6>&1 | ForEach-Object { [string]$_ }) -join ' '
+Assert-Equal $true ($shown -match 'That is not a Teams link or a site address') 'Wrong paste: explained'
+Assert-Equal 1 @(Get-ResultFiles $retryFolder).Count 'Wrong paste: asked again, then the right one scanned'
+Assert-Equal 3 (Get-FakeCallCount 'Read-Host') 'Wrong paste, right paste, then Enter to exit'
 
 # ---- A run that fails part way still saves a report ----
 Reset-FakePnP @{}
 Set-FakePnPOption ListFails $true
 $failFolder = Join-Path $runFolder 'fail'
 & $script -SiteUrl $Sample.Site -OutputFolder $failFolder 6>$null
-$failCsv = @(Get-ChildItem -LiteralPath $failFolder -Filter 'PIIScan-*.csv')
-Assert-Equal 1 $failCsv.Count 'Report saved after a failure'
-Assert-Equal 'INCOMPLETE' (Import-Csv -LiteralPath $failCsv[0].FullName)[0].Detector 'Report says INCOMPLETE'
+$failBook = @(Get-ResultFiles $failFolder)
+Assert-Equal 1 $failBook.Count 'Results saved after a failure'
+Assert-Equal 'INCOMPLETE' (Get-XlsxSheets $failBook[0].FullName)['Not scanned'][1][0] 'Results say INCOMPLETE'
 Assert-Equal $true (Test-FakePnPCall 'Disconnect-PnPOnline') 'Signed out after a failure'
 
 # ---- A report that cannot be saved: the script still signs out ----
 Reset-FakePnP @{}
 $blocker = Join-Path $runFolder 'not-a-folder.txt'
 Set-Content -LiteralPath $blocker -Value 'x'
-$saveFailed = $false
-try { & $script -SiteUrl $Sample.Site -OutputFolder (Join-Path $blocker 'sub') 6>$null }
-catch { $saveFailed = $true }  # the save error is the expected result here
-Assert-Equal $true $saveFailed 'Save error reaches the person'
+$shown = (& $script -SiteUrl $Sample.Site -OutputFolder (Join-Path $blocker 'sub') 6>&1 | ForEach-Object { [string]$_ }) -join ' '
+Assert-Equal $true ($shown -match 'The results could not be saved') 'Save error reaches the person'
+Assert-Equal 1 (Get-FakeCallCount 'Read-Host') 'After a save error another site is still offered'
 Assert-Equal $true (Test-FakePnPCall 'Disconnect-PnPOnline') 'Signed out when the report could not be saved'
 
 Remove-Item -LiteralPath $runFolder -Recurse -Force

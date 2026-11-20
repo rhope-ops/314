@@ -1,6 +1,6 @@
-# Teams channel PII spot check
+# Ion: DoD365 PII Reporter
 
-A read-only PowerShell script that a **team member** runs to find files and posts in one Microsoft Teams team that may hold PII. It uses only your own access: owner rights are not needed, and a private or shared channel is scanned only if you are in it. It scans every standard channel, shows a progress bar and live counts while it works, then shows a readable summary on screen and saves both a readable text report and a CSV. **Every found value is masked** (for example `***-**-1234`), so the report is not a PII spill itself.
+A read-only PowerShell script that a **member** runs to find files that may hold PII in one Microsoft Teams team or SharePoint site. It uses only your own access: owner rights are not needed, and a private or shared channel is scanned only if you are in it. It scans every folder of the site's Documents library (in a team, one folder per standard channel) and the files at its top, with two progress bars (the whole scan, and the file in work) and live counts. At the end it shows the hits per PII type on screen and saves one Excel workbook: a Summary tab first, then one tab per PII type, worst first. **Every found value is masked** (for example `***-**-1234`), so the results are not a PII spill themselves.
 
 > This is a spot check, not a compliance control. The standard tool for PII in Teams is **Microsoft Purview** (DLP policies and Content Search), run by your wing's privacy or cybersecurity office.
 
@@ -8,10 +8,10 @@ A read-only PowerShell script that a **team member** runs to find files and post
 
 | Content | Scanned? | How |
 |---|---|---|
-| Files in standard channels (Shared tab, formerly Files) | Yes | Your own CAC sign-in to the team's SharePoint site |
+| Files in standard channels (Shared tab, formerly Files), or in a SharePoint site's Documents library (every folder and its top) | Yes | Your own CAC sign-in to that one site |
 | .docx .xlsx .pptx (and macro versions), .txt .csv .md .log .json .xml .html | Yes | Text read in memory; nothing saved to disk |
 | PDF, images, legacy .doc/.xls/.ppt, files over 25 MB | No | Listed as **NOT SCANNED**: check them by hand |
-| Channel posts and replies | Always tried; read only if your tenant allows it | Needs a Microsoft Graph permission (ChannelMessage.Read.All) that a tenant admin must approve. If it is missing, the report shows **BLOCKED** and the file scan still runs |
+| Channel posts and replies | No | One sign-in only (the PAM, 2026-11-20). Reading posts needs a Microsoft Graph permission (ChannelMessage.Read.All) that a tenant admin must approve; ask your privacy or cybersecurity office for a Microsoft Purview content search |
 | Private and shared channels | Run again with that channel's own site URL | Each one has its own SharePoint site |
 | 1:1 chats, group chats, meeting chats | No | Admin / Purview only |
 
@@ -38,40 +38,43 @@ Needs: Windows PowerShell 5.1 and PnP.PowerShell 1.12.0. No other modules, no ad
 
 1. Get the paste text: **Copy the script** on the site page, or open [paste/33332Z-pii-spot-check.ps1](https://raw.githubusercontent.com/rhope-ops/33-332.Z/main/paste/33332Z-pii-spot-check.ps1), select all (Ctrl+A) and copy (Ctrl+C). Its first lines repeat these steps.
 2. Open **Windows PowerShell ISE**, choose **File > New**, paste into the script pane (Ctrl+V) and press **F5**.
-3. When asked, paste the team (see "The team to scan" below), then sign in with your CAC. If you do not see the sign-in window, press Alt+Tab.
-4. Watch the progress bar (files done of the total, read, not scanned, possible PII, time used and time left) and the line printed for each channel.
-5. Posts: a second sign-in window opens for Microsoft Graph. If your tenant refuses it, close the window: the file results are kept and the report shows **BLOCKED**.
-6. Read the summary on screen. The paths of both saved files are printed at the end (default folder: `Documents\PII-Scan`).
+3. When asked, paste the team or site (see "The team or site to scan" below), then sign in with your CAC. If you do not see the sign-in window, press Alt+Tab. A wrong paste is explained and asked again; a site you cannot open says "No access" (close the sign-in window if it shows an access page) and nothing is saved for it.
+4. Watch the progress bar (files done of the total, read, not scanned, possible PII per type, time used and time left). Under it, a coloured line of live counts appears every 10 seconds and after each folder. Files of 1 MB or more get a second bar: their size and step (download, read, check). PnP gives no byte count while it downloads, so a large file moves by step.
+5. Read the summary on screen: a boxed table of hits per PII type (red with High hits, gold with Medium), the files with the most serious hits, and the time spent downloading and checking. Then paste another site to scan it, or press Enter to exit. The path of the results workbook is printed at the end: `Documents\Ion\<site>\<yyyy-MM-dd>\Ion Results <HH-mm-ss>.xlsx`.
 
-The team to scan, one of:
+The team or site to scan, one of:
 
 - **Teams link:** in Teams, open the team or one of its channels, click the **...** next to its name, then **Copy link** (`https://<teams-host>/l/team/...?groupId=...`). The script then asks for the team's site address (the team's Shared tab > **...** > **Open in SharePoint**) and checks that the site belongs to the team in the link (by its group ID) before it reads anything.
 - **SharePoint address:** in the team's **Shared** tab, click **...** > **Open in SharePoint** and copy the address (`https://usaf.dps.mil/teams/<team-site>`; some sites use `/sites/`). A file's **Copy link** from the **Shared** tab works too. Anything after the site name is cut off. `https://` may be left out.
 
-What each report holds:
+The results workbook (one per run; a run never overwrites an earlier one):
 
-| Report | Use it to | Holds |
-|---|---|---|
-| Screen and `.txt` | Read and print | Totals; items with possible PII (highest confidence first); hits per type; each hit with its masked value and masked context; items not scanned |
-| `.csv` | Sort and filter in Excel | One row per hit or note: Source, Channel, Item, Detector, Confidence, MaskedValue, Context, Modified, Link |
+| Tab | Holds |
+|---|---|
+| Summary (first) | The site, the folders, the run time; totals (files read, files with possible PII, hits, High / Medium / Low, not scanned); hits per PII type, worst first; how to read the tabs; the breach step |
+| One tab per PII type | High and Medium hits of that type, in this order of tabs: SSN, Date of birth, Passport, Payment card, DoD ID, Home address, Name, Phone, Personal e-mail (the PAM's order, 2026-11-20; AFI 33-332 gives no ranking). Columns: Confidence, Channel (a team) or Folder (a plain site), Item, Masked value, Context, Modified, Link, Found in. Header frozen, filter buttons on |
+| Low confidence | Every Low hit (for example 9 bare digits), with its type: kept apart to cut noise |
+| Not scanned | Files not read (PDF, images, too large, damaged) and a scan that stopped early: check these by hand |
+
+**Fewer false positives** (the PAM, 2026-11-20): Word field codes (a table of contents' `_Toc123456789` bookmarks) are not read; a number glued to letters (`ABC123456789`) is no SSN, phone or card; a card number must also have a card network's prefix and length; an e-mail at a personal provider (Gmail, Yahoo, Outlook ...) is Medium, at any other non-government domain Low. **Excel files:** each cell is read on its own, so values in neighbouring cells never join into one number. Formula text, decimals (a time such as `45231.4166…`) and exponents are skipped: they made false positives.
 
 Optional settings at the top of the paste text (edit them in ISE before F5):
 
 | Setting | Meaning |
 |---|---|
 | `$SiteUrl` | The team's Teams link, or its site `https://usaf.dps.mil/teams/<team-site>`; empty = asked |
-| `$OutputFolder` | Where to save the report files (default `Documents\PII-Scan`) |
+| `$OutputFolder` | Where to save the results: a folder per site, then per day (default `Documents\Ion`) |
 | `$MaxFileMB` | Size limit per file (default 25) |
 
 ## Safety
 
 - **Read-only:** it never changes, moves or deletes anything in Teams or SharePoint.
-- **One team only:** it touches only the team you give: its site. It never lists other sites or teams.
+- **One site only:** it touches only the team or site you give. It never lists other sites or teams.
 - **No stored credentials:** your own CAC sign-in each run.
-- **Masked report:** the screen, the `.txt` and the `.csv` never hold a full value. The context snippet is cut from text that is already masked (digits become `#`, found values and e-mail names become `*`), so a cut cannot expose part of a value. Names the report shows as they are (file, folder and channel names, error messages) get a stricter mask: found values are masked, then every digit becomes `#` and every e-mail name `***` (so `FY27 Plan.docx` shows as `FY## Plan.docx`). A link goes to the file only when its path has nothing to mask; else to the deepest clean folder.
-- **Safe CSV:** a cell that Excel would read as a formula gets a leading `'`.
-- **Stops cleanly:** if something fails part way or you press Ctrl+C, the report is still saved and says INCOMPLETE; the script signs out even if the report cannot be saved.
-- **Handle the reports as CUI anyway:** file names and masked fragments still point to where PII is.
+- **Masked results:** the screen and the workbook never hold a full value. The context snippet is cut from text that is already masked (digits become `#`, found values and e-mail names become `*`), so a cut cannot expose part of a value. Names the report shows as they are (file, folder and channel names, error messages) get a stricter mask: found values are masked, then every digit becomes `#` and every e-mail name `***` (so `FY27 Plan.docx` shows as `FY## Plan.docx`). A link goes to the file only when its path has nothing to mask; else to the deepest clean folder.
+- **No formulas:** every text cell of the workbook is plain text, so text from a scanned file cannot run as a formula in Excel. The site folder name is masked like any other name.
+- **Stops cleanly:** if something fails part way or you press Ctrl+C, the workbook is still saved and says INCOMPLETE; the script signs out even if it cannot be saved.
+- **Handle the workbook as CUI anyway:** file names and masked fragments still point to where PII is.
 - PII where it should not be is a potential or actual breach; report it to your servicing Privacy Manager/Monitor without delay (AFI 33-332 para 3.1.2, as changed by AFI33-332_DAFGM2026-01, 7 July 2026, page 1, second paragraph).
 
 ## Files
@@ -80,18 +83,19 @@ Each file starts with a header: purpose, inputs, outputs, how to run, run target
 
 | File | What it does |
 |---|---|
-| `src/Find-ChannelPII.ps1` | Entry point: the six steps (address, sign-in, channels, files, posts, report) |
-| `src/ChannelScan.psm1` | SharePoint and Teams steps: check the address, list channels, read files, try posts |
+| `src/Find-ChannelPII.ps1` | Entry point: the five steps (address, sign-in, folders, files, results) |
+| `src/ChannelScan.psm1` | SharePoint and Teams steps: check the address, team or plain site, list folders, read files |
 | `src/TextExtract.psm1` | Text from Office files, text files and HTML, in memory |
 | `src/PiiDetectors.psm1` | One detector per PII type; finds positions and raw values |
 | `src/PiiMasking.psm1` | Masks every value and snippet; the only way results leave the detectors |
-| `src/Report.psm1` | Screen summary, the `.txt` and `.csv` files |
-| `src/ScanMeter.psm1` | The progress bar text and the line per channel: counts only, channel names masked |
+| `src/Report.psm1` | Screen summary, the severity order, the workbook tabs and where the workbook is saved |
+| `src/XlsxWriter.psm1` | Writes the .xlsx workbook with .NET only (no Excel, no module) |
+| `src/ScanMeter.psm1` | The two progress bars and the line per folder: counts, sizes and steps only; folder names masked |
 | `tests/Run-Tests.ps1` | Runs all tests (invented data, fake PnP cmdlets, no network) |
 | `tests/TestKit.ps1`, `tests/FakePnP.ps1` | The test assertion and samples; the fake PnP cmdlets |
 | `tests/*.Tests.ps1` | One test file per module, a start-to-end run, and a run of the paste text |
 | `tests/Lint.ps1` | Windows PowerShell 5.1 syntax check (PSScriptAnalyzer) |
-| `paste/33332Z-pii-spot-check.ps1` | GENERATED: the one text you paste into ISE (the run steps, then a Settings block, the six modules and the script) |
+| `paste/33332Z-pii-spot-check.ps1` | GENERATED: the one text you paste into ISE (the run steps, then a Settings block, the seven modules and the script) |
 | `scripts/build_paste.py` | Builds the paste text from `src/`; `--check` fails when it is out of date |
 | `ref/afi33-332.pdf`, `ref/afi33-332.txt` | The rule source: AFI 33-332 with AFI33-332_DAFGM2026-01 (edition: docs/DECISIONS.md) |
 

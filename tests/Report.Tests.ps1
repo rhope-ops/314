@@ -1,9 +1,9 @@
 <#
-Report.Tests.ps1 - tests of Report.psm1: the readable text report, the CSV, and that both are always saved.
+Report.Tests.ps1 - tests of Report.psm1 and XlsxWriter.psm1: the screen summary and the results workbook.
 
-  Purpose:     Both files (.txt and .csv) are always saved; reports are never overwritten; the CSV
-               holds masked values only and no cell Excel would read as a formula; empty results still
-               give a file.
+  Purpose:     The workbook goes to <site>\<day>, never overwrites, has the Summary tab first and one tab per PII
+               type worst first, holds masked values only and no formula; the folder column is named for a team
+               or a site; the screen shows hits per type.
   Inputs:      $Sample (TestKit.ps1).
   Outputs:     passes and failures counted by Assert-Equal.
   How to run:  dot-sourced by tests/Run-Tests.ps1.
@@ -21,28 +21,60 @@ $reportRows = @(
     (New-ReportRow 'File' 'Ops' 'scan.pdf' '' '' 'NOT SCANNED' '' '' 'File type is not read by this script')
 )
 
-# ---- Both files are always saved ----
-$both = @(Publish-ScanReport -Rows $reportRows -ItemsScanned 2 -Header @('Site: test') -OutputFolder $reportFolder 6>$null)
-Assert-Equal '.csv .txt' (($both | ForEach-Object { [System.IO.Path]::GetExtension($_) } | Sort-Object) -join ' ') 'Saves both .txt and .csv'
-$again = @(Publish-ScanReport -Rows $reportRows -ItemsScanned 2 -Header @() -OutputFolder $reportFolder 6>$null)
-Assert-Equal 2 $again.Count 'A second run saves two files too'
-Assert-Equal 4 @(Get-ChildItem -LiteralPath $reportFolder).Count 'No report overwritten'
+# ---- The workbook: Summary first, one tab per type (worst first), Low confidence, Not scanned ----
+$dob = @(Find-PiiInText 'DOB: 03/14/1985')[0]
+$reportRows += (New-ReportRow 'File' 'Ops' 'Recall.xlsx' '' '' $dob.Detector $dob.Confidence $dob.MaskedValue $dob.Context)
+$header = [ordered]@{ Site = 'https://tenant.example.com/teams/TeamA'; Channels = 'General, Ops' }
+$path = Publish-ScanReport -Rows $reportRows -ItemsScanned 2 -Header $header -OutputFolder $reportFolder -SiteUrl $header.Site -FolderLabel 'Channel' 6>$null
+$day = Split-Path $path -Parent
+Assert-Equal ('TeamA/' + (Get-Date -Format 'yyyy-MM-dd')) ((Split-Path (Split-Path $day -Parent) -Leaf) + '/' + (Split-Path $day -Leaf)) 'Saved in <site>\<day>'
+Assert-Equal $true ((Split-Path $path -Leaf) -match '^Ion Results \d\d-\d\d-\d\d\.xlsx$') 'Named Ion Results <time>.xlsx'
+$book = Get-XlsxSheets $path
+Assert-Equal 'Summary|SSN|Date of birth|Low confidence|Not scanned' (@($book.Keys) -join '|') 'Tabs: Summary, types worst first, Low, Not scanned'
+Assert-Equal 'Confidence|Channel|Item|Masked value|Context|Modified|Link|Found in' ($book['SSN'][0] -join '|') 'Hit tab header, folder column named Channel for a team'
+Assert-Equal 'High|General|Roster.docx|***-**-6789' (($book['SSN'][1] | Select-Object -First 4) -join '|') 'SSN tab row'
+Assert-Equal 'Phone' $book['Low confidence'][1][0] 'Low hit in the Low confidence tab, with its type'
+Assert-Equal '=HYPERLINK("x")' $book['Low confidence'][1][5] 'Formula-like text kept as plain text (an inline string is never a formula)'
+Assert-Equal 'NOT SCANNED|Ops|scan.pdf' (($book['Not scanned'][1] | Select-Object -First 3) -join '|') 'Not scanned tab row'
+$summary = ($book['Summary'] | ForEach-Object { $_ -join '|' }) -join "`n"
+Assert-Equal $true ($summary -match 'Possible PII hits\|3') 'Summary: total hits'
+$typeRows = $summary -match '(?m)^SSN\|1\|0\|0\|1$' -and $summary -match '(?m)^Date of birth\|1\|0\|0\|1$' -and $summary -match '(?m)^Phone\|0\|0\|1\|1$'
+Assert-Equal $true $typeRows 'Summary: hits per type (High, Medium, Low, Total), worst first'
+Assert-Equal $true ($summary -match 'potential or actual breach' -and $summary -match 'para 3\.1\.2') 'Summary gives the cited breach step'
+$allCells = ($book.Values | ForEach-Object { $_ | ForEach-Object { $_ -join ' ' } }) -join ' '
+Assert-Equal $false $allCells.Contains($Sample.Ssn) 'Workbook has no full SSN'
+$again = Publish-ScanReport -Rows $reportRows -ItemsScanned 2 -Header $header -OutputFolder $reportFolder -SiteUrl $header.Site 6>$null
+Assert-Equal $true ($again -ne $path) 'A second run never overwrites the first'
+Assert-Equal 'Folder' (Get-XlsxSheets $again)['SSN'][0][1] 'Folder column named Folder for a plain site'
+$plain = @(Get-WorkbookSheets @() 0 ([ordered]@{}) 'Folder')
+Assert-Equal 'Summary' (@($plain | ForEach-Object { $_.Name }) -join '|') 'No hits: only the Summary tab'
 
-# ---- The readable report ----
-$text = Get-Content -LiteralPath ($both | Where-Object { $_ -like '*.txt' }) -Raw
-Assert-Equal $true ($text.Contains('ITEMS WITH POSSIBLE PII') -and $text.Contains('HITS PER TYPE') -and $text.Contains('EACH HIT')) 'Text report sections'
-Assert-Equal $true ($text -match 'SSN\s+High\s+1') 'Hits-per-type table filled'
-Assert-Equal $true $text.Contains('scan.pdf') 'Not-scanned item listed'
-Assert-Equal $false $text.Contains($Sample.Ssn) 'Text report has no full SSN'
-Assert-Equal $true ($text -match 'potential or actual breach; report it to your servicing Privacy' -and $text -match 'para 3\.1\.2') 'Text report gives the cited breach step'
+# ---- The workbook writer: odd text and odd tab names ----
+$oddPath = Join-Path $reportFolder 'odd.xlsx'
+$long = 'x' * 40000
+Export-Xlsx -Path $oddPath -Sheets @(
+    (New-XlsxSheet 'A:B/C?D*E[F]G and a very long tab name past 31' @('Text') @(, @('bad' + [char]1 + 'char <&>')) @(20) -List),
+    (New-XlsxSheet 'A:B/C?D*E[F]G and a very long tab name past 31' @('Text') @(, @($long)) @(20) -List))
+$odd = Get-XlsxSheets $oddPath
+Assert-Equal 'A-B-C-D-E-F-G and a very long t|A-B-C-D-E-F-G and a very lo (2)' (@($odd.Keys) -join '|') 'Tab names: bad characters replaced, cut to 31, made unique'
+Assert-Equal 'badchar <&>' (@($odd.Values)[0][1][0]) 'Characters XML does not allow dropped; <&> kept as text'
+Assert-Equal 32767 (@($odd.Values)[1][1][0]).Length 'A cell is cut at 32,767 characters'
+$refused = $false
+try { Export-Xlsx -Path $oddPath -Sheets @((New-XlsxSheet 'S' @('T') @() @(5))) } catch { $refused = $true }  # expected: the file exists
+Assert-Equal $true $refused 'An existing workbook is never overwritten'
+Assert-Equal $true ((Get-ResultPath $reportFolder 'https://tenant.example.com/teams/CON') -match '[\\/]_CON[\\/]') 'A Windows device name gets a leading _'
+Assert-Equal $true ((Get-ResultPath $reportFolder 'https://tenant.example.com/teams/nul.x') -match '[\\/]_nul\.x[\\/]') 'A device name with an extension too'
 
-# ---- The CSV ----
-$csv = Get-Content -LiteralPath ($both | Where-Object { $_ -like '*.csv' }) -Raw
-Assert-Equal $true $csv.Contains('***-**-6789') 'CSV has the masked SSN'
-Assert-Equal $false $csv.Contains($Sample.Ssn) 'CSV has no full SSN'
-Assert-Equal $true $csv.Contains("""'=HYPERLINK") 'Formula-like cell made plain text'
-$empty = Export-ScanCsv -Rows @() -OutputFolder $reportFolder -Stamp 'empty'
-Assert-Equal 1 @(Get-Content -LiteralPath $empty).Count 'Empty CSV has the header row'
+# ---- The screen summary ----
+$screenLines = @(Get-ScanSummaryText -Rows $reportRows -ItemsScanned 2 -Header $header -FolderLabel 'Channel')
+$screen = ($screenLines | ForEach-Object { $_.Text }) -join "`n"
+Assert-Equal $true ($screen -match 'POSSIBLE PII BY TYPE' -and $screen -match '\| SSN\s+\|\s+1 \|\s+0 \|\s+0 \|\s+1 \|') 'Screen: boxed table of hits per type (High, Medium, Low, Total)'
+Assert-Equal 'Alert' ($screenLines | Where-Object { $_.Text -match '^\| SSN ' } | Select-Object -First 1).Kind 'Screen: a type with High hits is red'
+Assert-Equal 'Muted' ($screenLines | Where-Object { $_.Text -match '^\| Phone ' } | Select-Object -First 1).Kind 'Screen: a type with only Low hits is grey'
+Assert-Equal $true ($screen.IndexOf('SSN ') -lt $screen.IndexOf('Date of birth')) 'Screen: worst type first'
+Assert-Equal $false $screen.Contains($Sample.Ssn) 'Screen: no full SSN'
+$masked = Get-ResultPath $reportFolder ('https://tenant.example.com/teams/' + $Sample.SsnBare)
+Assert-Equal $false $masked.Contains($Sample.SsnBare) 'A site name that looks like PII is masked in the folder name'
 
 # ---- A run that did not reach its end (Ctrl+C runs 'finally' but not 'catch') ----
 $cancelRows = New-Object System.Collections.Generic.List[object]

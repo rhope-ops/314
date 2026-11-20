@@ -1,50 +1,51 @@
 <#
 .SYNOPSIS
-  Find-ChannelPII.ps1 - read-only spot check of one Microsoft Teams team for possible PII.
+  Find-ChannelPII.ps1 - Ion, DoD365 PII Reporter: read-only check of one Teams team or SharePoint site for possible PII.
 
 .DESCRIPTION
-  Scans the files of all standard channels of a team (the team site's "Shared Documents" library), then
-  tries to scan the channel posts and replies. A progress bar and one line per channel show the counts as
-  it goes. Shows a readable summary on screen and saves a readable text report and a CSV. Every value
-  found is MASKED on screen and in the files.
+  Scans the files of a team's or site's "Shared Documents" library: every folder (in a team, one per standard
+  channel) and the files at the top of the library. Two progress bars (the whole scan, and the file in work)
+  and one line per folder show the counts as it goes. At the end it shows the hits per PII type on screen and
+  saves one Excel workbook: a Summary tab first, then one tab per PII type (worst first), Low confidence and
+  Not scanned. Every value found is MASKED on screen and in the workbook.
 
-  Purpose:     Help a team member (owner rights are not needed) find files and posts that may hold PII, so they can review them.
-               A spot check, not a replacement for Microsoft Purview DLP or Content Search.
-  Inputs:      the team's Teams link or site address (asked when not given).
-  Outputs:     progress and the summary on screen; PIIScan-<time>.txt and PIIScan-<time>.csv in -OutputFolder.
+  Purpose:     Help a team or site member (owner rights are not needed) find files that may hold PII, so they can
+               review them. A spot check, not a replacement for Microsoft Purview DLP or Content Search.
+  Inputs:      the Teams link or SharePoint site address (asked when not given).
+  Outputs:     progress and the summary on screen; <OutputFolder>\<site>\<yyyy-MM-dd>\Ion Results <HH-mm-ss>.xlsx.
   How to run:  .\Find-ChannelPII.ps1   (README.md "Run it" gives every step)
   Run target:  Windows PowerShell 5.1 (also PowerShell 7) with PnP.PowerShell 1.12.0. No other modules.
-  Network:     only the one team's SharePoint site, then Microsoft Graph for that one team (posts).
-  Writes:      only the report files in -OutputFolder (default Documents\PII-Scan); nothing in Teams or SharePoint.
+  Network:     only the one SharePoint site given. Channel posts are not read (the PAM, 2026-11-20).
+  Writes:      only the workbook in -OutputFolder (default Documents\Ion); nothing in Teams or SharePoint.
   Credentials: the person's own CAC sign-in in the PnP sign-in window; nothing is stored or saved.
 
-  Policy:      Read-only; one team only (no network reconnaissance); file content stays in memory; values
+  Policy:      Read-only; one site only (no network reconnaissance); file content stays in memory; values
                masked (the PAM, 2026-11-20). No script file is collected or sent: script types are not
                read and only their (masked) names appear in the report.
-  Not scanned: PDF, images, legacy .doc/.xls/.ppt (reported as NOT SCANNED); private and shared channels
-               (each has its own site: run again with that site's address); 1:1, group and meeting chats.
+  Not scanned: PDF, images, legacy .doc/.xls/.ppt (reported as NOT SCANNED); channel posts; private and shared
+               channels (each has its own site: run again with that site's address); 1:1, group and meeting chats.
 
 .PARAMETER SiteUrl
-  The team's Teams link or its SharePoint site address.
+  The Teams link or the SharePoint site address.
   Teams link: in Teams, open the team or one of its channels, click the ... next to its name > Copy link
   (https://<teams-host>/l/team/...?groupId=...). The script asks for the team's site address and checks the site belongs to that team.
-  Site address: the team's Shared tab > ... > Open in SharePoint (https://usaf.dps.mil/teams/<team-site>);
-  a file's Copy link from the Shared tab works too. Anything after the site name is cut off.
+  Site address: in Teams, the Shared tab > ... > Open in SharePoint (https://usaf.dps.mil/teams/<team-site> or /sites/);
+  a file's Copy link works too. Anything after the site name is cut off.
 .PARAMETER OutputFolder
-  Where to save the report files. Default: Documents\PII-Scan in your profile.
+  Where to save the results: a folder per site, then a folder per day. Default: Documents\Ion in your profile.
 .PARAMETER MaxFileMB
   Files larger than this are reported as NOT SCANNED. Default 25.
 
 .EXAMPLE
   .\Find-ChannelPII.ps1
-  Asks for the Teams link or site address, then scans every channel's files and posts.
+  Asks for the Teams link or site address, then scans every folder's files.
 .EXAMPLE
   .\Find-ChannelPII.ps1 -SiteUrl https://usaf.dps.mil/teams/<team-site>
 #>
 [CmdletBinding()]
 param(
     [string]$SiteUrl,
-    [string]$OutputFolder = (Join-Path ([Environment]::GetFolderPath('MyDocuments')) 'PII-Scan'),
+    [string]$OutputFolder = (Join-Path ([Environment]::GetFolderPath('MyDocuments')) 'Ion'),
     # 25 MB: larger Office files are rare in a channel and slow to read in memory. The author's choice, 2026-11-20.
     [int]$MaxFileMB = 25
 )
@@ -53,61 +54,81 @@ Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
 
 # Modules, in dependency order (each module's header names what it needs).
-foreach ($module in @('PiiDetectors.psm1', 'PiiMasking.psm1', 'TextExtract.psm1', 'Report.psm1', 'ScanMeter.psm1', 'ChannelScan.psm1')) {
+foreach ($module in @('PiiDetectors.psm1', 'PiiMasking.psm1', 'TextExtract.psm1', 'XlsxWriter.psm1', 'Report.psm1', 'ScanMeter.psm1', 'ChannelScan.psm1')) {
     Import-Module (Join-Path $PSScriptRoot $module) -Force
 }
 
 # ==== Body ==== (scripts/build_paste.py copies everything from this line into the paste bundle; the lines above
 # become the bundle's Settings block and its inline module code)
 
-Write-Host 'Teams channel PII spot check (read-only). Values in the report are masked.' -ForegroundColor Cyan
-
-# ---- Step 1: the Teams link or site address (only this one team is touched) ----
-if (-not $SiteUrl) { $SiteUrl = Read-Host 'Teams link of the team or channel, or its site address (https://usaf.dps.mil/teams/<team-site>)' }
-$target = Get-ScanTarget $SiteUrl
-
-# ---- Step 2: sign in with the person's own CAC (a Teams link first finds the team's site) ----
-$SiteUrl = Connect-TeamSite $target
-
-$rows = New-Object System.Collections.Generic.List[object]
-$scanned = 0
-$selected = @()
-$finished = $false   # set only after the last step; a cancelled run (Ctrl+C) skips 'catch' but not 'finally'
-try {
-    # ---- Step 3: the channels to scan: all of them ----
-    $library = Get-TeamDocumentLibrary
-    $selected = @(Get-ChannelFolderNames $library)
-    Write-Host ('Channels to scan: ' + (($selected | ForEach-Object { Protect-PiiText $_ }) -join ', '))
-
-    # ---- Step 4: the files ----
-    $scanned += Invoke-FileScan -Library $library -Channels $selected -SiteUrl $SiteUrl -MaxFileMB $MaxFileMB -Rows $rows
-
-    # ---- Step 5: the posts (a refusal becomes a BLOCKED row; the file results stay) ----
-    $scanned += Invoke-PostScan -SiteUrl $SiteUrl -Channels $selected -Rows $rows
-    $finished = $true
-}
-catch {
-    # Keep what was found so far: the report says the scan stopped early, and why (PII in the message masked).
-    $reason = Protect-PiiText $_.Exception.Message
-    Write-Host ('The scan stopped early: ' + $reason) -ForegroundColor Red
-    $rows.Add((New-ReportRow 'Scan' '(all)' '(scan)' '' '' 'INCOMPLETE' '' '' ('Stopped early: ' + $reason)))
-}
-finally {
-    # ---- Step 6: the report (also after an error or a cancel), then sign out ----
-    Add-IncompleteRow -Rows $rows -Finished $finished
-    $postsLine = 'tried (see BLOCKED rows if refused)'
-    $header = @(
-        ('Site:     ' + $SiteUrl),
-        ('Channels: ' + (($selected | ForEach-Object { Protect-PiiText $_ }) -join ', ')),
-        ('Posts:    ' + $postsLine),
-        ('Run:      ' + (Get-Date -Format 'yyyy-MM-dd HH:mm'))
-    )
+function Invoke-SiteFiles {
+    <#
+    .SYNOPSIS
+      Scans one signed-in site: its folders and files, then saves the workbook and signs out (also after an error or
+      a cancel: the results so far are saved and say INCOMPLETE).
+    .PARAMETER SiteUrl
+      The signed-in site.
+    .PARAMETER OutputFolder
+      The base folder for the results.
+    .PARAMETER MaxFileMB
+      Files larger than this are reported as NOT SCANNED.
+    #>
+    param([string]$SiteUrl, [string]$OutputFolder, [int]$MaxFileMB)
+    $clock = [Diagnostics.Stopwatch]::StartNew()
+    $rows = New-Object System.Collections.Generic.List[object]
+    $scanned = 0
+    $selected = @()
+    $folderLabel = 'Folder'   # 'Channel' when the site belongs to a team (the PAM, 2026-11-20)
+    $finished = $false   # set only after the last step; a cancelled run (Ctrl+C) skips 'catch' but not 'finally'
     try {
-        $null = Publish-ScanReport -Rows $rows.ToArray() -ItemsScanned $scanned -Header $header -OutputFolder $OutputFolder
+        # Only the column name depends on it: if the site's group cannot be read, the scan goes on with 'Folder'.
+        try { if (Test-TeamSite) { $folderLabel = 'Channel' } }
+        catch { Write-Verbose 'Team check not possible: the folder column is named Folder.' }
+        $library = Get-TeamDocumentLibrary
+        $selected = @(Get-ChannelFolderNames $library)
+        Write-Ui ($folderLabel + 's to scan: ' + (($selected | ForEach-Object { Protect-PiiText $_ }) -join ', ') + '; also any files at the top of the library') 'Text'
+        $scanned += Invoke-FileScan -Library $library -Channels $selected -SiteUrl $SiteUrl -MaxFileMB $MaxFileMB -Rows $rows
+        $finished = $true
+    }
+    catch {
+        # Keep what was found so far: the results say the scan stopped early, and why, in words a person can act on.
+        $reason = Protect-PiiText $_.Exception.Message
+        Write-Ui ('The scan stopped early: ' + $reason) 'Alert'
+        $rows.Add((New-ReportRow 'Scan' '(all)' '(scan)' '' '' 'INCOMPLETE' '' '' ('Stopped early: ' + $reason)))
     }
     finally {
-        # Sign out even when the report could not be saved (for example, a folder that cannot be written).
-        try { Disconnect-PnPOnline }
-        catch { Write-Verbose 'Already signed out.' }  # nothing to sign out of: not an error for the person
+        Add-IncompleteRow -Rows $rows -Finished $finished
+        $header = [ordered]@{}
+        $header['Site'] = $SiteUrl
+        $header[$folderLabel + 's'] = ($selected | ForEach-Object { Protect-PiiText $_ }) -join ', '
+        $header['Run'] = Get-Date -Format 'yyyy-MM-dd HH:mm'
+        $header['Time used'] = '{0:00}:{1:00}' -f [int][Math]::Floor($clock.Elapsed.TotalMinutes), $clock.Elapsed.Seconds
+        foreach ($pair in (Get-ScanTiming).GetEnumerator()) { $header[$pair.Key] = $pair.Value }
+        try { $null = Publish-ScanReport -Rows $rows.ToArray() -ItemsScanned $scanned -Header $header -OutputFolder $OutputFolder -SiteUrl $SiteUrl -FolderLabel $folderLabel }
+        finally {
+            # Sign out even when the results could not be saved (for example, a folder that cannot be written).
+            try { Disconnect-PnPOnline }
+            catch { Write-Verbose 'Already signed out.' }  # nothing to sign out of: not an error for the person
+        }
     }
 }
+
+Write-Ui 'Ion - DoD365 PII Reporter (read-only). Values in the results are masked.' 'Title'
+
+# ---- Ask for a site, sign in, scan, save; then offer another site, until the person presses Enter ----
+# A wrong paste is explained and asked again (Read-ScanTarget); a site the person cannot open is reported as
+# "no access" and nothing is saved for it (Connect-TeamSite); only the one site given is touched each time.
+$target = Read-ScanTarget $SiteUrl 'Teams link or SharePoint site address (https://usaf.dps.mil/teams/<team-site>), or Enter to exit'
+while ($null -ne $target) {
+    $site = $null
+    try { $site = Connect-TeamSite $target }
+    catch { Write-Ui $_.Exception.Message 'Alert' }
+    if ($site) {
+        # A results file that cannot be saved (a folder that cannot be written) is reported; the next site is still offered.
+        try { Invoke-SiteFiles -SiteUrl $site -OutputFolder $OutputFolder -MaxFileMB $MaxFileMB }
+        catch { Write-Ui ('The results could not be saved: ' + (Protect-PiiText $_.Exception.Message)) 'Alert' }
+    }
+    Write-Ui ''
+    $target = Read-ScanTarget '' 'Scan another site? Paste its Teams link or site address, or press Enter to exit'
+}
+Write-Ui 'Ion is done: nothing stays signed in.' 'Muted'

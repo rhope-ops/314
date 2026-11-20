@@ -1,8 +1,8 @@
 <#
 ChannelScan.Tests.ps1 - tests of ChannelScan.psm1 against the fake PnP cmdlets (FakePnP.ps1).
 
-  Purpose:     Site address check; the progress meter text; file scan (hits, NOT SCANNED, masked file names, links);
-               the download fallback without -AsMemoryStream; posts refused and posts allowed.
+  Purpose:     Site address check; team or plain site; the progress meter text; file scan (hits, NOT SCANNED, masked file names, links);
+               the download fallback without -AsMemoryStream.
   Inputs:      $Sample, $Docx, $Txt (earlier test files); the fakes.
   Outputs:     passes and failures counted by Assert-Equal.
   How to run:  dot-sourced by tests/Run-Tests.ps1.
@@ -42,6 +42,7 @@ Set-FakeSiteAnswer -TypedSite 'https://tenant.example.com/teams/TeamA/Shared%20D
 Assert-Equal 'https://tenant.example.com/teams/TeamA' (Connect-TeamSite (Get-ScanTarget $teamLink) 6>$null) 'Teams link: the typed address, cut to the site'
 Assert-Equal $true (Test-FakePnPCall 'Read-Host') 'Teams link: the site address is asked for'
 Assert-Equal 'https://tenant.example.com/teams/TeamA' ((Get-FakePnPConnection) -join ' ') 'Teams link: one sign-in, to the team site only (no tenant root)'
+Assert-Equal $true (Test-FakePnPCall 'Quiet sign-in https://tenant.example.com/teams/TeamA') 'Sign-in warnings hidden'
 Reset-FakePnP @{}
 Set-FakeSiteAnswer -TypedSite 'https://tenant.example.com/teams/TeamB' -SiteGroupId '99999999-2222-3333-4444-555555555555'
 $refused = $false
@@ -58,12 +59,13 @@ Assert-Equal $true (Get-ScanTarget $channelLink).IsChannel 'Channel link marked 
 Assert-Equal $groupId (Get-ScanTarget ('https://teams.example.com/l/channel/19%3aabc/My Channel?groupId=' + $groupId)).GroupId `
     'Channel link with a raw space read'
 Reset-FakePnP @{}
+Set-FakeSiteAnswer -TypedSite 'https://tenant.example.com/teams/TeamA'
 $printed = (Connect-TeamSite (Get-ScanTarget $channelLink) 6>&1 | Where-Object { $_ -is [System.Management.Automation.InformationRecord] }) -join ' '
 Assert-Equal $true ($printed -match 'private or shared channel has its own site') 'Channel link prints the private-channel note'
 Reset-FakePnP @{}
 Set-FakeSiteAnswer -TypedSite 'cancel'
 $refused = $false
-try { Connect-TeamSite (Get-ScanTarget $teamLink) 6>$null | Out-Null } catch { $refused = ($_.Exception.Message -match 'prompt cancelled') }  # expected
+try { Connect-TeamSite (Get-ScanTarget $teamLink) 6>$null | Out-Null } catch { $refused = ($_.Exception.Message -match 'did not finish') }  # expected
 Assert-Equal $true ($refused -and (Test-FakePnPCall 'Read-Host') -and (Test-FakePnPCall 'Disconnect-PnPOnline')) 'Failed address prompt: signed out'
 $twoLinks = 'https://teams.example.com/l/team/A see also https://teams.example.com/l/team/B?groupId=' + $groupId
 $refused = $false
@@ -73,6 +75,7 @@ $refused = $false
 try { Get-ScanTarget ('https://teams.example.com/l/team/A see also teams.example.com/l/team/B?groupId=' + $groupId) | Out-Null } catch { $refused = $true }
 Assert-Equal $true $refused 'A second link without https:// is not read either'
 Reset-FakePnP @{}
+Set-FakeSiteAnswer -TypedSite 'https://tenant.example.com/teams/TeamA'
 $null = Connect-TeamSite (Get-ScanTarget $teamLink) 6>$null
 Assert-Equal $false (Test-FakePnPCall 'Disconnect-PnPOnline') 'Teams link: still signed in after success'
 Reset-FakePnP @{}
@@ -102,6 +105,9 @@ $lib = Get-TeamDocumentLibrary
 Assert-Equal 'General Ops' (Get-ChannelFolderNames $lib) 'Channel folders without Forms'
 $rows = New-Object System.Collections.Generic.List[object]
 Assert-Equal 3 (Invoke-FileScan -Library $lib -Channels @('General', 'Ops') -SiteUrl $Sample.Site -MaxFileMB 25 -Rows $rows 6>$null) 'Files scanned'
+Assert-Equal 4 (Get-FakeCallCount 'Progress done 2') 'Per-file bar closed after each file, also a skipped one'
+Write-FileStep (2MB) 'Downloading' 10
+Assert-Equal $true (Test-FakePnPCall 'Progress 2 under 1') 'Per-file bar sits under the main bar'
 Assert-Equal 1 @($rows | Where-Object { $_.Detector -eq 'SSN' -and $_.Item -eq 'Roster.docx' }).Count 'SSN found in docx'
 Assert-Equal 1 @($rows | Where-Object { $_.Detector -eq 'Phone' -and $_.Item -eq 'notes.txt' }).Count 'Phone found in txt'
 Assert-Equal 1 @($rows | Where-Object { $_.Detector -eq 'NOT SCANNED' -and $_.Item -eq 'scan #A.pdf' }).Count 'pdf listed'
@@ -109,6 +115,17 @@ Assert-Equal 'https://tenant.example.com/sites/TeamA/Shared%20Documents/General/
     ($rows | Where-Object { $_.Item -eq 'Roster.docx' } | Select-Object -First 1).Link 'Link built'
 Assert-Equal 'https://tenant.example.com/sites/TeamA/Shared%20Documents/Ops/scan%20%23A.pdf' `
     ($rows | Where-Object { $_.Item -eq 'scan #A.pdf' }).Link 'Link escapes #'
+
+# A plain SharePoint site: files at the top of the library are scanned too, also when there is no folder.
+Reset-FakePnP @{ "$library/top.txt" = $Txt; "$library/General/notes.txt" = $Txt; "$library/Forms/AllItems.txt" = $Txt }
+Set-FakeFolders @('Forms')
+Assert-Equal 0 @(Get-ChannelFolderNames $lib).Count 'A site with no folders is not an error'
+$rootRows = New-Object System.Collections.Generic.List[object]
+Assert-Equal 1 (Invoke-FileScan -Library $lib -Channels @() -SiteUrl $Sample.Site -MaxFileMB 25 -Rows $rootRows 6>$null) 'Top-of-library file scanned'
+Assert-Equal '(top of the library)' (($rootRows | Select-Object -ExpandProperty Channel -Unique) -join ',') 'Top-of-library files named as such'
+Assert-Equal 'top.txt' (($rootRows | Select-Object -ExpandProperty Item -Unique) -join ',') 'Only the top file, not the folder file'
+Write-FileStep (6MB) 'Downloading' 10
+Assert-Equal $true ((Get-FakeProgressText) -match 'This file Downloading - 6\.0 MB \(a large file') 'Large file: the per-file bar says it can take a minute'
 
 # A file named after an SSN: reported as a hit, and neither the item nor the link shows the SSN.
 $nameRows = @($rows | Where-Object { $_.Source -eq 'File name' })
@@ -143,21 +160,24 @@ Assert-Equal $true (Test-FakePnPCall 'Get-PnPContext') 'Fallback used the client
 Assert-Equal 1 @($rows | Where-Object { $_.Detector -eq 'SSN' -and $_.Item -eq 'Roster.docx' }).Count 'Fallback finds the SSN'
 . (Join-Path $PSScriptRoot 'FakePnP.ps1')  # put the full fake Get-PnPFile back for the next tests
 
-# ---- Posts refused, then allowed ----
-$rows = New-Object System.Collections.Generic.List[object]
-Assert-Equal 0 (Invoke-PostScan -SiteUrl $Sample.Site -Channels @('General') -Rows $rows 6>$null) 'Refused posts give 0'
-Assert-Equal 1 @($rows | Where-Object { $_.Detector -eq 'BLOCKED' }).Count 'BLOCKED row added'
-Assert-Equal $false ($rows[0].Context -match '\d') 'Error text in a BLOCKED row is masked'
-Set-FakePnPOption PostsAllowed $true
-$rows = New-Object System.Collections.Generic.List[object]
-Assert-Equal 2 (Invoke-PostScan -SiteUrl $Sample.Site -Channels @('General', 'Ops') -Rows $rows 6>$null) 'Post and reply scanned'
-$lines = @(Invoke-PostScan -SiteUrl $Sample.Site -Channels @('General', 'Ops') -Rows (New-Object System.Collections.Generic.List[object]) 6>&1 |
-    Where-Object { $_ -is [System.Management.Automation.InformationRecord] } | ForEach-Object { [string]$_ })
-Assert-Equal $true (($lines -join ' ') -match '\[1/2\] General: 2 posts - read 2') 'Posts channel line counts its posts and replies'
-Assert-Equal $true (($lines -join ' ') -match 'Posts done: 2 posts done \| read 2') 'Posts total counts posts and replies'
-Assert-Equal 'DoD ID Personal e-mail NOT SCANNED' (($rows | ForEach-Object { $_.Detector }) -join ' ') 'Post hits; Ops has no Teams channel'
-$rows = New-Object System.Collections.Generic.List[object]
-$shown = (Invoke-PostScan -SiteUrl $Sample.Site -Channels @("SSN $($Sample.Ssn)") -Rows $rows 6>&1 | ForEach-Object { [string]$_ }) -join ' '
-Assert-Equal $false $shown.Contains($Sample.Ssn) 'Posts channel lines never show the SSN'
-Assert-Equal $false (Get-FakeProgressText).Contains($Sample.Ssn) 'Posts progress bar never shows the SSN'
-Assert-Equal $false (($rows | ForEach-Object { $_.Channel }) -join ' ').Contains($Sample.Ssn) 'Posts rows never show the SSN'
+# ---- Error wording: a sign-in error a person can act on; the original always follows; other errors as they are ----
+Assert-Equal $true ((ConvertTo-FriendlyError 'The remote server returned an error: (403) Forbidden.') -match '^No access: .*\(The remote server') 'A 403 says No access, with the original after it'
+$closed = 'The underlying connection was closed: An unexpected error occurred on a send.'
+Assert-Equal $closed (ConvertTo-FriendlyError $closed) 'A closed connection is not called a closed sign-in window'
+Assert-Equal 'File Not Found.' (ConvertTo-FriendlyError 'File Not Found.') 'A missing file is not called a missing site'
+
+# ---- Live counts line and the timing ----
+Reset-FakePnP @{}
+$liveMeter = @{ Total = 4; Done = 2; Read = 1; Skipped = 1; Hits = 2; HitItems = 1; Types = @{ 'SSN' = 1; 'Phone' = 1 }; LastLine = [TimeSpan]::Zero
+    Clock = [pscustomobject]@{ Elapsed = [TimeSpan]::FromSeconds(20) } }
+$live = (Write-MeterLine $liveMeter 'file' -Force 6>&1 | ForEach-Object { [string]$_ }) -join ''
+Assert-Equal '  > 2/4 files  50% | read 1 | not scanned 1 | possible PII 2 (SSN 1, Phone 1) | 00:20 used, about 00:20 left' $live 'Live line: counts, types worst first, time'
+$liveMeter.Clock = [pscustomobject]@{ Elapsed = [TimeSpan]::FromSeconds(25) }
+Assert-Equal '' ((Write-MeterLine $liveMeter 'file' 6>&1 | ForEach-Object { [string]$_ }) -join '') 'Live line: not again within 10 seconds'
+Assert-Equal 'Time downloading|Time reading and checking' (@((Get-ScanTiming).Keys) -join '|') 'Timing: download and check times'
+
+# ---- Team or plain site: names the folder column ----
+Reset-FakePnP @{}
+Assert-Equal $true (Test-TeamSite) 'A team site is a team'
+Set-FakeSiteAnswer -TypedSite '' -SiteGroupId ([guid]::Empty)
+Assert-Equal $false (Test-TeamSite) 'A plain SharePoint site is not a team'

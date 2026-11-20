@@ -1,10 +1,10 @@
 <#
-TextExtract.psm1 - turns file bytes or a Teams post body into plain text, in memory.
+TextExtract.psm1 - turns file bytes into plain text, in memory.
 
   Purpose:     Plain text from Word, Excel and PowerPoint files (.docx/.xlsx/.pptx and macro versions),
                text files and HTML. Other types (PDF, images, legacy .doc/.xls/.ppt, scripts and
                anything else) are reported as NOT SCANNED, so a person checks them by hand.
-  Inputs:      file bytes and the file name (for its extension); HTML text of a Teams post.
+  Inputs:      file bytes and the file name (for its extension).
   Outputs:     an object with Status ('OK' or 'NOT SCANNED'), Reason and Text.
   How to run:  imported by Find-ChannelPII.ps1; not run on its own.
   Run target:  Windows PowerShell 5.1 (also PowerShell 7); .NET System.IO.Compression only.
@@ -27,12 +27,13 @@ $script:PlainTextExtensions = @('.txt', '.csv', '.md', '.log', '.json', '.xml', 
 $script:HtmlExtensions = @('.html', '.htm')
 
 # Office Open XML types (a zip of XML parts, ECMA-376) and the parts that hold their text:
-# body, headers, footers, comments, notes; cell text and shared strings; slides and speaker notes.
+# body, headers, footers, comments, notes; worksheets and cell comments; slides and speaker notes.
+# A worksheet is read cell by cell (Convert-SheetXmlToText), with its shared strings put back into their cells.
 $script:OfficeParts = @{
     '.docx' = '^word/(document|header\d*|footer\d*|comments|footnotes|endnotes)\.xml$'
     '.docm' = '^word/(document|header\d*|footer\d*|comments|footnotes|endnotes)\.xml$'
-    '.xlsx' = '^xl/(sharedStrings\.xml|worksheets/sheet\d+\.xml|comments\d*\.xml)$'
-    '.xlsm' = '^xl/(sharedStrings\.xml|worksheets/sheet\d+\.xml|comments\d*\.xml)$'
+    '.xlsx' = '^xl/(worksheets/sheet\d+|comments\d*)\.xml$'
+    '.xlsm' = '^xl/(worksheets/sheet\d+|comments\d*)\.xml$'
     '.pptx' = '^ppt/(slides/slide\d+|notesSlides/notesSlide\d+|comments/comment\d+)\.xml$'
     '.pptm' = '^ppt/(slides/slide\d+|notesSlides/notesSlide\d+|comments/comment\d+)\.xml$'
 }
@@ -40,6 +41,42 @@ $script:OfficeParts = @{
 # =====================================================================================
 # Markup to text
 # =====================================================================================
+
+# Between two cells of a worksheet row: a mark that no detector reads across, so values of neighbouring cells
+# (123 | 45 | 6789) never join into one SSN, card or phone number (the PAM, 2026-11-20: Excel false positives).
+$script:CellBreak = ' | '
+
+function Convert-SheetXmlToText {
+    <#
+    .SYNOPSIS
+      A worksheet as text: one line per row, cells split by $CellBreak. Only what a person sees in a cell is kept:
+      text (shared or inline), whole numbers and formula results. Formula text is dropped, and so are numbers with
+      a decimal part or an exponent (a time or a calculated value: 45231.416666666664 is no SSN or phone number).
+    .PARAMETER Xml
+      The worksheet XML.
+    .PARAMETER Shared
+      The shared strings of the workbook, in order (a cell of type "s" holds an index into them).
+    .OUTPUTS
+      [string]
+    #>
+    param([string]$Xml, [string[]]$Shared)
+    # Tags may carry a namespace prefix (<x:row>, <x:c>): some tools write them so, and a missed tag would be a silent miss.
+    $lines = foreach ($row in [regex]::Matches($Xml, '(?s)<(?:\w+:)?row\b[^>]*>(.*?)</(?:\w+:)?row>')) {
+        $cells = foreach ($cell in [regex]::Matches($row.Groups[1].Value, '(?s)<(?:\w+:)?c\b([^>]*?)(?:/>|>(.*?)</(?:\w+:)?c>)')) {
+            $type = [regex]::Match($cell.Groups[1].Value, '\bt="(\w+)"').Groups[1].Value
+            $inner = $cell.Groups[2].Value -replace '(?s)<(?:\w+:)?f\b[^>]*/>|<(?:\w+:)?f\b[^>]*>.*?</(?:\w+:)?f>', ''   # formula text: not data
+            $value = [System.Net.WebUtility]::HtmlDecode([regex]::Match($inner, '(?s)<(?:\w+:)?v>(.*?)</(?:\w+:)?v>').Groups[1].Value)
+            switch ($type) {
+                's' { $index = 0; if ([int]::TryParse($value, [ref]$index) -and $index -lt $Shared.Count) { $Shared[$index] } }
+                'inlineStr' { Convert-XmlToText $inner }
+                'str' { $value }
+                default { if ($type -notin @('b', 'e') -and $value -match '^-?\d+$') { $value } }   # whole numbers only
+            }
+        }
+        (@($cells | Where-Object { $_ }) -join $script:CellBreak)
+    }
+    return ($lines -join "`n")
+}
 
 function Convert-XmlToText {
     <#
@@ -53,7 +90,10 @@ function Convert-XmlToText {
       [string]
     #>
     param([string]$Xml)
-    $text = $Xml -replace '<w:tab/>|<w:br/>|<a:br/>', ' '
+    # Word field codes are not shown on the page: PAGEREF _Toc123456789, HYPERLINK addresses, form IDs. They gave
+    # false positives (a 9-digit bookmark number read as an SSN), so their text is dropped (the PAM, 2026-11-20).
+    $text = $Xml -replace '(?s)<w:instrText\b[^>]*?(?:/>|>.*?</w:instrText>)', ''
+    $text = $text -replace '<w:tab/>|<w:br/>|<a:br/>', ' '
     $text = $text -replace '</w:p>|</a:p>|</row>', "`n"
     $text = $text -replace '</si>|</c>|</w:tc>|</a:tc>', ' '
     $text = $text -replace '<[^>]+>', ''
@@ -63,7 +103,7 @@ function Convert-XmlToText {
 function Convert-HtmlToText {
     <#
     .SYNOPSIS
-      Strips HTML (Teams post bodies, .html files) to plain text. Script and style blocks are dropped;
+      Strips HTML (.html files) to plain text. Script and style blocks are dropped;
       block ends become line breaks.
     .PARAMETER Html
       The HTML text.
@@ -83,6 +123,21 @@ function Convert-HtmlToText {
 # Reading bytes
 # =====================================================================================
 
+function Read-ZipEntry {
+    # The text of one zip entry (UTF-8, as Office writes its XML).
+    param($Entry)
+    $reader = New-Object System.IO.StreamReader($Entry.Open())
+    try { return $reader.ReadToEnd() } finally { $reader.Dispose() }
+}
+
+function Get-SharedStrings {
+    # The shared strings of a workbook in order (xl/sharedStrings.xml), each as plain text; none for other files.
+    param($Zip)
+    $entry = $Zip.GetEntry('xl/sharedStrings.xml')
+    if (-not $entry) { return @() }
+    foreach ($item in [regex]::Matches((Read-ZipEntry $entry), '(?s)<(?:\w+:)?si>(.*?)</(?:\w+:)?si>')) { Convert-XmlToText $item.Groups[1].Value }
+}
+
 function Get-ZipPartText {
     <#
     .SYNOPSIS
@@ -98,10 +153,12 @@ function Get-ZipPartText {
     $memory = New-Object System.IO.MemoryStream(, $Bytes)
     $zip = New-Object System.IO.Compression.ZipArchive($memory, [System.IO.Compression.ZipArchiveMode]::Read)
     try {
+        $shared = @(Get-SharedStrings $zip)
         $texts = New-Object System.Collections.Generic.List[string]
         foreach ($entry in ($zip.Entries | Where-Object { $_.FullName -match $PartPattern } | Sort-Object FullName)) {
-            $reader = New-Object System.IO.StreamReader($entry.Open())
-            try { $texts.Add((Convert-XmlToText $reader.ReadToEnd())) } finally { $reader.Dispose() }
+            $xml = Read-ZipEntry $entry
+            if ($entry.FullName -match '^xl/worksheets/') { $texts.Add((Convert-SheetXmlToText $xml $shared)) }
+            else { $texts.Add((Convert-XmlToText $xml)) }
         }
         return ($texts -join "`n")
     }

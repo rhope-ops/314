@@ -23,7 +23,7 @@ function Reset-FakePnP {
     <#
     .SYNOPSIS
       Sets up the fake site: library '/sites/TeamA/Shared Documents', channels General and Ops, the
-      given files, posts refused, file download through -AsMemoryStream.
+      given files, file download through -AsMemoryStream.
     .PARAMETER Files
       Server-relative file path -> file bytes.
     .OUTPUTS
@@ -33,10 +33,11 @@ function Reset-FakePnP {
     $global:FakePnP = @{
         Files       = $Files
         Folders     = @('General', 'Ops', 'Forms')
-        PostsAllowed = $false
         ListFails   = $false
         ConnectFails = $false                                     # the web login to a site fails (an error before the scan)
-        TypedSite   = 'https://tenant.example.com/teams/TeamA'   # what the fake Read-Host returns
+        SiteFails   = $false                                      # Get-PnPSite fails (the site's group cannot be read)
+        TypedSite   = New-Object System.Collections.Generic.Queue[string]   # the fake Read-Host's answers, in order; none = Enter
+        NoAccess    = $false                                      # the site refuses the signed-in person (403)
         SiteGroupId = [guid]'11111111-2222-3333-4444-555555555555'
         Calls       = New-Object System.Collections.Generic.List[string]
         Progress    = New-Object System.Collections.Generic.List[string]
@@ -44,24 +45,31 @@ function Reset-FakePnP {
 }
 
 function Set-FakePnPOption {
-    # Changes one switch of the fake site: PostsAllowed, ListFails or ConnectFails.
-    param([ValidateSet('PostsAllowed', 'ListFails', 'ConnectFails')][string]$Name, [bool]$Value)
+    # Changes one switch of the fake site: ListFails, ConnectFails, SiteFails or NoAccess.
+    param([ValidateSet('ListFails', 'ConnectFails', 'SiteFails', 'NoAccess')][string]$Name, [bool]$Value)
     $global:FakePnP[$Name] = $Value
+}
+
+function Set-FakeFolders {
+    # Sets the top-level folders of the fake library (Get-PnPFolderItem).
+    param([string[]]$Names)
+    $global:FakePnP.Folders = $Names
 }
 
 function Set-FakeSiteAnswer {
     <#
     .SYNOPSIS
-      Sets what Read-Host returns (the typed site address) and the group ID of the connected site.
+      Sets what Read-Host returns, answer by answer, and the group ID of the connected site.
     .PARAMETER TypedSite
-      What the fake Read-Host returns; 'cancel' = the prompt fails (stands in for a cancel).
+      The answers of the fake Read-Host, in order; after the last, it returns '' (Enter). 'cancel' = the prompt fails.
     .PARAMETER SiteGroupId
       The group ID of the connected site (Get-PnPSite).
     .OUTPUTS
       None (changes $global:FakePnP).
     #>
-    param([string]$TypedSite, [guid]$SiteGroupId = '11111111-2222-3333-4444-555555555555')
-    $global:FakePnP.TypedSite = $TypedSite
+    param([string[]]$TypedSite = @(), [guid]$SiteGroupId = '11111111-2222-3333-4444-555555555555')
+    $global:FakePnP.TypedSite.Clear()
+    foreach ($answer in $TypedSite) { if ($answer) { $global:FakePnP.TypedSite.Enqueue($answer) } }
     $global:FakePnP.SiteGroupId = $SiteGroupId
 }
 
@@ -73,6 +81,12 @@ function Get-FakePnPConnection {
 function Get-FakeProgressText {
     # Everything the progress bar showed since the last Reset-FakePnP, as one string.
     return ($global:FakePnP.Progress -join ' | ')
+}
+
+function Get-FakeCallCount {
+    # How many times the named fake call was made since the last Reset-FakePnP.
+    param([string]$Name)
+    return @($global:FakePnP.Calls | Where-Object { $_ -eq $Name }).Count
 }
 
 function Test-FakePnPCall {
@@ -150,17 +164,19 @@ function global:Get-PnPContext {
 # The progress bar is on screen too: the fake records its text so tests can check it is masked.
 function global:Write-Progress {
     # Fake: records the activity and status text instead of drawing a bar.
-    [CmdletBinding()] param($Activity, $Status, $PercentComplete, [switch]$Completed)
+    [CmdletBinding()] param($Activity, $Status, $PercentComplete, [switch]$Completed, $Id, $ParentId)
     $global:FakePnP.Progress.Add(('{0} {1}' -f $Activity, $Status))
+    if ($Completed) { $global:FakePnP.Calls.Add('Progress done ' + $Id) }
+    elseif ($null -ne $ParentId) { $global:FakePnP.Calls.Add('Progress ' + $Id + ' under ' + $ParentId) }
 }
 
 # Sign-in, sign-out and the team behind the site.
 function global:Connect-PnPOnline {
-    # Fake: the web login always works; the Graph sign-in works only when PostsAllowed is set.
-    [CmdletBinding()] param($Url, [switch]$UseWebLogin, [switch]$Interactive, $AzureEnvironment)
+    # Fake: the web login works unless ConnectFails is set.
+    [CmdletBinding()] param($Url, [switch]$UseWebLogin)
     $global:FakePnP.Calls.Add('Connect ' + $Url)
+    if ($PSBoundParameters['WarningAction'] -eq 'SilentlyContinue') { $global:FakePnP.Calls.Add('Quiet sign-in ' + $Url) }
     if ($UseWebLogin -and $global:FakePnP.ConnectFails) { throw 'FAKE: sign-in refused' }
-    if ($Interactive -and -not $global:FakePnP.PostsAllowed) { throw 'AADSTS65001: consent missing (fake)' }
 }
 
 function global:Disconnect-PnPOnline {
@@ -169,9 +185,17 @@ function global:Disconnect-PnPOnline {
     $global:FakePnP.Calls.Add('Disconnect-PnPOnline')
 }
 
+function global:Get-PnPWeb {
+    # Fake: the site's web; refused (403) when NoAccess is set.
+    [CmdletBinding()] param()
+    if ($global:FakePnP.NoAccess) { throw 'The remote server returned an error: (403) Forbidden.' }
+    [pscustomobject]@{ Title = 'Team A' }
+}
+
 function global:Get-PnPSite {
     # Fake: the site belongs to a team (a Microsoft 365 group).
     [CmdletBinding()] param($Includes)
+    if ($global:FakePnP.SiteFails) { throw 'FAKE: site refused' }
     [pscustomobject]@{ GroupId = $global:FakePnP.SiteGroupId }
 }
 
@@ -180,26 +204,9 @@ function global:Read-Host {
     [CmdletBinding()] param($Prompt)
     $global:FakePnP.Calls.Add('Read-Host')
     # A real cancel stops the whole pipeline (the test run too); an error leaves through the same 'finally'.
-    if ($global:FakePnP.TypedSite -eq 'cancel') { throw 'FAKE: prompt cancelled' }
-    return $global:FakePnP.TypedSite
+    if ($global:FakePnP.TypedSite.Count -eq 0) { return '' }
+    $answer = $global:FakePnP.TypedSite.Dequeue()
+    if ($answer -eq 'cancel') { throw 'FAKE: prompt cancelled' }
+    return $answer
 }
 
-# Posts (Graph).
-function global:Get-PnPTeamsChannel {
-    # Fake: one channel, General.
-    [CmdletBinding()] param($Team)
-    [pscustomobject]@{ DisplayName = 'General'; Id = '19:fake' }
-}
-
-function global:Get-PnPTeamsChannelMessage {
-    # Fake: one post with a subject and a DoD ID in its body.
-    [CmdletBinding()] param($Team, $Channel)
-    [pscustomobject]@{ Id = '1001'; Subject = 'Recall roster'; CreatedDateTime = [datetime]'2026-11-02'
-                       Body = [pscustomobject]@{ Content = "<p>DoD ID $($Sample.DodId)</p>" } }
-}
-
-function global:Get-PnPTeamsChannelMessageReply {
-    # Fake: one reply with a personal e-mail address.
-    [CmdletBinding()] param($Team, $Channel, $Message)
-    [pscustomobject]@{ Id = '1002'; CreatedDateTime = [datetime]'2026-11-03'; Body = [pscustomobject]@{ Content = "reply: $($Sample.Email)" } }
-}
