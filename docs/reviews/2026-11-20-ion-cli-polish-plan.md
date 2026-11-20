@@ -1,4 +1,4 @@
-Approved by the PAM 2026-11-20 (plan dialog). Steps 1-8 open.
+Approved by the PAM 2026-11-20 (plan dialog). Steps 1-8 done 2026-11-20 (PR #13).
 
 # Ion CLI polish (plan, 2026-11-20)
 
