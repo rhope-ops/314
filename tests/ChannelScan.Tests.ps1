@@ -59,12 +59,13 @@ Assert-Equal $true (Get-ScanTarget $channelLink).IsChannel 'Channel link marked 
 Assert-Equal $groupId (Get-ScanTarget ('https://teams.example.com/l/channel/19%3aabc/My Channel?groupId=' + $groupId)).GroupId `
     'Channel link with a raw space read'
 Reset-FakePnP @{}
+Set-FakeSiteAnswer -TypedSite 'https://tenant.example.com/teams/TeamA'
 $printed = (Connect-TeamSite (Get-ScanTarget $channelLink) 6>&1 | Where-Object { $_ -is [System.Management.Automation.InformationRecord] }) -join ' '
 Assert-Equal $true ($printed -match 'private or shared channel has its own site') 'Channel link prints the private-channel note'
 Reset-FakePnP @{}
 Set-FakeSiteAnswer -TypedSite 'cancel'
 $refused = $false
-try { Connect-TeamSite (Get-ScanTarget $teamLink) 6>$null | Out-Null } catch { $refused = ($_.Exception.Message -match 'prompt cancelled') }  # expected
+try { Connect-TeamSite (Get-ScanTarget $teamLink) 6>$null | Out-Null } catch { $refused = ($_.Exception.Message -match 'did not finish') }  # expected
 Assert-Equal $true ($refused -and (Test-FakePnPCall 'Read-Host') -and (Test-FakePnPCall 'Disconnect-PnPOnline')) 'Failed address prompt: signed out'
 $twoLinks = 'https://teams.example.com/l/team/A see also https://teams.example.com/l/team/B?groupId=' + $groupId
 $refused = $false
@@ -74,6 +75,7 @@ $refused = $false
 try { Get-ScanTarget ('https://teams.example.com/l/team/A see also teams.example.com/l/team/B?groupId=' + $groupId) | Out-Null } catch { $refused = $true }
 Assert-Equal $true $refused 'A second link without https:// is not read either'
 Reset-FakePnP @{}
+Set-FakeSiteAnswer -TypedSite 'https://tenant.example.com/teams/TeamA'
 $null = Connect-TeamSite (Get-ScanTarget $teamLink) 6>$null
 Assert-Equal $false (Test-FakePnPCall 'Disconnect-PnPOnline') 'Teams link: still signed in after success'
 Reset-FakePnP @{}
@@ -104,6 +106,7 @@ Assert-Equal 'General Ops' (Get-ChannelFolderNames $lib) 'Channel folders withou
 $rows = New-Object System.Collections.Generic.List[object]
 Assert-Equal 3 (Invoke-FileScan -Library $lib -Channels @('General', 'Ops') -SiteUrl $Sample.Site -MaxFileMB 25 -Rows $rows 6>$null) 'Files scanned'
 Assert-Equal 4 (Get-FakeCallCount 'Progress done 2') 'Per-file bar closed after each file, also a skipped one'
+Write-FileStep (2MB) 'Downloading' 10
 Assert-Equal $true (Test-FakePnPCall 'Progress 2 under 1') 'Per-file bar sits under the main bar'
 Assert-Equal 1 @($rows | Where-Object { $_.Detector -eq 'SSN' -and $_.Item -eq 'Roster.docx' }).Count 'SSN found in docx'
 Assert-Equal 1 @($rows | Where-Object { $_.Detector -eq 'Phone' -and $_.Item -eq 'notes.txt' }).Count 'Phone found in txt'

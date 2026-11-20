@@ -32,6 +32,10 @@ $script:ShortKeywordWindowChars = 30
 # guidance treats a name together with an identifier (SSN, DoD ID, date of birth) as sensitive PII.
 $script:NameToIdentifierChars = 80
 
+# Regular expressions: .NET keeps the last 15 patterns compiled; the detectors and the masking use more, so each file
+# re-parsed them. A larger cache keeps them all (a speed-up for many files; the author's choice, 2026-11-20).
+[regex]::CacheSize = 64
+
 # Overlap priority: when two hits cover the same characters, the type earlier in this list wins.
 # Specific identifiers first, broad patterns (phone, address, name) last.
 $script:DetectorOrder = @('SSN', 'DoD ID', 'Payment card', 'Date of birth', 'Passport', 'Phone',
@@ -45,6 +49,17 @@ $script:ConfidenceRank = @{ 'High' = 3; 'Medium' = 2; 'Low' = 1 }
 
 # E-mail top-level labels that mark a government address (not reported as personal e-mail).
 $script:GovernmentMailLabels = @('gov', 'mil')
+
+# Personal mail providers (AFI 33-332 A3's breach example names Yahoo, Gmail and Hotmail): an address there is Medium;
+# an address at any other domain (a company, a vendor, a no-reply sender) is Low, to cut noise (the PAM, 2026-11-20).
+$script:PersonalMailDomains = '^(?:gmail|googlemail|yahoo|ymail|rocketmail|hotmail|outlook|live|msn|aol|icloud|me|mac|' +
+    'proton|protonmail|pm|gmx|mail|zoho|yandex|comcast|verizon|att|sbcglobal|cox|charter|spectrum|earthlink|juno|netzero)\.'
+
+# Payment card issuer prefixes and lengths (ISO/IEC 7812 IINs as the networks publish them): Visa 4 (13, 16, 19 digits);
+# Mastercard 51-55 and 2221-2720 (16); American Express 34, 37 (15); Discover 6011, 644-649, 65 (16-19); JCB 3528-3589
+# (16-19); Diners Club 300-305, 36, 38, 39 (14-19). A Luhn-valid number outside these is a document or tracking number.
+$script:CardIssuerPattern = '^(?:4(?:\d{12}|\d{15}|\d{18})|(?:5[1-5]\d{2}|222[1-9]|22[3-9]\d|2[3-6]\d{2}|27[01]\d|2720)\d{12}|' +
+    '3[47]\d{13}|(?:6011|64[4-9]\d|65\d{2})\d{12,15}|(?:352[89]|35[3-8]\d)\d{12,15}|(?:30[0-5]\d|3[689]\d{2})\d{10,15})$'
 
 # =====================================================================================
 # Small helpers
@@ -166,7 +181,9 @@ function Find-SsnHits {
     #>
     param([string]$Text)
     $labels = 'SSN|SSAN|social\s*security|soc\.?\s*sec'
-    $pattern = '(?<![\d-])(\d{3})([- ]?)(\d{2})\2(\d{4})(?![\d-])'
+    # No letter, digit, underscore or dash may touch the number: Word bookmarks (_Toc123456789) and IDs (ABC123456789)
+    # are not SSNs (the PAM, 2026-11-20: trim false positives).
+    $pattern = '(?<![\w-])(\d{3})([- ]?)(\d{2})\2(\d{4})(?![\w-])'
     foreach ($m in [regex]::Matches($Text, $pattern)) {
         if (-not (Test-SsnValid $m.Groups[1].Value $m.Groups[3].Value $m.Groups[4].Value)) { continue }
         $confidence = 'Low'
@@ -188,7 +205,7 @@ function Find-DodIdHits {
     #>
     param([string]$Text)
     $labels = 'DoD\s*ID|DODID|EDIPI|\bCAC\b|DoD\s*(?:ID\s*)?(?:#|no\.?|number)'
-    foreach ($m in [regex]::Matches($Text, '(?<!\d)\d{10}(?!\d)')) {
+    foreach ($m in [regex]::Matches($Text, '(?<!\w)\d{10}(?!\w)')) {
         if (Test-KeywordBefore $Text $m.Index $labels) { New-PiiHit 'DoD ID' 'High' $m.Index $m.Value }
     }
 }
@@ -207,9 +224,10 @@ function Find-CardHits {
     #>
     param([string]$Text)
     $labels = 'card|visa|master\s*card|amex|american\s*express|discover|\bGTC\b|\bGPC\b'
-    foreach ($m in [regex]::Matches($Text, '(?<![\d-])\d(?:[ -]?\d){12,18}(?![\d-])')) {
+    foreach ($m in [regex]::Matches($Text, '(?<![\w-])\d(?:[ -]?\d){12,18}(?![\w-])')) {
         $digits = $m.Value -replace '\D', ''
         if (-not (Test-Luhn $digits)) { continue }
+        if ($digits -notmatch $script:CardIssuerPattern) { continue }   # Luhn alone passes 1 in 10 random numbers
         $confidence = 'Medium'
         if (Test-KeywordBefore $Text $m.Index $labels) { $confidence = 'High' }
         New-PiiHit 'Payment card' $confidence $m.Index $m.Value
@@ -268,7 +286,7 @@ function Find-PhoneHits {
     #>
     param([string]$Text)
     $labels = '\bcell\b|mobile|\bhome\b|personal|\bmy\s+(?:number|phone)'
-    $pattern = '(?<![\d-])(?:\+?1[ .-]?)?(?:\(\d{3}\)\s?|\d{3}[ .-])\d{3}[ .-]\d{4}(?![\d-])'
+    $pattern = '(?<![\w-])(?:\+?1[ .-]?)?(?:\(\d{3}\)\s?|\d{3}[ .-])\d{3}[ .-]\d{4}(?![\w-])'
     foreach ($m in [regex]::Matches($Text, $pattern)) {
         $confidence = 'Low'
         if (Test-KeywordBefore $Text $m.Index $labels $script:ShortKeywordWindowChars) { $confidence = 'Medium' }
@@ -279,11 +297,12 @@ function Find-PhoneHits {
 function Find-PersonalEmailHits {
     <#
     .SYNOPSIS
-      E-mail addresses outside government domains (last label not in $GovernmentMailLabels).
+      E-mail addresses outside government domains (last label not in $GovernmentMailLabels). Medium at a personal
+      mail provider ($PersonalMailDomains), else Low.
     .PARAMETER Text
       The text to search.
     .OUTPUTS
-      Hit objects (New-PiiHit), always Medium.
+      Hit objects (New-PiiHit), Medium or Low.
     #>
     param([string]$Text)
     # Local part: any characters but spaces, delimiters and path slashes (accents and apostrophes included),
@@ -305,7 +324,10 @@ function Find-PersonalEmailHits {
     $pattern = '(?<=^|[' + $notInAddress + '])[^' + $notInAddress + ']+@' + $domain + $endsAddress
     foreach ($m in [regex]::Matches($Text, $pattern)) {
         if ($script:GovernmentMailLabels -contains $m.Groups[2].Value.ToLower()) { continue }
-        New-PiiHit 'Personal e-mail' 'Medium' $m.Index $m.Value
+        # A personal mail provider is Medium; any other domain (a company, a vendor, a no-reply address) is Low.
+        $confidence = 'Low'
+        if ($m.Groups[1].Value.ToLower() -match $script:PersonalMailDomains) { $confidence = 'Medium' }
+        New-PiiHit 'Personal e-mail' $confidence $m.Index $m.Value
     }
 }
 

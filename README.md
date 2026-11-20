@@ -38,9 +38,9 @@ Needs: Windows PowerShell 5.1 and PnP.PowerShell 1.12.0. No other modules, no ad
 
 1. Get the paste text: **Copy the script** on the site page, or open [paste/33332Z-pii-spot-check.ps1](https://raw.githubusercontent.com/rhope-ops/33-332.Z/main/paste/33332Z-pii-spot-check.ps1), select all (Ctrl+A) and copy (Ctrl+C). Its first lines repeat these steps.
 2. Open **Windows PowerShell ISE**, choose **File > New**, paste into the script pane (Ctrl+V) and press **F5**.
-3. When asked, paste the team (see "The team to scan" below), then sign in with your CAC. If you do not see the sign-in window, press Alt+Tab.
-4. Watch the progress bar (files done of the total, read, not scanned, possible PII, time used and time left) and the line printed for each folder. A second bar shows the file in work: its size and its step (download, read, check). PnP gives no byte count while it downloads, so a large file moves by step.
-5. Read the summary on screen: the hits per PII type and the files with the most serious hits. The path of the results workbook is printed at the end: `Documents\Ion\<site>\<yyyy-MM-dd>\Ion Results <HH-mm-ss>.xlsx`.
+3. When asked, paste the team or site (see "The team or site to scan" below), then sign in with your CAC. If you do not see the sign-in window, press Alt+Tab. A wrong paste is explained and asked again; a site you cannot open says "No access" (close the sign-in window if it shows an access page) and nothing is saved for it.
+4. Watch the progress bar (files done of the total, read, not scanned, possible PII per type, time used and time left). Under it, a coloured line of live counts appears every 10 seconds and after each folder. Files of 1 MB or more get a second bar: their size and step (download, read, check). PnP gives no byte count while it downloads, so a large file moves by step.
+5. Read the summary on screen: a boxed table of hits per PII type (red with High hits, gold with Medium), the files with the most serious hits, and the time spent downloading and checking. Then paste another site to scan it, or press Enter to exit. The path of the results workbook is printed at the end: `Documents\Ion\<site>\<yyyy-MM-dd>\Ion Results <HH-mm-ss>.xlsx`.
 
 The team or site to scan, one of:
 
@@ -56,7 +56,7 @@ The results workbook (one per run; a run never overwrites an earlier one):
 | Low confidence | Every Low hit (for example 9 bare digits), with its type: kept apart to cut noise |
 | Not scanned | Files not read (PDF, images, too large, damaged) and a scan that stopped early: check these by hand |
 
-**Excel files:** each cell is read on its own, so values in neighbouring cells never join into one number. Formula text, decimals (a time such as `45231.4166…`) and exponents are skipped: they made false positives.
+**Fewer false positives** (the PAM, 2026-11-20): Word field codes (a table of contents' `_Toc123456789` bookmarks) are not read; a number glued to letters (`ABC123456789`) is no SSN, phone or card; a card number must also have a card network's prefix and length; an e-mail at a personal provider (Gmail, Yahoo, Outlook ...) is Medium, at any other non-government domain Low. **Excel files:** each cell is read on its own, so values in neighbouring cells never join into one number. Formula text, decimals (a time such as `45231.4166…`) and exponents are skipped: they made false positives.
 
 Optional settings at the top of the paste text (edit them in ISE before F5):
 

@@ -29,6 +29,9 @@ $script:LibraryNames = @('Shared Documents', 'Documents')
 # Teams makes one top-level folder per standard channel. "Forms" is SharePoint's own folder, not a channel.
 $script:NotChannelFolders = @('Forms')
 
+# Time spent downloading and spent reading and checking, for the summary (it shows where a slow scan loses its time).
+$script:Timing = @{ Download = [TimeSpan]::Zero; Check = [TimeSpan]::Zero }
+
 # How the report and the screen name the files at the top of the library (in no folder).
 $script:RootGroupName = '(top of the library)'
 
@@ -120,12 +123,68 @@ function Assert-SiteGroup {
     }
 }
 
+function ConvertTo-FriendlyError {
+    <#
+    .SYNOPSIS
+      A sign-in or site error in words a person can act on: no access, site not found, sign-in not finished.
+      Any other message is shown masked, as it is.
+    .PARAMETER Message
+      The error message.
+    .OUTPUTS
+      [string]
+    #>
+    param([string]$Message)
+    if ($Message -match '\b(401|403)\b|forbidden|access (is )?denied|unauthori[sz]ed|do(es)? not have (access|permission)') {
+        return "No access: your account cannot open this site. Ask the site's owner for access, or check the address."
+    }
+    if ($Message -match '\b404\b|not found|could not be resolved|remote name') { return 'Site not found: check the address.' }
+    if ($Message -match 'cancel|closed|aborted') { return 'The sign-in did not finish (was the sign-in window closed?).' }
+    return Protect-PiiText $Message
+}
+
+function Read-ScanTarget {
+    <#
+    .SYNOPSIS
+      Asks for a Teams link or site address until it is a valid one, or until the person presses Enter (exit).
+      A wrong paste is explained and asked again; nothing is signed in until the address is valid.
+    .PARAMETER Given
+      An address given up front (the -SiteUrl setting); used first, without asking.
+    .PARAMETER Prompt
+      The question to ask.
+    .OUTPUTS
+      Output of Get-ScanTarget, or $null when the person pressed Enter.
+    #>
+    param([string]$Given, [string]$Prompt)
+    $answer = $Given
+    while ($true) {
+        if (-not $answer) { $answer = Read-Host $Prompt }
+        if (-not $answer -or -not $answer.Trim()) { return $null }
+        try { return Get-ScanTarget $answer.Trim() }
+        catch {
+            Write-Ui ('That is not a Teams link or a site address: ' + (Protect-PiiText $_.Exception.Message)) 'Alert'
+            Write-Ui 'Paste it again (Teams: ... > Copy link; or the SharePoint address), or press Enter to exit.' 'Muted'
+            $answer = ''
+        }
+    }
+}
+
+function Read-TeamSiteAddress {
+    # For a Teams link: asks for the team's site address until it is valid; Enter gives up (an error the caller reports).
+    while ($true) {
+        $typed = Read-Host 'Team site address (https://usaf.dps.mil/teams/<team-site>), or Enter to go back'
+        if (-not $typed -or -not $typed.Trim()) { throw 'No site address given.' }
+        try { return Test-TeamSiteUrl $typed }
+        catch { Write-Ui ('Not a site address: ' + (Protect-PiiText $_.Exception.Message)) 'Alert' }
+    }
+}
+
 function Connect-TeamSite {
     <#
     .SYNOPSIS
-      Signs in (own CAC, PnP web login) to the team's site and returns its address. For a Teams link it asks
-      for the site address (a lookup at the tenant root hung on DoD365: the PAM, 2026-11-20), then checks that
-      the site belongs to the team in the link. On any error or cancel it signs out.
+      Signs in (own CAC, PnP web login) to the site and returns its address. For a Teams link it asks for the site
+      address (a lookup at the tenant root hung on DoD365: the PAM, 2026-11-20), then checks that the site belongs to
+      the team in the link. It then checks that the person can open the site. On any error or cancel it signs out
+      and throws a message a person can act on (ConvertTo-FriendlyError).
     .PARAMETER Target
       Output of Get-ScanTarget.
     .OUTPUTS
@@ -137,18 +196,20 @@ function Connect-TeamSite {
     try {
         if ($null -ne $Target.GroupId) {
             if ($Target.IsChannel) {
-                Write-Host 'Channel link: the scan covers the standard channels of its team. A private or shared channel has its own site: give that site address instead.' -ForegroundColor Yellow
+                Write-Ui 'Channel link: the scan covers the standard channels of its team. A private or shared channel has its own site: give that site address instead.' 'Accent'
             }
-            Write-Host "Teams link: the script needs this team's site address. In Teams: the team's Shared tab > ... > Open in SharePoint, then copy the address." -ForegroundColor Yellow
-            $site = Test-TeamSiteUrl (Read-Host 'Team site address (https://usaf.dps.mil/teams/<team-site>)')
+            Write-Ui "Teams link: the script needs this team's site address. In Teams: the team's Shared tab > ... > Open in SharePoint, then copy the address." 'Accent'
+            $site = Read-TeamSiteAddress
         }
-        Write-Host "Signing in to $site (a sign-in window opens; if you do not see it, press Alt+Tab) ..."
+        Write-Ui "Signing in to $site (a sign-in window opens; if you do not see it, press Alt+Tab; if it says you have no access, close it) ..." 'Muted'
         # PnP prints a warning that suggests -Interactive (and its update notice): not useful to the person, so hidden (the PAM, 2026-11-20).
         Connect-PnPOnline -Url $site -UseWebLogin -WarningAction SilentlyContinue
+        $null = Get-PnPWeb -ErrorAction Stop   # can this person open the site? A refusal here is "no access", before any scan
         if ($null -ne $Target.GroupId) { Assert-SiteGroup $Target.GroupId }
         $ok = $true
         return $site
     }
+    catch { throw (ConvertTo-FriendlyError $_.Exception.Message) }
     finally {
         # No scan starts after an error or a cancel here: sign out, so no connection stays open in the ISE session.
         if (-not $ok) {
@@ -281,6 +342,32 @@ function Get-RootFiles {
     }
 }
 
+function Read-FileText {
+    <#
+    .SYNOPSIS
+      Downloads one file and reads its text, showing the per-file bar and counting the time of each part.
+    .PARAMETER Ref
+      The file's server-relative path.
+    .PARAMETER Name
+      The file name (its extension decides how it is read).
+    .PARAMETER Size
+      The file size in bytes (for the per-file bar).
+    .PARAMETER Clock
+      A running stopwatch; restarted here, so the caller can time the PII check after it.
+    .OUTPUTS
+      Output of Get-TextFromBytes.
+    #>
+    param([string]$Ref, [string]$Name, [long]$Size, $Clock)
+    Write-FileStep $Size 'Downloading' 10
+    $bytes = Get-FileBytes $Ref
+    $script:Timing.Download += $Clock.Elapsed
+    Write-FileStep $Size 'Reading the text' 50
+    $Clock.Restart()
+    $text = Get-TextFromBytes -Bytes $bytes -FileName $Name
+    $script:Timing.Check += $Clock.Elapsed
+    return $text
+}
+
 function Invoke-OneFileScan {
     <#
     .SYNOPSIS
@@ -319,12 +406,8 @@ function Invoke-OneFileScan {
     if (-not (Test-SupportedFile $name)) { $skipReason = 'File type is not read by this script: check by hand' }
     elseif ($size -gt ($MaxFileMB * 1MB)) { $skipReason = "Larger than $MaxFileMB MB: check by hand" }
     if ($skipReason) { $Rows.Add((New-ReportRow 'File' $Channel $item $link $modified 'NOT SCANNED' '' '' $skipReason)); return 0 }
-    try {
-        Write-FileStep $size 'Downloading' 10
-        $bytes = Get-FileBytes $ref
-        Write-FileStep $size 'Reading the text' 50
-        $text = Get-TextFromBytes -Bytes $bytes -FileName $name
-    }
+    $clock = [Diagnostics.Stopwatch]::StartNew()
+    try { $text = Read-FileText $ref $name $size $clock }
     catch {
         # One file that cannot be downloaded must not stop the scan: note it and go on.
         $reason = Protect-PiiText ('Download failed: ' + $_.Exception.Message)
@@ -332,10 +415,18 @@ function Invoke-OneFileScan {
     }
     if ($text.Status -ne 'OK') { $Rows.Add((New-ReportRow 'File' $Channel $item $link $modified 'NOT SCANNED' '' '' (Protect-PiiText $text.Reason))); return 0 }
     Write-FileStep $size 'Checking for PII' 80
+    $clock.Restart()
     foreach ($hit in @(Find-PiiInText $text.Text)) {
         $Rows.Add((New-ReportRow 'File' $Channel $item $link $modified $hit.Detector $hit.Confidence $hit.MaskedValue $hit.Context))
     }
+    $script:Timing.Check += $clock.Elapsed
     return 1
+}
+
+function Get-ScanTiming {
+    # The time of the last file scan spent downloading and spent reading and checking, as minutes:seconds text.
+    $format = { param($t) '{0:00}:{1:00}' -f [int][Math]::Floor($t.TotalMinutes), $t.Seconds }
+    [ordered]@{ 'Time downloading' = (& $format $script:Timing.Download); 'Time reading and checking' = (& $format $script:Timing.Check) }
 }
 
 function Invoke-FileScan {
@@ -357,6 +448,7 @@ function Invoke-FileScan {
     #>
     param($Library, [string[]]$Channels, [string]$SiteUrl, [int]$MaxFileMB, $Rows)
     $origin = ([uri]$SiteUrl).GetLeftPart([System.UriPartial]::Authority)
+    $script:Timing = @{ Download = [TimeSpan]::Zero; Check = [TimeSpan]::Zero }
     $fields = @('FileLeafRef', 'FileRef', 'FSObjType', 'File_x0020_Size', 'Modified')
     $allItems = @(Get-PnPListItem -List $Library.List -PageSize $script:ListPageSize -Fields $fields -ErrorAction Stop)
     # One group per folder; files at the top of the library (a plain SharePoint site) are one more group.
@@ -370,7 +462,7 @@ function Invoke-FileScan {
     }
     $total = 0
     foreach ($group in $groups) { $total += $group.Files.Count }
-    Write-Host ('Found {0} files in {1} folders. Scanning ...' -f $total, $groups.Count) -ForegroundColor Cyan
+    Write-Ui ('Found {0} files in {1} folders. Scanning ...' -f $total, $groups.Count) 'Title'
     $meter = New-ScanMeter $total
     for ($c = 0; $c -lt $groups.Count; $c++) {
         $group = $groups[$c]
@@ -383,11 +475,12 @@ function Invoke-FileScan {
             $read = Invoke-OneFileScan $file $group.Name $group.Prefix $origin $MaxFileMB $Rows
             Write-Progress -Id 2 -Activity 'This file' -Completed
             Update-ScanMeter $meter $Rows $firstRow $read
+            Write-MeterLine $meter 'file'   # live counts, at most every few seconds
         }
         Write-ChannelLine ('{0}/{1}' -f ($c + 1), $groups.Count) $group.Name $before $meter 'file'
     }
     Write-Progress -Id 1 -Activity 'Scanning files' -Completed
-    Write-Host ('Files done: ' + (Get-ScanMeterText $meter 'file')) -ForegroundColor Cyan
+    Write-Ui ('Files done: ' + (Get-ScanMeterText $meter 'file')) 'Title'
     return $meter.Read
 }
 
@@ -407,5 +500,5 @@ function Test-TeamSite {
     return [bool]($groupId -and $groupId -ne [guid]::Empty)
 }
 
-Export-ModuleMember -Function Test-TeamSiteUrl, Get-ScanTarget, Connect-TeamSite, Get-TeamDocumentLibrary, Get-ChannelFolderNames,
-Invoke-FileScan, Test-TeamSite
+Export-ModuleMember -Function Test-TeamSiteUrl, Get-ScanTarget, Read-ScanTarget, ConvertTo-FriendlyError, Connect-TeamSite, Get-TeamDocumentLibrary, Get-ChannelFolderNames,
+Invoke-FileScan, Get-ScanTiming, Test-TeamSite

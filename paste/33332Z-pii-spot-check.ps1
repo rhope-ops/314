@@ -17,14 +17,14 @@
   its top. One sign-in only: channel posts are not read.
 
   Built from these files; to change it, change them and rebuild with: python3 scripts/build_paste.py
-    src/PiiDetectors.psm1, sha256 5758bbd9b581
+    src/PiiDetectors.psm1, sha256 350ea3a15015
     src/PiiMasking.psm1, sha256 dda7cdacfaf9
-    src/TextExtract.psm1, sha256 7d3ab72e3627
+    src/TextExtract.psm1, sha256 e95cfccbf066
     src/XlsxWriter.psm1, sha256 180fda2898e2
-    src/Report.psm1, sha256 7ff23ecaac2d
-    src/ScanMeter.psm1, sha256 9825bc0e2aa8
-    src/ChannelScan.psm1, sha256 c1f5308abae5
-    src/Find-ChannelPII.ps1, sha256 ccecf99228d2
+    src/Report.psm1, sha256 a3e6b39e2cad
+    src/ScanMeter.psm1, sha256 56c9305644d3
+    src/ChannelScan.psm1, sha256 d86e0edd0963
+    src/Find-ChannelPII.ps1, sha256 50ddbee2f6b3
 
   Read-only: it never changes, moves or deletes anything in Teams or SharePoint. Every value found is masked.
   Run target: Windows PowerShell 5.1 with PnP.PowerShell 1.12.0; no admin rights, no file to unblock.
@@ -35,14 +35,14 @@
   Contents (line numbers of this file):
     line    48  Settings
     line    59  Module PiiDetectors.psm1
-    line   523  Module PiiMasking.psm1
-    line   709  Module TextExtract.psm1
-    line   926  Module XlsxWriter.psm1
-    line  1138  Module Report.psm1
-    line  1504  Module ScanMeter.psm1
-    line  1642  Module ChannelScan.psm1
-    line  2051  Body of Find-ChannelPII.ps1
-    line  2108  Clean-up
+    line   545  Module PiiMasking.psm1
+    line   731  Module TextExtract.psm1
+    line   951  Module XlsxWriter.psm1
+    line  1163  Module Report.psm1
+    line  1578  Module ScanMeter.psm1
+    line  1776  Module ChannelScan.psm1
+    line  2278  Body of Find-ChannelPII.ps1
+    line  2349  Clean-up
 #>
 
 # ==== Settings ==== (optional: edit the values between the quotes; empty = the script asks)
@@ -90,6 +90,10 @@ $script:ShortKeywordWindowChars = 30
 # guidance treats a name together with an identifier (SSN, DoD ID, date of birth) as sensitive PII.
 $script:NameToIdentifierChars = 80
 
+# Regular expressions: .NET keeps the last 15 patterns compiled; the detectors and the masking use more, so each file
+# re-parsed them. A larger cache keeps them all (a speed-up for many files; the author's choice, 2026-11-20).
+[regex]::CacheSize = 64
+
 # Overlap priority: when two hits cover the same characters, the type earlier in this list wins.
 # Specific identifiers first, broad patterns (phone, address, name) last.
 $script:DetectorOrder = @('SSN', 'DoD ID', 'Payment card', 'Date of birth', 'Passport', 'Phone',
@@ -103,6 +107,17 @@ $script:ConfidenceRank = @{ 'High' = 3; 'Medium' = 2; 'Low' = 1 }
 
 # E-mail top-level labels that mark a government address (not reported as personal e-mail).
 $script:GovernmentMailLabels = @('gov', 'mil')
+
+# Personal mail providers (AFI 33-332 A3's breach example names Yahoo, Gmail and Hotmail): an address there is Medium;
+# an address at any other domain (a company, a vendor, a no-reply sender) is Low, to cut noise (the PAM, 2026-11-20).
+$script:PersonalMailDomains = '^(?:gmail|googlemail|yahoo|ymail|rocketmail|hotmail|outlook|live|msn|aol|icloud|me|mac|' +
+    'proton|protonmail|pm|gmx|mail|zoho|yandex|comcast|verizon|att|sbcglobal|cox|charter|spectrum|earthlink|juno|netzero)\.'
+
+# Payment card issuer prefixes and lengths (ISO/IEC 7812 IINs as the networks publish them): Visa 4 (13, 16, 19 digits);
+# Mastercard 51-55 and 2221-2720 (16); American Express 34, 37 (15); Discover 6011, 644-649, 65 (16-19); JCB 3528-3589
+# (16-19); Diners Club 300-305, 36, 38, 39 (14-19). A Luhn-valid number outside these is a document or tracking number.
+$script:CardIssuerPattern = '^(?:4(?:\d{12}|\d{15}|\d{18})|(?:5[1-5]\d{2}|222[1-9]|22[3-9]\d|2[3-6]\d{2}|27[01]\d|2720)\d{12}|' +
+    '3[47]\d{13}|(?:6011|64[4-9]\d|65\d{2})\d{12,15}|(?:352[89]|35[3-8]\d)\d{12,15}|(?:30[0-5]\d|3[689]\d{2})\d{10,15})$'
 
 # =====================================================================================
 # Small helpers
@@ -224,7 +239,9 @@ function Find-SsnHits {
     #>
     param([string]$Text)
     $labels = 'SSN|SSAN|social\s*security|soc\.?\s*sec'
-    $pattern = '(?<![\d-])(\d{3})([- ]?)(\d{2})\2(\d{4})(?![\d-])'
+    # No letter, digit, underscore or dash may touch the number: Word bookmarks (_Toc123456789) and IDs (ABC123456789)
+    # are not SSNs (the PAM, 2026-11-20: trim false positives).
+    $pattern = '(?<![\w-])(\d{3})([- ]?)(\d{2})\2(\d{4})(?![\w-])'
     foreach ($m in [regex]::Matches($Text, $pattern)) {
         if (-not (Test-SsnValid $m.Groups[1].Value $m.Groups[3].Value $m.Groups[4].Value)) { continue }
         $confidence = 'Low'
@@ -246,7 +263,7 @@ function Find-DodIdHits {
     #>
     param([string]$Text)
     $labels = 'DoD\s*ID|DODID|EDIPI|\bCAC\b|DoD\s*(?:ID\s*)?(?:#|no\.?|number)'
-    foreach ($m in [regex]::Matches($Text, '(?<!\d)\d{10}(?!\d)')) {
+    foreach ($m in [regex]::Matches($Text, '(?<!\w)\d{10}(?!\w)')) {
         if (Test-KeywordBefore $Text $m.Index $labels) { New-PiiHit 'DoD ID' 'High' $m.Index $m.Value }
     }
 }
@@ -265,9 +282,10 @@ function Find-CardHits {
     #>
     param([string]$Text)
     $labels = 'card|visa|master\s*card|amex|american\s*express|discover|\bGTC\b|\bGPC\b'
-    foreach ($m in [regex]::Matches($Text, '(?<![\d-])\d(?:[ -]?\d){12,18}(?![\d-])')) {
+    foreach ($m in [regex]::Matches($Text, '(?<![\w-])\d(?:[ -]?\d){12,18}(?![\w-])')) {
         $digits = $m.Value -replace '\D', ''
         if (-not (Test-Luhn $digits)) { continue }
+        if ($digits -notmatch $script:CardIssuerPattern) { continue }   # Luhn alone passes 1 in 10 random numbers
         $confidence = 'Medium'
         if (Test-KeywordBefore $Text $m.Index $labels) { $confidence = 'High' }
         New-PiiHit 'Payment card' $confidence $m.Index $m.Value
@@ -326,7 +344,7 @@ function Find-PhoneHits {
     #>
     param([string]$Text)
     $labels = '\bcell\b|mobile|\bhome\b|personal|\bmy\s+(?:number|phone)'
-    $pattern = '(?<![\d-])(?:\+?1[ .-]?)?(?:\(\d{3}\)\s?|\d{3}[ .-])\d{3}[ .-]\d{4}(?![\d-])'
+    $pattern = '(?<![\w-])(?:\+?1[ .-]?)?(?:\(\d{3}\)\s?|\d{3}[ .-])\d{3}[ .-]\d{4}(?![\w-])'
     foreach ($m in [regex]::Matches($Text, $pattern)) {
         $confidence = 'Low'
         if (Test-KeywordBefore $Text $m.Index $labels $script:ShortKeywordWindowChars) { $confidence = 'Medium' }
@@ -337,11 +355,12 @@ function Find-PhoneHits {
 function Find-PersonalEmailHits {
     <#
     .SYNOPSIS
-      E-mail addresses outside government domains (last label not in $GovernmentMailLabels).
+      E-mail addresses outside government domains (last label not in $GovernmentMailLabels). Medium at a personal
+      mail provider ($PersonalMailDomains), else Low.
     .PARAMETER Text
       The text to search.
     .OUTPUTS
-      Hit objects (New-PiiHit), always Medium.
+      Hit objects (New-PiiHit), Medium or Low.
     #>
     param([string]$Text)
     # Local part: any characters but spaces, delimiters and path slashes (accents and apostrophes included),
@@ -363,7 +382,10 @@ function Find-PersonalEmailHits {
     $pattern = '(?<=^|[' + $notInAddress + '])[^' + $notInAddress + ']+@' + $domain + $endsAddress
     foreach ($m in [regex]::Matches($Text, $pattern)) {
         if ($script:GovernmentMailLabels -contains $m.Groups[2].Value.ToLower()) { continue }
-        New-PiiHit 'Personal e-mail' 'Medium' $m.Index $m.Value
+        # A personal mail provider is Medium; any other domain (a company, a vendor, a no-reply address) is Low.
+        $confidence = 'Low'
+        if ($m.Groups[1].Value.ToLower() -match $script:PersonalMailDomains) { $confidence = 'Medium' }
+        New-PiiHit 'Personal e-mail' $confidence $m.Index $m.Value
     }
 }
 
@@ -798,7 +820,10 @@ function Convert-XmlToText {
       [string]
     #>
     param([string]$Xml)
-    $text = $Xml -replace '<w:tab/>|<w:br/>|<a:br/>', ' '
+    # Word field codes are not shown on the page: PAGEREF _Toc123456789, HYPERLINK addresses, form IDs. They gave
+    # false positives (a 9-digit bookmark number read as an SSN), so their text is dropped (the PAM, 2026-11-20).
+    $text = $Xml -replace '(?s)<w:instrText\b[^>]*>.*?</w:instrText>', ''
+    $text = $text -replace '<w:tab/>|<w:br/>|<a:br/>', ' '
     $text = $text -replace '</w:p>|</a:p>|</row>', "`n"
     $text = $text -replace '</si>|</c>|</w:tc>|</a:tc>', ' '
     $text = $text -replace '<[^>]+>', ''
@@ -1173,9 +1198,11 @@ $script:SeverityOrder = @('SSN', 'Date of birth', 'Passport', 'Payment card', 'D
 # How many files the screen summary lists (the workbook lists all).
 $script:TopItems = 10
 
-# Line width for the text tables. Without a console window, Out-String has no width and prints
-# empty tables, so a width is always given. 220 fits the widest table on a landscape printout.
-$script:TableWidth = 220
+# Screen colours from the FULCRUM palette (the PAM, 2026-11-20). Write-Host has only the 16 console colours, so each
+# palette colour maps to its nearest: cream = White (titles, values), gold = Yellow (accents, Medium), ember = Red
+# (possible PII, High, errors), slate = Gray (muted text, zero counts). Ink is the console background.
+$script:ScreenColors = @{ Title = 'White'; Text = 'White'; Accent = 'Yellow'; Alert = 'Red'; Muted = 'Gray' }
+
 
 # What to do with PII found where it should not be: the breach steps of the rule source, AFI 33-332 para 3.1.2 as
 # changed by AFI33-332_DAFGM2026-01 (7 July 2026; edition: docs/DECISIONS.md).
@@ -1241,6 +1268,21 @@ function Add-IncompleteRow {
     $Rows.Add((New-ReportRow 'Scan' '(all)' '(scan)' '' '' 'INCOMPLETE' '' '' 'Stopped before the end (cancelled?)'))
 }
 
+function Write-Ui {
+    <#
+    .SYNOPSIS
+      Writes one piece of screen text in a palette colour ($ScreenColors). Every screen line of Ion goes through here.
+    .PARAMETER Text
+      The text (already masked by the caller).
+    .PARAMETER Kind
+      Title, Text, Accent, Alert or Muted.
+    .PARAMETER NoNewline
+      Keep writing on the same line (for a line with several colours).
+    #>
+    param([AllowEmptyString()][string]$Text, [ValidateSet('Title', 'Text', 'Accent', 'Alert', 'Muted')][string]$Kind = 'Text', [switch]$NoNewline)
+    Write-Host $Text -ForegroundColor $script:ScreenColors[$Kind] -NoNewline:$NoNewline
+}
+
 function Get-SeverityIndex {
     # Where a PII type stands in $SeverityOrder (0 = worst); a type not in the list comes last.
     param([string]$Type)
@@ -1271,21 +1313,6 @@ function Get-ReportSummary {
     }
     return @($summary | Sort-Object @{ Expression = { Get-SeverityIndex $_.Worst } }, @{ Expression = { $script:Rank[$_.Highest] }; Descending = $true },
         @{ Expression = 'Hits'; Descending = $true })
-}
-
-function ConvertTo-TableText {
-    <#
-    .SYNOPSIS
-      Formats objects as a text table at a fixed width (see $TableWidth).
-    .PARAMETER InputRows
-      The objects to show.
-    .PARAMETER Columns
-      The property names to show, in order.
-    .OUTPUTS
-      [string]
-    #>
-    param([object[]]$InputRows, [string[]]$Columns)
-    return ($InputRows | Format-Table -Property $Columns -AutoSize -Wrap | Out-String -Width $script:TableWidth).TrimEnd()
 }
 
 function Get-TypeCounts {
@@ -1328,10 +1355,44 @@ function Get-ScanMetrics {
     return $metrics
 }
 
+function Format-BoxTable {
+    <#
+    .SYNOPSIS
+      A text table with ASCII borders (no other characters: Windows PowerShell 5.1 and ISE show them all alike).
+      Text columns are left-aligned, number columns right-aligned.
+    .PARAMETER Columns
+      The header texts.
+    .PARAMETER Rows
+      The rows, each an array of cells.
+    .OUTPUTS
+      [string[]] the border line, the header, the border, one line per row, the border.
+    #>
+    param([string[]]$Columns, [object[]]$Rows)
+    $widths = for ($i = 0; $i -lt $Columns.Count; $i++) {
+        [Math]::Max($Columns[$i].Length, (@($Rows | ForEach-Object { ([string]$_[$i]).Length }) + 0 | Measure-Object -Maximum).Maximum)
+    }
+    $border = '+' + ((@($widths) | ForEach-Object { '-' * ($_ + 2) }) -join '+') + '+'
+    # One table line: each cell padded to its column width, numbers to the right.
+    $line = {
+        param($cells)
+        $parts = for ($i = 0; $i -lt $Columns.Count; $i++) {
+            $cell = [string]$cells[$i]
+            if ($cells[$i] -is [int]) { ' ' + $cell.PadLeft($widths[$i]) + ' ' } else { ' ' + $cell.PadRight($widths[$i]) + ' ' }
+        }
+        '|' + ($parts -join '|') + '|'
+    }
+    $border
+    & $line $Columns
+    $border
+    foreach ($row in $Rows) { & $line $row }
+    $border
+}
+
 function Get-ScanSummaryText {
     <#
     .SYNOPSIS
-      The summary for the screen: the scan's details and totals, possible PII per type (worst first), and the
+      The summary for the screen, line by line with its palette colour: the scan's details and totals, a table of
+      possible PII per type (worst first; red with High hits, gold with Medium, grey otherwise), and a table of the
       files with the most serious hits. Every hit is listed in the workbook, not here.
     .PARAMETER Rows
       All report rows.
@@ -1342,28 +1403,41 @@ function Get-ScanSummaryText {
     .PARAMETER FolderLabel
       'Channel' (a team) or 'Folder' (a plain site).
     .OUTPUTS
-      [string[]]
+      [pscustomobject] Text, Kind (a Write-Ui colour), one per line.
     #>
     param([object[]]$Rows, [int]$ItemsScanned, [System.Collections.IDictionary]$Header, [string]$FolderLabel)
-    $lines = New-Object System.Collections.Generic.List[string]
-    $lines.Add(''); $lines.Add('==== ' + $script:ToolTitle + ' ====')
+    $out = New-Object System.Collections.Generic.List[object]
+    # Adds one screen line with its colour.
+    $add = { param($text, $kind) $out.Add([pscustomobject]@{ Text = $text; Kind = $kind }) }
+    & $add '' 'Text'; & $add ('==== ' + $script:ToolTitle + ' ====') 'Title'
     foreach ($pair in @($Header.GetEnumerator()) + @((Get-ScanMetrics $Rows $ItemsScanned).GetEnumerator())) {
-        $lines.Add(('{0,-26} {1}' -f ($pair.Key + ':'), $pair.Value))
+        & $add ('{0,-26} {1}' -f ($pair.Key + ':'), $pair.Value) 'Text'
     }
     $hits = @($Rows | Where-Object { $script:Rank.ContainsKey($_.Confidence) })
-    if ($hits.Count -gt 0) {
-        $lines.Add(''); $lines.Add('POSSIBLE PII BY TYPE (worst first):')
-        $lines.Add((ConvertTo-TableText @(Get-TypeCounts $hits) @('Type', 'High', 'Medium', 'Low', 'Total')))
-        $top = @(Get-ReportSummary $Rows | Select-Object -First $script:TopItems |
-            Select-Object Worst, Highest, Hits, @{ Name = $FolderLabel; Expression = { $_.Channel } }, Item)
-        $lines.Add(''); $lines.Add(('FILES WITH THE MOST SERIOUS HITS (first {0}; all are in the workbook):' -f $script:TopItems))
-        $lines.Add((ConvertTo-TableText $top @('Worst', 'Highest', 'Hits', $FolderLabel, 'Item')))
+    if ($hits.Count -eq 0) { & $add '' 'Text'; & $add 'No possible PII found in the files that were read.' 'Title' }
+    else {
+        $types = @(Get-TypeCounts $hits)
+        & $add '' 'Text'; & $add 'POSSIBLE PII BY TYPE (worst first)' 'Title'
+        $table = @(Format-BoxTable @('Type', 'High', 'Medium', 'Low', 'Total') @($types | ForEach-Object { , @($_.Type, $_.High, $_.Medium, $_.Low, $_.Total) }))
+        for ($i = 0; $i -lt $table.Count; $i++) {
+            $kind = 'Muted'
+            if ($i -eq 1) { $kind = 'Title' }
+            elseif ($i -ge 3 -and $i -lt $table.Count - 1) {
+                $type = $types[$i - 3]
+                if ($type.High -gt 0) { $kind = 'Alert' } elseif ($type.Medium -gt 0) { $kind = 'Accent' }
+            }
+            & $add $table[$i] $kind
+        }
+        $top = @(Get-ReportSummary $Rows | Select-Object -First $script:TopItems)
+        & $add '' 'Text'; & $add ('FILES WITH THE MOST SERIOUS HITS (first {0}; all are in the workbook)' -f $script:TopItems) 'Title'
+        foreach ($text in @(Format-BoxTable @('Worst', 'Highest', 'Hits', $FolderLabel, 'Item') @($top | ForEach-Object { , @($_.Worst, $_.Highest, $_.Hits, $_.Channel, $_.Item) }))) {
+            & $add $text 'Text'
+        }
     }
-    else { $lines.Add(''); $lines.Add('No possible PII found in the files that were read.') }
-    $lines.Add('')
-    $lines.Add('Confidence is a pattern guess, not proof: open each item and check it before you act.')
-    $lines.Add($script:BreachAdvice)
-    return $lines.ToArray()
+    & $add '' 'Text'
+    & $add 'Confidence is a pattern guess, not proof: open each item and check it before you act.' 'Muted'
+    & $add $script:BreachAdvice 'Accent'
+    return $out.ToArray()
 }
 
 # =====================================================================================
@@ -1492,12 +1566,12 @@ function Publish-ScanReport {
     #>
     param([object[]]$Rows, [int]$ItemsScanned, [System.Collections.IDictionary]$Header, [string]$OutputFolder, [string]$SiteUrl,
           [string]$FolderLabel = 'Folder')
-    Get-ScanSummaryText -Rows $Rows -ItemsScanned $ItemsScanned -Header $Header -FolderLabel $FolderLabel | ForEach-Object { Write-Host $_ }
+    Get-ScanSummaryText -Rows $Rows -ItemsScanned $ItemsScanned -Header $Header -FolderLabel $FolderLabel | ForEach-Object { Write-Ui $_.Text $_.Kind }
     $path = Get-ResultPath $OutputFolder $SiteUrl
     Export-Xlsx -Path $path -Sheets (Get-WorkbookSheets $Rows $ItemsScanned $Header $FolderLabel)
-    Write-Host ''
-    Write-Host "Saved (values masked): $path" -ForegroundColor Cyan
-    Write-Host 'Handle this file as CUI: it shows where PII is.' -ForegroundColor Yellow
+    Write-Ui ''
+    Write-Ui "Saved (values masked): $path" 'Title'
+    Write-Ui 'Handle this file as CUI: it shows where PII is.' 'Accent'
     return $path
 }
 
@@ -1510,7 +1584,7 @@ ScanMeter.psm1 - the progress bars and the per-folder lines of a scan: counts on
                names are masked.
   Inputs:      the report row list and the counts the scan functions of ChannelScan.psm1 give.
   Outputs:     a meter (hashtable), status text, percent, a per-file progress bar and one coloured line per folder.
-  Depends on:  PiiMasking.psm1 (Protect-PiiText), imported first by Find-ChannelPII.ps1.
+  Depends on:  PiiMasking.psm1 (Protect-PiiText), Report.psm1 (Write-Ui), imported first by Find-ChannelPII.ps1.
   How to run:  imported by Find-ChannelPII.ps1; not run on its own.
   Run target:  Windows PowerShell 5.1 (also PowerShell 7).
   Network:     none.
@@ -1523,6 +1597,17 @@ ScanMeter.psm1 - the progress bars and the per-folder lines of a scan: counts on
 # takes tens of seconds; the author's choice, 2026-11-20).
 $script:LargeFileBytes = 5MB
 
+# The per-file bar is shown only from this size on: a small file is done in a moment, and each bar update costs time in
+# Windows PowerShell 5.1 (the author's choice, 2026-11-20: faster scans of many small files).
+$script:FileBarBytes = 1MB
+
+# A coloured line of live counts is printed under the progress bar at most this often (and after each folder).
+$script:LiveLineSeconds = 10
+
+# Short PII type names for the live line, in the PAM's order (Report.psm1 $SeverityOrder).
+$script:ShortTypeNames = [ordered]@{ 'SSN' = 'SSN'; 'Date of birth' = 'DOB'; 'Passport' = 'Passport'; 'Payment card' = 'Card'
+    'DoD ID' = 'DoD ID'; 'Home address' = 'Address'; 'Name' = 'Name'; 'Phone' = 'Phone'; 'Personal e-mail' = 'E-mail' }
+
 function New-ScanMeter {
     <#
     .SYNOPSIS
@@ -1534,7 +1619,8 @@ function New-ScanMeter {
     #>
     param([int]$Total)
     # Clock: anything with an Elapsed [TimeSpan] (a running stopwatch here; a fixed time in the tests).
-    @{ Total = $Total; Done = 0; Read = 0; Skipped = 0; Hits = 0; HitItems = 0; Clock = [Diagnostics.Stopwatch]::StartNew() }
+    @{ Total = $Total; Done = 0; Read = 0; Skipped = 0; Hits = 0; HitItems = 0; Types = @{}; LastLine = [TimeSpan]::Zero
+       Clock = [Diagnostics.Stopwatch]::StartNew() }
 }
 
 function Update-ScanMeter {
@@ -1558,6 +1644,7 @@ function Update-ScanMeter {
     $Meter.Skipped += @($new | Where-Object { $_.Detector -eq 'NOT SCANNED' -or $_.Detector -eq 'BLOCKED' }).Count
     $Meter.Hits += $hits.Count
     $Meter.HitItems += @($hits | Select-Object -ExpandProperty Item -Unique).Count   # files with a hit
+    foreach ($hit in $hits) { $Meter.Types[$hit.Detector] = 1 + [int]$Meter.Types[$hit.Detector] }
 }
 
 function Format-Duration {
@@ -1581,13 +1668,57 @@ function Get-ScanMeterText {
     $elapsed = $Meter.Clock.Elapsed
     $text = [string]$Meter.Done
     if ($Meter.Total -gt 0) { $text += ' of ' + $Meter.Total }
-    $text += ' ' + $Noun + 's done | read {0} | not scanned {1} | possible PII {2} in {3} {4}s | {5} used' -f
-        $Meter.Read, $Meter.Skipped, $Meter.Hits, $Meter.HitItems, $Noun, (Format-Duration $elapsed)
+    $types = Get-TypeCountText $Meter
+    if ($types) { $types = ' (' + $types + ')' }
+    $text += ' ' + $Noun + 's done | read {0} | not scanned {1} | possible PII {2} in {3} {4}s{5} | {6} used' -f
+        $Meter.Read, $Meter.Skipped, $Meter.Hits, $Meter.HitItems, $Noun, $types, (Format-Duration $elapsed)
     if ($Meter.Total -gt 0 -and $Meter.Done -gt 0 -and $Meter.Done -lt $Meter.Total) {
         $left = [TimeSpan]::FromTicks([long]($elapsed.Ticks / $Meter.Done * ($Meter.Total - $Meter.Done)))
         $text += ', about ' + (Format-Duration $left) + ' left'
     }
     return $text
+}
+
+function Get-TypeCountText {
+    # The hits per type so far, worst type first, as "SSN 2, DOB 1"; empty when there is none.
+    param([hashtable]$Meter)
+    if (-not $Meter.ContainsKey('Types') -or $Meter.Types.Count -eq 0) { return '' }
+    $parts = foreach ($type in $script:ShortTypeNames.Keys) {
+        if ($Meter.Types[$type]) { '{0} {1}' -f $script:ShortTypeNames[$type], $Meter.Types[$type] }
+    }
+    return (@($parts) -join ', ')
+}
+
+function Write-MeterLine {
+    <#
+    .SYNOPSIS
+      Prints the live counts as one coloured line under the progress bar (FULCRUM colours, Report.psm1 Write-Ui):
+      done of the total and percent, read, not scanned, possible PII per type, time used and left. At most every
+      $LiveLineSeconds, unless -Force. Counts only: no file name and no value.
+    .PARAMETER Meter
+      Output of New-ScanMeter.
+    .PARAMETER Noun
+      What an item is, for example 'file'.
+    .PARAMETER Force
+      Print now (after a folder).
+    #>
+    param([hashtable]$Meter, [string]$Noun, [switch]$Force)
+    $elapsed = $Meter.Clock.Elapsed
+    if (-not $Force -and ($elapsed - $Meter.LastLine).TotalSeconds -lt $script:LiveLineSeconds) { return }
+    $Meter.LastLine = $elapsed
+    Write-Ui ('  > {0}/{1} {2}s {3,3}%' -f $Meter.Done, $Meter.Total, $Noun, (Get-MeterPercent $Meter)) 'Title' -NoNewline
+    Write-Ui (' | read {0}' -f $Meter.Read) 'Text' -NoNewline
+    $kind = 'Muted'; if ($Meter.Skipped -gt 0) { $kind = 'Accent' }
+    Write-Ui (' | not scanned {0}' -f $Meter.Skipped) $kind -NoNewline
+    $kind = 'Muted'; if ($Meter.Hits -gt 0) { $kind = 'Alert' }
+    $types = Get-TypeCountText $Meter
+    if ($types) { $types = ' (' + $types + ')' }
+    Write-Ui (' | possible PII {0}{1}' -f $Meter.Hits, $types) $kind -NoNewline
+    $left = ''
+    if ($Meter.Total -gt 0 -and $Meter.Done -gt 0 -and $Meter.Done -lt $Meter.Total) {
+        $left = ', about ' + (Format-Duration ([TimeSpan]::FromTicks([long]($elapsed.Ticks / $Meter.Done * ($Meter.Total - $Meter.Done))))) + ' left'
+    }
+    Write-Ui (' | {0} used{1}' -f (Format-Duration $elapsed), $left) 'Muted'
 }
 
 function Get-MeterPercent {
@@ -1610,6 +1741,7 @@ function Write-FileStep {
       How far through the file's steps (0-100).
     #>
     param([long]$Size, [string]$Step, [int]$Percent)
+    if ($Size -lt $script:FileBarBytes) { return }
     $status = '{0} - {1:N1} MB' -f $Step, ($Size / 1MB)
     if ($Size -ge $script:LargeFileBytes) { $status += ' (a large file: this step can take a minute)' }
     Write-Progress -Id 2 -ParentId 1 -Activity 'This file' -Status $status -PercentComplete $Percent
@@ -1618,7 +1750,7 @@ function Write-FileStep {
 function Write-ChannelLine {
     <#
     .SYNOPSIS
-      Prints one line when a folder (a channel) is done: its counts, yellow when it has possible PII.
+      Prints one line when a folder (a channel) is done: its counts in FULCRUM colours; possible PII in red.
     .PARAMETER Number
       Which folder this is (1-based) and the folder count, as "2/5".
     .PARAMETER Channel
@@ -1632,11 +1764,13 @@ function Write-ChannelLine {
     #>
     param([string]$Number, [string]$Channel, [hashtable]$Before, [hashtable]$Meter, [string]$Noun)
     $hits = $Meter.Hits - $Before.Hits
-    $line = '  [{0}] {1}: {2} {3}s - read {4}, not scanned {5}, possible PII {6}' -f $Number, (Protect-PiiText $Channel),
-        ($Meter.Done - $Before.Done), $Noun, ($Meter.Read - $Before.Read), ($Meter.Skipped - $Before.Skipped), $hits
-    $colour = 'Green'
-    if ($hits -gt 0) { $colour = 'Yellow' }
-    Write-Host $line -ForegroundColor $colour
+    $skipped = $Meter.Skipped - $Before.Skipped
+    Write-Ui ('  [{0}] {1}: ' -f $Number, (Protect-PiiText $Channel)) 'Title' -NoNewline
+    Write-Ui ('{0} {1}s - read {2}' -f ($Meter.Done - $Before.Done), $Noun, ($Meter.Read - $Before.Read)) 'Text' -NoNewline
+    $kind = 'Muted'; if ($skipped -gt 0) { $kind = 'Accent' }
+    Write-Ui (', not scanned {0}' -f $skipped) $kind -NoNewline
+    $kind = 'Muted'; if ($hits -gt 0) { $kind = 'Alert' }
+    Write-Ui (', possible PII {0}' -f $hits) $kind
 }
 
 # ==== Module ChannelScan.psm1 ====
@@ -1669,6 +1803,9 @@ $script:LibraryNames = @('Shared Documents', 'Documents')
 
 # Teams makes one top-level folder per standard channel. "Forms" is SharePoint's own folder, not a channel.
 $script:NotChannelFolders = @('Forms')
+
+# Time spent downloading and spent reading and checking, for the summary (it shows where a slow scan loses its time).
+$script:Timing = @{ Download = [TimeSpan]::Zero; Check = [TimeSpan]::Zero }
 
 # How the report and the screen name the files at the top of the library (in no folder).
 $script:RootGroupName = '(top of the library)'
@@ -1761,12 +1898,68 @@ function Assert-SiteGroup {
     }
 }
 
+function ConvertTo-FriendlyError {
+    <#
+    .SYNOPSIS
+      A sign-in or site error in words a person can act on: no access, site not found, sign-in not finished.
+      Any other message is shown masked, as it is.
+    .PARAMETER Message
+      The error message.
+    .OUTPUTS
+      [string]
+    #>
+    param([string]$Message)
+    if ($Message -match '\b(401|403)\b|forbidden|access (is )?denied|unauthori[sz]ed|do(es)? not have (access|permission)') {
+        return "No access: your account cannot open this site. Ask the site's owner for access, or check the address."
+    }
+    if ($Message -match '\b404\b|not found|could not be resolved|remote name') { return 'Site not found: check the address.' }
+    if ($Message -match 'cancel|closed|aborted') { return 'The sign-in did not finish (was the sign-in window closed?).' }
+    return Protect-PiiText $Message
+}
+
+function Read-ScanTarget {
+    <#
+    .SYNOPSIS
+      Asks for a Teams link or site address until it is a valid one, or until the person presses Enter (exit).
+      A wrong paste is explained and asked again; nothing is signed in until the address is valid.
+    .PARAMETER Given
+      An address given up front (the -SiteUrl setting); used first, without asking.
+    .PARAMETER Prompt
+      The question to ask.
+    .OUTPUTS
+      Output of Get-ScanTarget, or $null when the person pressed Enter.
+    #>
+    param([string]$Given, [string]$Prompt)
+    $answer = $Given
+    while ($true) {
+        if (-not $answer) { $answer = Read-Host $Prompt }
+        if (-not $answer -or -not $answer.Trim()) { return $null }
+        try { return Get-ScanTarget $answer.Trim() }
+        catch {
+            Write-Ui ('That is not a Teams link or a site address: ' + (Protect-PiiText $_.Exception.Message)) 'Alert'
+            Write-Ui 'Paste it again (Teams: ... > Copy link; or the SharePoint address), or press Enter to exit.' 'Muted'
+            $answer = ''
+        }
+    }
+}
+
+function Read-TeamSiteAddress {
+    # For a Teams link: asks for the team's site address until it is valid; Enter gives up (an error the caller reports).
+    while ($true) {
+        $typed = Read-Host 'Team site address (https://usaf.dps.mil/teams/<team-site>), or Enter to go back'
+        if (-not $typed -or -not $typed.Trim()) { throw 'No site address given.' }
+        try { return Test-TeamSiteUrl $typed }
+        catch { Write-Ui ('Not a site address: ' + (Protect-PiiText $_.Exception.Message)) 'Alert' }
+    }
+}
+
 function Connect-TeamSite {
     <#
     .SYNOPSIS
-      Signs in (own CAC, PnP web login) to the team's site and returns its address. For a Teams link it asks
-      for the site address (a lookup at the tenant root hung on DoD365: the PAM, 2026-11-20), then checks that
-      the site belongs to the team in the link. On any error or cancel it signs out.
+      Signs in (own CAC, PnP web login) to the site and returns its address. For a Teams link it asks for the site
+      address (a lookup at the tenant root hung on DoD365: the PAM, 2026-11-20), then checks that the site belongs to
+      the team in the link. It then checks that the person can open the site. On any error or cancel it signs out
+      and throws a message a person can act on (ConvertTo-FriendlyError).
     .PARAMETER Target
       Output of Get-ScanTarget.
     .OUTPUTS
@@ -1778,18 +1971,20 @@ function Connect-TeamSite {
     try {
         if ($null -ne $Target.GroupId) {
             if ($Target.IsChannel) {
-                Write-Host 'Channel link: the scan covers the standard channels of its team. A private or shared channel has its own site: give that site address instead.' -ForegroundColor Yellow
+                Write-Ui 'Channel link: the scan covers the standard channels of its team. A private or shared channel has its own site: give that site address instead.' 'Accent'
             }
-            Write-Host "Teams link: the script needs this team's site address. In Teams: the team's Shared tab > ... > Open in SharePoint, then copy the address." -ForegroundColor Yellow
-            $site = Test-TeamSiteUrl (Read-Host 'Team site address (https://usaf.dps.mil/teams/<team-site>)')
+            Write-Ui "Teams link: the script needs this team's site address. In Teams: the team's Shared tab > ... > Open in SharePoint, then copy the address." 'Accent'
+            $site = Read-TeamSiteAddress
         }
-        Write-Host "Signing in to $site (a sign-in window opens; if you do not see it, press Alt+Tab) ..."
+        Write-Ui "Signing in to $site (a sign-in window opens; if you do not see it, press Alt+Tab; if it says you have no access, close it) ..." 'Muted'
         # PnP prints a warning that suggests -Interactive (and its update notice): not useful to the person, so hidden (the PAM, 2026-11-20).
         Connect-PnPOnline -Url $site -UseWebLogin -WarningAction SilentlyContinue
+        $null = Get-PnPWeb -ErrorAction Stop   # can this person open the site? A refusal here is "no access", before any scan
         if ($null -ne $Target.GroupId) { Assert-SiteGroup $Target.GroupId }
         $ok = $true
         return $site
     }
+    catch { throw (ConvertTo-FriendlyError $_.Exception.Message) }
     finally {
         # No scan starts after an error or a cancel here: sign out, so no connection stays open in the ISE session.
         if (-not $ok) {
@@ -1922,6 +2117,32 @@ function Get-RootFiles {
     }
 }
 
+function Read-FileText {
+    <#
+    .SYNOPSIS
+      Downloads one file and reads its text, showing the per-file bar and counting the time of each part.
+    .PARAMETER Ref
+      The file's server-relative path.
+    .PARAMETER Name
+      The file name (its extension decides how it is read).
+    .PARAMETER Size
+      The file size in bytes (for the per-file bar).
+    .PARAMETER Clock
+      A running stopwatch; restarted here, so the caller can time the PII check after it.
+    .OUTPUTS
+      Output of Get-TextFromBytes.
+    #>
+    param([string]$Ref, [string]$Name, [long]$Size, $Clock)
+    Write-FileStep $Size 'Downloading' 10
+    $bytes = Get-FileBytes $Ref
+    $script:Timing.Download += $Clock.Elapsed
+    Write-FileStep $Size 'Reading the text' 50
+    $Clock.Restart()
+    $text = Get-TextFromBytes -Bytes $bytes -FileName $Name
+    $script:Timing.Check += $Clock.Elapsed
+    return $text
+}
+
 function Invoke-OneFileScan {
     <#
     .SYNOPSIS
@@ -1960,12 +2181,8 @@ function Invoke-OneFileScan {
     if (-not (Test-SupportedFile $name)) { $skipReason = 'File type is not read by this script: check by hand' }
     elseif ($size -gt ($MaxFileMB * 1MB)) { $skipReason = "Larger than $MaxFileMB MB: check by hand" }
     if ($skipReason) { $Rows.Add((New-ReportRow 'File' $Channel $item $link $modified 'NOT SCANNED' '' '' $skipReason)); return 0 }
-    try {
-        Write-FileStep $size 'Downloading' 10
-        $bytes = Get-FileBytes $ref
-        Write-FileStep $size 'Reading the text' 50
-        $text = Get-TextFromBytes -Bytes $bytes -FileName $name
-    }
+    $clock = [Diagnostics.Stopwatch]::StartNew()
+    try { $text = Read-FileText $ref $name $size $clock }
     catch {
         # One file that cannot be downloaded must not stop the scan: note it and go on.
         $reason = Protect-PiiText ('Download failed: ' + $_.Exception.Message)
@@ -1973,10 +2190,18 @@ function Invoke-OneFileScan {
     }
     if ($text.Status -ne 'OK') { $Rows.Add((New-ReportRow 'File' $Channel $item $link $modified 'NOT SCANNED' '' '' (Protect-PiiText $text.Reason))); return 0 }
     Write-FileStep $size 'Checking for PII' 80
+    $clock.Restart()
     foreach ($hit in @(Find-PiiInText $text.Text)) {
         $Rows.Add((New-ReportRow 'File' $Channel $item $link $modified $hit.Detector $hit.Confidence $hit.MaskedValue $hit.Context))
     }
+    $script:Timing.Check += $clock.Elapsed
     return 1
+}
+
+function Get-ScanTiming {
+    # The time of the last file scan spent downloading and spent reading and checking, as minutes:seconds text.
+    $format = { param($t) '{0:00}:{1:00}' -f [int][Math]::Floor($t.TotalMinutes), $t.Seconds }
+    [ordered]@{ 'Time downloading' = (& $format $script:Timing.Download); 'Time reading and checking' = (& $format $script:Timing.Check) }
 }
 
 function Invoke-FileScan {
@@ -1998,6 +2223,7 @@ function Invoke-FileScan {
     #>
     param($Library, [string[]]$Channels, [string]$SiteUrl, [int]$MaxFileMB, $Rows)
     $origin = ([uri]$SiteUrl).GetLeftPart([System.UriPartial]::Authority)
+    $script:Timing = @{ Download = [TimeSpan]::Zero; Check = [TimeSpan]::Zero }
     $fields = @('FileLeafRef', 'FileRef', 'FSObjType', 'File_x0020_Size', 'Modified')
     $allItems = @(Get-PnPListItem -List $Library.List -PageSize $script:ListPageSize -Fields $fields -ErrorAction Stop)
     # One group per folder; files at the top of the library (a plain SharePoint site) are one more group.
@@ -2011,7 +2237,7 @@ function Invoke-FileScan {
     }
     $total = 0
     foreach ($group in $groups) { $total += $group.Files.Count }
-    Write-Host ('Found {0} files in {1} folders. Scanning ...' -f $total, $groups.Count) -ForegroundColor Cyan
+    Write-Ui ('Found {0} files in {1} folders. Scanning ...' -f $total, $groups.Count) 'Title'
     $meter = New-ScanMeter $total
     for ($c = 0; $c -lt $groups.Count; $c++) {
         $group = $groups[$c]
@@ -2024,11 +2250,12 @@ function Invoke-FileScan {
             $read = Invoke-OneFileScan $file $group.Name $group.Prefix $origin $MaxFileMB $Rows
             Write-Progress -Id 2 -Activity 'This file' -Completed
             Update-ScanMeter $meter $Rows $firstRow $read
+            Write-MeterLine $meter 'file'   # live counts, at most every few seconds
         }
         Write-ChannelLine ('{0}/{1}' -f ($c + 1), $groups.Count) $group.Name $before $meter 'file'
     }
     Write-Progress -Id 1 -Activity 'Scanning files' -Completed
-    Write-Host ('Files done: ' + (Get-ScanMeterText $meter 'file')) -ForegroundColor Cyan
+    Write-Ui ('Files done: ' + (Get-ScanMeterText $meter 'file')) 'Title'
     return $meter.Read
 }
 
@@ -2051,59 +2278,73 @@ function Test-TeamSite {
 # ==== Body ==== (scripts/build_paste.py copies everything from this line into the paste bundle; the lines above
 # become the bundle's Settings block and its inline module code)
 
-Write-Host 'Ion - DoD365 PII Reporter (read-only). Values in the results are masked.' -ForegroundColor Cyan
-$clock = [Diagnostics.Stopwatch]::StartNew()
-
-# ---- Step 1: the Teams link or site address (only this one site is touched) ----
-if (-not $SiteUrl) { $SiteUrl = Read-Host 'Teams link, or SharePoint site address (https://usaf.dps.mil/teams/<team-site> or /sites/<team-site>)' }
-$target = Get-ScanTarget $SiteUrl
-
-# ---- Step 2: sign in with the person's own CAC (a Teams link first asks for the team's site) ----
-$SiteUrl = Connect-TeamSite $target
-
-$rows = New-Object System.Collections.Generic.List[object]
-$scanned = 0
-$selected = @()
-$folderLabel = 'Folder'   # 'Channel' when the site belongs to a team (the PAM, 2026-11-20)
-$finished = $false   # set only after the last step; a cancelled run (Ctrl+C) skips 'catch' but not 'finally'
-try {
-    # ---- Step 3: the folders to scan: all of them (in a team, one per channel) ----
-    # Only the column name depends on it: if the site's group cannot be read, the scan goes on with 'Folder'.
-    try { if (Test-TeamSite) { $folderLabel = 'Channel' } }
-    catch { Write-Verbose 'Team check not possible: the folder column is named Folder.' }
-    $library = Get-TeamDocumentLibrary
-    $selected = @(Get-ChannelFolderNames $library)
-    $shownFolders = ($selected | ForEach-Object { Protect-PiiText $_ }) -join ', '
-    Write-Host ($folderLabel + 's to scan: ' + $shownFolders + '; also any files at the top of the library')
-
-    # ---- Step 4: the files ----
-    $scanned += Invoke-FileScan -Library $library -Channels $selected -SiteUrl $SiteUrl -MaxFileMB $MaxFileMB -Rows $rows
-    $finished = $true
-}
-catch {
-    # Keep what was found so far: the results say the scan stopped early, and why (PII in the message masked).
-    $reason = Protect-PiiText $_.Exception.Message
-    Write-Host ('The scan stopped early: ' + $reason) -ForegroundColor Red
-    $rows.Add((New-ReportRow 'Scan' '(all)' '(scan)' '' '' 'INCOMPLETE' '' '' ('Stopped early: ' + $reason)))
-}
-finally {
-    # ---- Step 5: the results (also after an error or a cancel), then sign out ----
-    Add-IncompleteRow -Rows $rows -Finished $finished
-    $header = [ordered]@{}
-    $header['Site'] = $SiteUrl
-    $header[$folderLabel + 's'] = ($selected | ForEach-Object { Protect-PiiText $_ }) -join ', '
-    $header['Run'] = Get-Date -Format 'yyyy-MM-dd HH:mm'
-    $header['Time used'] = '{0:00}:{1:00}' -f [int][Math]::Floor($clock.Elapsed.TotalMinutes), $clock.Elapsed.Seconds
+function Invoke-SiteFiles {
+    <#
+    .SYNOPSIS
+      Scans one signed-in site: its folders and files, then saves the workbook and signs out (also after an error or
+      a cancel: the results so far are saved and say INCOMPLETE).
+    .PARAMETER SiteUrl
+      The signed-in site.
+    .PARAMETER OutputFolder
+      The base folder for the results.
+    .PARAMETER MaxFileMB
+      Files larger than this are reported as NOT SCANNED.
+    #>
+    param([string]$SiteUrl, [string]$OutputFolder, [int]$MaxFileMB)
+    $clock = [Diagnostics.Stopwatch]::StartNew()
+    $rows = New-Object System.Collections.Generic.List[object]
+    $scanned = 0
+    $selected = @()
+    $folderLabel = 'Folder'   # 'Channel' when the site belongs to a team (the PAM, 2026-11-20)
+    $finished = $false   # set only after the last step; a cancelled run (Ctrl+C) skips 'catch' but not 'finally'
     try {
-        $null = Publish-ScanReport -Rows $rows.ToArray() -ItemsScanned $scanned -Header $header -OutputFolder $OutputFolder `
-            -SiteUrl $SiteUrl -FolderLabel $folderLabel
+        # Only the column name depends on it: if the site's group cannot be read, the scan goes on with 'Folder'.
+        try { if (Test-TeamSite) { $folderLabel = 'Channel' } }
+        catch { Write-Verbose 'Team check not possible: the folder column is named Folder.' }
+        $library = Get-TeamDocumentLibrary
+        $selected = @(Get-ChannelFolderNames $library)
+        Write-Ui ($folderLabel + 's to scan: ' + (($selected | ForEach-Object { Protect-PiiText $_ }) -join ', ') + '; also any files at the top of the library') 'Text'
+        $scanned += Invoke-FileScan -Library $library -Channels $selected -SiteUrl $SiteUrl -MaxFileMB $MaxFileMB -Rows $rows
+        $finished = $true
+    }
+    catch {
+        # Keep what was found so far: the results say the scan stopped early, and why, in words a person can act on.
+        $reason = ConvertTo-FriendlyError $_.Exception.Message
+        Write-Ui ('The scan stopped early: ' + $reason) 'Alert'
+        $rows.Add((New-ReportRow 'Scan' '(all)' '(scan)' '' '' 'INCOMPLETE' '' '' ('Stopped early: ' + $reason)))
     }
     finally {
-        # Sign out even when the results could not be saved (for example, a folder that cannot be written).
-        try { Disconnect-PnPOnline }
-        catch { Write-Verbose 'Already signed out.' }  # nothing to sign out of: not an error for the person
+        Add-IncompleteRow -Rows $rows -Finished $finished
+        $header = [ordered]@{}
+        $header['Site'] = $SiteUrl
+        $header[$folderLabel + 's'] = ($selected | ForEach-Object { Protect-PiiText $_ }) -join ', '
+        $header['Run'] = Get-Date -Format 'yyyy-MM-dd HH:mm'
+        $header['Time used'] = '{0:00}:{1:00}' -f [int][Math]::Floor($clock.Elapsed.TotalMinutes), $clock.Elapsed.Seconds
+        foreach ($pair in (Get-ScanTiming).GetEnumerator()) { $header[$pair.Key] = $pair.Value }
+        try { $null = Publish-ScanReport -Rows $rows.ToArray() -ItemsScanned $scanned -Header $header -OutputFolder $OutputFolder -SiteUrl $SiteUrl -FolderLabel $folderLabel }
+        finally {
+            # Sign out even when the results could not be saved (for example, a folder that cannot be written).
+            try { Disconnect-PnPOnline }
+            catch { Write-Verbose 'Already signed out.' }  # nothing to sign out of: not an error for the person
+        }
     }
 }
+
+Write-Ui 'Ion - DoD365 PII Reporter (read-only). Values in the results are masked.' 'Title'
+
+# ---- Ask for a site, sign in, scan, save; then offer another site, until the person presses Enter ----
+# A wrong paste is explained and asked again (Read-ScanTarget); a site the person cannot open is reported as
+# "no access" and nothing is saved for it (Connect-TeamSite); only the one site given is touched each time.
+$target = Read-ScanTarget $SiteUrl 'Teams link or SharePoint site address (https://usaf.dps.mil/teams/<team-site>), or Enter to exit'
+while ($null -ne $target) {
+    $site = $null
+    try { $site = Connect-TeamSite $target }
+    catch { Write-Ui $_.Exception.Message 'Alert' }
+    if ($site) { Invoke-SiteFiles -SiteUrl $site -OutputFolder $OutputFolder -MaxFileMB $MaxFileMB }
+    Write-Ui ''
+    $target = Read-ScanTarget '' 'Scan another site? Paste its Teams link or site address, or press Enter to exit'
+}
+Write-Ui 'Ion is done: nothing stays signed in.' 'Muted'
 
 # ==== Clean-up ====
 } finally {

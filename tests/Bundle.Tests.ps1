@@ -64,21 +64,23 @@ $ErrorActionPreference = 'Stop'
 Assert-Equal 'Continue' $errorPathAction 'Bundle put the session error setting back after a failed scan'
 Assert-Equal $true (@(Get-ResultFiles $bundleFolder).Count -ge 2) 'Failed scan still saved its results'
 
-# An error before the scan's own try (the sign-in fails) leaves the bundle through its outer 'finally' only: strict
-# mode off and the session's error setting back (the outer clean-up), signed out (Connect-TeamSite's own 'finally'),
-# and the error reaches the person.
+# A sign-in that fails: the person sees why (no exception), is signed out, is offered another site (Enter exits),
+# and the clean-up still puts strict mode and the session's error setting back.
 Reset-FakePnP @{}
 Set-FakePnPOption ConnectFails $true
 $ErrorActionPreference = 'Continue'
 Set-StrictMode -Off
 $outerError = ''
-try { . $runCopy 6>$null } catch { $outerError = $_.Exception.Message }
+$shown = ''
+try { $shown = (. $runCopy 6>&1 | ForEach-Object { [string]$_ }) -join ' ' } catch { $outerError = $_.Exception.Message }
 $outerAction = $ErrorActionPreference
 $outerStrict = $false
 try { $null = $notDefinedAnywhereEither } catch { $outerStrict = $true }  # strict mode makes an unset variable an error
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
-Assert-Equal 'FAKE: sign-in refused' $outerError 'Sign-in error reached the person'
+Assert-Equal '' $outerError 'A failed sign-in does not end the script with an error'
+Assert-Equal $true ($shown -match 'sign-in refused') 'The failed sign-in is shown to the person'
+Assert-Equal 1 (Get-FakeCallCount 'Read-Host') 'Then another site is offered (Enter exits)'
 Assert-Equal 'Continue' $outerAction 'Outer clean-up put the session error setting back'
 Assert-Equal $false $outerStrict 'Outer clean-up turned strict mode off'
 Assert-Equal $true (Test-FakePnPCall 'Disconnect-PnPOnline') 'Outer error path signed out'

@@ -36,9 +36,11 @@ $script:SeverityOrder = @('SSN', 'Date of birth', 'Passport', 'Payment card', 'D
 # How many files the screen summary lists (the workbook lists all).
 $script:TopItems = 10
 
-# Line width for the text tables. Without a console window, Out-String has no width and prints
-# empty tables, so a width is always given. 220 fits the widest table on a landscape printout.
-$script:TableWidth = 220
+# Screen colours from the FULCRUM palette (the PAM, 2026-11-20). Write-Host has only the 16 console colours, so each
+# palette colour maps to its nearest: cream = White (titles, values), gold = Yellow (accents, Medium), ember = Red
+# (possible PII, High, errors), slate = Gray (muted text, zero counts). Ink is the console background.
+$script:ScreenColors = @{ Title = 'White'; Text = 'White'; Accent = 'Yellow'; Alert = 'Red'; Muted = 'Gray' }
+
 
 # What to do with PII found where it should not be: the breach steps of the rule source, AFI 33-332 para 3.1.2 as
 # changed by AFI33-332_DAFGM2026-01 (7 July 2026; edition: docs/DECISIONS.md).
@@ -104,6 +106,21 @@ function Add-IncompleteRow {
     $Rows.Add((New-ReportRow 'Scan' '(all)' '(scan)' '' '' 'INCOMPLETE' '' '' 'Stopped before the end (cancelled?)'))
 }
 
+function Write-Ui {
+    <#
+    .SYNOPSIS
+      Writes one piece of screen text in a palette colour ($ScreenColors). Every screen line of Ion goes through here.
+    .PARAMETER Text
+      The text (already masked by the caller).
+    .PARAMETER Kind
+      Title, Text, Accent, Alert or Muted.
+    .PARAMETER NoNewline
+      Keep writing on the same line (for a line with several colours).
+    #>
+    param([AllowEmptyString()][string]$Text, [ValidateSet('Title', 'Text', 'Accent', 'Alert', 'Muted')][string]$Kind = 'Text', [switch]$NoNewline)
+    Write-Host $Text -ForegroundColor $script:ScreenColors[$Kind] -NoNewline:$NoNewline
+}
+
 function Get-SeverityIndex {
     # Where a PII type stands in $SeverityOrder (0 = worst); a type not in the list comes last.
     param([string]$Type)
@@ -134,21 +151,6 @@ function Get-ReportSummary {
     }
     return @($summary | Sort-Object @{ Expression = { Get-SeverityIndex $_.Worst } }, @{ Expression = { $script:Rank[$_.Highest] }; Descending = $true },
         @{ Expression = 'Hits'; Descending = $true })
-}
-
-function ConvertTo-TableText {
-    <#
-    .SYNOPSIS
-      Formats objects as a text table at a fixed width (see $TableWidth).
-    .PARAMETER InputRows
-      The objects to show.
-    .PARAMETER Columns
-      The property names to show, in order.
-    .OUTPUTS
-      [string]
-    #>
-    param([object[]]$InputRows, [string[]]$Columns)
-    return ($InputRows | Format-Table -Property $Columns -AutoSize -Wrap | Out-String -Width $script:TableWidth).TrimEnd()
 }
 
 function Get-TypeCounts {
@@ -191,10 +193,44 @@ function Get-ScanMetrics {
     return $metrics
 }
 
+function Format-BoxTable {
+    <#
+    .SYNOPSIS
+      A text table with ASCII borders (no other characters: Windows PowerShell 5.1 and ISE show them all alike).
+      Text columns are left-aligned, number columns right-aligned.
+    .PARAMETER Columns
+      The header texts.
+    .PARAMETER Rows
+      The rows, each an array of cells.
+    .OUTPUTS
+      [string[]] the border line, the header, the border, one line per row, the border.
+    #>
+    param([string[]]$Columns, [object[]]$Rows)
+    $widths = for ($i = 0; $i -lt $Columns.Count; $i++) {
+        [Math]::Max($Columns[$i].Length, (@($Rows | ForEach-Object { ([string]$_[$i]).Length }) + 0 | Measure-Object -Maximum).Maximum)
+    }
+    $border = '+' + ((@($widths) | ForEach-Object { '-' * ($_ + 2) }) -join '+') + '+'
+    # One table line: each cell padded to its column width, numbers to the right.
+    $line = {
+        param($cells)
+        $parts = for ($i = 0; $i -lt $Columns.Count; $i++) {
+            $cell = [string]$cells[$i]
+            if ($cells[$i] -is [int]) { ' ' + $cell.PadLeft($widths[$i]) + ' ' } else { ' ' + $cell.PadRight($widths[$i]) + ' ' }
+        }
+        '|' + ($parts -join '|') + '|'
+    }
+    $border
+    & $line $Columns
+    $border
+    foreach ($row in $Rows) { & $line $row }
+    $border
+}
+
 function Get-ScanSummaryText {
     <#
     .SYNOPSIS
-      The summary for the screen: the scan's details and totals, possible PII per type (worst first), and the
+      The summary for the screen, line by line with its palette colour: the scan's details and totals, a table of
+      possible PII per type (worst first; red with High hits, gold with Medium, grey otherwise), and a table of the
       files with the most serious hits. Every hit is listed in the workbook, not here.
     .PARAMETER Rows
       All report rows.
@@ -205,28 +241,41 @@ function Get-ScanSummaryText {
     .PARAMETER FolderLabel
       'Channel' (a team) or 'Folder' (a plain site).
     .OUTPUTS
-      [string[]]
+      [pscustomobject] Text, Kind (a Write-Ui colour), one per line.
     #>
     param([object[]]$Rows, [int]$ItemsScanned, [System.Collections.IDictionary]$Header, [string]$FolderLabel)
-    $lines = New-Object System.Collections.Generic.List[string]
-    $lines.Add(''); $lines.Add('==== ' + $script:ToolTitle + ' ====')
+    $out = New-Object System.Collections.Generic.List[object]
+    # Adds one screen line with its colour.
+    $add = { param($text, $kind) $out.Add([pscustomobject]@{ Text = $text; Kind = $kind }) }
+    & $add '' 'Text'; & $add ('==== ' + $script:ToolTitle + ' ====') 'Title'
     foreach ($pair in @($Header.GetEnumerator()) + @((Get-ScanMetrics $Rows $ItemsScanned).GetEnumerator())) {
-        $lines.Add(('{0,-26} {1}' -f ($pair.Key + ':'), $pair.Value))
+        & $add ('{0,-26} {1}' -f ($pair.Key + ':'), $pair.Value) 'Text'
     }
     $hits = @($Rows | Where-Object { $script:Rank.ContainsKey($_.Confidence) })
-    if ($hits.Count -gt 0) {
-        $lines.Add(''); $lines.Add('POSSIBLE PII BY TYPE (worst first):')
-        $lines.Add((ConvertTo-TableText @(Get-TypeCounts $hits) @('Type', 'High', 'Medium', 'Low', 'Total')))
-        $top = @(Get-ReportSummary $Rows | Select-Object -First $script:TopItems |
-            Select-Object Worst, Highest, Hits, @{ Name = $FolderLabel; Expression = { $_.Channel } }, Item)
-        $lines.Add(''); $lines.Add(('FILES WITH THE MOST SERIOUS HITS (first {0}; all are in the workbook):' -f $script:TopItems))
-        $lines.Add((ConvertTo-TableText $top @('Worst', 'Highest', 'Hits', $FolderLabel, 'Item')))
+    if ($hits.Count -eq 0) { & $add '' 'Text'; & $add 'No possible PII found in the files that were read.' 'Title' }
+    else {
+        $types = @(Get-TypeCounts $hits)
+        & $add '' 'Text'; & $add 'POSSIBLE PII BY TYPE (worst first)' 'Title'
+        $table = @(Format-BoxTable @('Type', 'High', 'Medium', 'Low', 'Total') @($types | ForEach-Object { , @($_.Type, $_.High, $_.Medium, $_.Low, $_.Total) }))
+        for ($i = 0; $i -lt $table.Count; $i++) {
+            $kind = 'Muted'
+            if ($i -eq 1) { $kind = 'Title' }
+            elseif ($i -ge 3 -and $i -lt $table.Count - 1) {
+                $type = $types[$i - 3]
+                if ($type.High -gt 0) { $kind = 'Alert' } elseif ($type.Medium -gt 0) { $kind = 'Accent' }
+            }
+            & $add $table[$i] $kind
+        }
+        $top = @(Get-ReportSummary $Rows | Select-Object -First $script:TopItems)
+        & $add '' 'Text'; & $add ('FILES WITH THE MOST SERIOUS HITS (first {0}; all are in the workbook)' -f $script:TopItems) 'Title'
+        foreach ($text in @(Format-BoxTable @('Worst', 'Highest', 'Hits', $FolderLabel, 'Item') @($top | ForEach-Object { , @($_.Worst, $_.Highest, $_.Hits, $_.Channel, $_.Item) }))) {
+            & $add $text 'Text'
+        }
     }
-    else { $lines.Add(''); $lines.Add('No possible PII found in the files that were read.') }
-    $lines.Add('')
-    $lines.Add('Confidence is a pattern guess, not proof: open each item and check it before you act.')
-    $lines.Add($script:BreachAdvice)
-    return $lines.ToArray()
+    & $add '' 'Text'
+    & $add 'Confidence is a pattern guess, not proof: open each item and check it before you act.' 'Muted'
+    & $add $script:BreachAdvice 'Accent'
+    return $out.ToArray()
 }
 
 # =====================================================================================
@@ -355,14 +404,14 @@ function Publish-ScanReport {
     #>
     param([object[]]$Rows, [int]$ItemsScanned, [System.Collections.IDictionary]$Header, [string]$OutputFolder, [string]$SiteUrl,
           [string]$FolderLabel = 'Folder')
-    Get-ScanSummaryText -Rows $Rows -ItemsScanned $ItemsScanned -Header $Header -FolderLabel $FolderLabel | ForEach-Object { Write-Host $_ }
+    Get-ScanSummaryText -Rows $Rows -ItemsScanned $ItemsScanned -Header $Header -FolderLabel $FolderLabel | ForEach-Object { Write-Ui $_.Text $_.Kind }
     $path = Get-ResultPath $OutputFolder $SiteUrl
     Export-Xlsx -Path $path -Sheets (Get-WorkbookSheets $Rows $ItemsScanned $Header $FolderLabel)
-    Write-Host ''
-    Write-Host "Saved (values masked): $path" -ForegroundColor Cyan
-    Write-Host 'Handle this file as CUI: it shows where PII is.' -ForegroundColor Yellow
+    Write-Ui ''
+    Write-Ui "Saved (values masked): $path" 'Title'
+    Write-Ui 'Handle this file as CUI: it shows where PII is.' 'Accent'
     return $path
 }
 
-Export-ModuleMember -Function New-ReportRow, Add-IncompleteRow, Get-ReportSummary, Get-TypeCounts, Get-ScanSummaryText, Get-WorkbookSheets,
+Export-ModuleMember -Function Write-Ui, Get-SeverityIndex, New-ReportRow, Add-IncompleteRow, Get-ReportSummary, Get-TypeCounts, Get-ScanSummaryText, Get-WorkbookSheets,
 Get-ResultPath, Publish-ScanReport

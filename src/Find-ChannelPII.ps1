@@ -61,56 +61,70 @@ foreach ($module in @('PiiDetectors.psm1', 'PiiMasking.psm1', 'TextExtract.psm1'
 # ==== Body ==== (scripts/build_paste.py copies everything from this line into the paste bundle; the lines above
 # become the bundle's Settings block and its inline module code)
 
-Write-Host 'Ion - DoD365 PII Reporter (read-only). Values in the results are masked.' -ForegroundColor Cyan
-$clock = [Diagnostics.Stopwatch]::StartNew()
-
-# ---- Step 1: the Teams link or site address (only this one site is touched) ----
-if (-not $SiteUrl) { $SiteUrl = Read-Host 'Teams link, or SharePoint site address (https://usaf.dps.mil/teams/<team-site> or /sites/<team-site>)' }
-$target = Get-ScanTarget $SiteUrl
-
-# ---- Step 2: sign in with the person's own CAC (a Teams link first asks for the team's site) ----
-$SiteUrl = Connect-TeamSite $target
-
-$rows = New-Object System.Collections.Generic.List[object]
-$scanned = 0
-$selected = @()
-$folderLabel = 'Folder'   # 'Channel' when the site belongs to a team (the PAM, 2026-11-20)
-$finished = $false   # set only after the last step; a cancelled run (Ctrl+C) skips 'catch' but not 'finally'
-try {
-    # ---- Step 3: the folders to scan: all of them (in a team, one per channel) ----
-    # Only the column name depends on it: if the site's group cannot be read, the scan goes on with 'Folder'.
-    try { if (Test-TeamSite) { $folderLabel = 'Channel' } }
-    catch { Write-Verbose 'Team check not possible: the folder column is named Folder.' }
-    $library = Get-TeamDocumentLibrary
-    $selected = @(Get-ChannelFolderNames $library)
-    $shownFolders = ($selected | ForEach-Object { Protect-PiiText $_ }) -join ', '
-    Write-Host ($folderLabel + 's to scan: ' + $shownFolders + '; also any files at the top of the library')
-
-    # ---- Step 4: the files ----
-    $scanned += Invoke-FileScan -Library $library -Channels $selected -SiteUrl $SiteUrl -MaxFileMB $MaxFileMB -Rows $rows
-    $finished = $true
-}
-catch {
-    # Keep what was found so far: the results say the scan stopped early, and why (PII in the message masked).
-    $reason = Protect-PiiText $_.Exception.Message
-    Write-Host ('The scan stopped early: ' + $reason) -ForegroundColor Red
-    $rows.Add((New-ReportRow 'Scan' '(all)' '(scan)' '' '' 'INCOMPLETE' '' '' ('Stopped early: ' + $reason)))
-}
-finally {
-    # ---- Step 5: the results (also after an error or a cancel), then sign out ----
-    Add-IncompleteRow -Rows $rows -Finished $finished
-    $header = [ordered]@{}
-    $header['Site'] = $SiteUrl
-    $header[$folderLabel + 's'] = ($selected | ForEach-Object { Protect-PiiText $_ }) -join ', '
-    $header['Run'] = Get-Date -Format 'yyyy-MM-dd HH:mm'
-    $header['Time used'] = '{0:00}:{1:00}' -f [int][Math]::Floor($clock.Elapsed.TotalMinutes), $clock.Elapsed.Seconds
+function Invoke-SiteFiles {
+    <#
+    .SYNOPSIS
+      Scans one signed-in site: its folders and files, then saves the workbook and signs out (also after an error or
+      a cancel: the results so far are saved and say INCOMPLETE).
+    .PARAMETER SiteUrl
+      The signed-in site.
+    .PARAMETER OutputFolder
+      The base folder for the results.
+    .PARAMETER MaxFileMB
+      Files larger than this are reported as NOT SCANNED.
+    #>
+    param([string]$SiteUrl, [string]$OutputFolder, [int]$MaxFileMB)
+    $clock = [Diagnostics.Stopwatch]::StartNew()
+    $rows = New-Object System.Collections.Generic.List[object]
+    $scanned = 0
+    $selected = @()
+    $folderLabel = 'Folder'   # 'Channel' when the site belongs to a team (the PAM, 2026-11-20)
+    $finished = $false   # set only after the last step; a cancelled run (Ctrl+C) skips 'catch' but not 'finally'
     try {
-        $null = Publish-ScanReport -Rows $rows.ToArray() -ItemsScanned $scanned -Header $header -OutputFolder $OutputFolder `
-            -SiteUrl $SiteUrl -FolderLabel $folderLabel
+        # Only the column name depends on it: if the site's group cannot be read, the scan goes on with 'Folder'.
+        try { if (Test-TeamSite) { $folderLabel = 'Channel' } }
+        catch { Write-Verbose 'Team check not possible: the folder column is named Folder.' }
+        $library = Get-TeamDocumentLibrary
+        $selected = @(Get-ChannelFolderNames $library)
+        Write-Ui ($folderLabel + 's to scan: ' + (($selected | ForEach-Object { Protect-PiiText $_ }) -join ', ') + '; also any files at the top of the library') 'Text'
+        $scanned += Invoke-FileScan -Library $library -Channels $selected -SiteUrl $SiteUrl -MaxFileMB $MaxFileMB -Rows $rows
+        $finished = $true
+    }
+    catch {
+        # Keep what was found so far: the results say the scan stopped early, and why, in words a person can act on.
+        $reason = ConvertTo-FriendlyError $_.Exception.Message
+        Write-Ui ('The scan stopped early: ' + $reason) 'Alert'
+        $rows.Add((New-ReportRow 'Scan' '(all)' '(scan)' '' '' 'INCOMPLETE' '' '' ('Stopped early: ' + $reason)))
     }
     finally {
-        # Sign out even when the results could not be saved (for example, a folder that cannot be written).
-        try { Disconnect-PnPOnline }
-        catch { Write-Verbose 'Already signed out.' }  # nothing to sign out of: not an error for the person
+        Add-IncompleteRow -Rows $rows -Finished $finished
+        $header = [ordered]@{}
+        $header['Site'] = $SiteUrl
+        $header[$folderLabel + 's'] = ($selected | ForEach-Object { Protect-PiiText $_ }) -join ', '
+        $header['Run'] = Get-Date -Format 'yyyy-MM-dd HH:mm'
+        $header['Time used'] = '{0:00}:{1:00}' -f [int][Math]::Floor($clock.Elapsed.TotalMinutes), $clock.Elapsed.Seconds
+        foreach ($pair in (Get-ScanTiming).GetEnumerator()) { $header[$pair.Key] = $pair.Value }
+        try { $null = Publish-ScanReport -Rows $rows.ToArray() -ItemsScanned $scanned -Header $header -OutputFolder $OutputFolder -SiteUrl $SiteUrl -FolderLabel $folderLabel }
+        finally {
+            # Sign out even when the results could not be saved (for example, a folder that cannot be written).
+            try { Disconnect-PnPOnline }
+            catch { Write-Verbose 'Already signed out.' }  # nothing to sign out of: not an error for the person
+        }
     }
 }
+
+Write-Ui 'Ion - DoD365 PII Reporter (read-only). Values in the results are masked.' 'Title'
+
+# ---- Ask for a site, sign in, scan, save; then offer another site, until the person presses Enter ----
+# A wrong paste is explained and asked again (Read-ScanTarget); a site the person cannot open is reported as
+# "no access" and nothing is saved for it (Connect-TeamSite); only the one site given is touched each time.
+$target = Read-ScanTarget $SiteUrl 'Teams link or SharePoint site address (https://usaf.dps.mil/teams/<team-site>), or Enter to exit'
+while ($null -ne $target) {
+    $site = $null
+    try { $site = Connect-TeamSite $target }
+    catch { Write-Ui $_.Exception.Message 'Alert' }
+    if ($site) { Invoke-SiteFiles -SiteUrl $site -OutputFolder $OutputFolder -MaxFileMB $MaxFileMB }
+    Write-Ui ''
+    $target = Read-ScanTarget '' 'Scan another site? Paste its Teams link or site address, or press Enter to exit'
+}
+Write-Ui 'Ion is done: nothing stays signed in.' 'Muted'

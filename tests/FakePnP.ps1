@@ -36,7 +36,8 @@ function Reset-FakePnP {
         ListFails   = $false
         ConnectFails = $false                                     # the web login to a site fails (an error before the scan)
         SiteFails   = $false                                      # Get-PnPSite fails (the site's group cannot be read)
-        TypedSite   = 'https://tenant.example.com/teams/TeamA'   # what the fake Read-Host returns
+        TypedSite   = New-Object System.Collections.Generic.Queue[string]   # the fake Read-Host's answers, in order; none = Enter
+        NoAccess    = $false                                      # the site refuses the signed-in person (403)
         SiteGroupId = [guid]'11111111-2222-3333-4444-555555555555'
         Calls       = New-Object System.Collections.Generic.List[string]
         Progress    = New-Object System.Collections.Generic.List[string]
@@ -44,8 +45,8 @@ function Reset-FakePnP {
 }
 
 function Set-FakePnPOption {
-    # Changes one switch of the fake site: ListFails, ConnectFails or SiteFails.
-    param([ValidateSet('ListFails', 'ConnectFails', 'SiteFails')][string]$Name, [bool]$Value)
+    # Changes one switch of the fake site: ListFails, ConnectFails, SiteFails or NoAccess.
+    param([ValidateSet('ListFails', 'ConnectFails', 'SiteFails', 'NoAccess')][string]$Name, [bool]$Value)
     $global:FakePnP[$Name] = $Value
 }
 
@@ -58,16 +59,17 @@ function Set-FakeFolders {
 function Set-FakeSiteAnswer {
     <#
     .SYNOPSIS
-      Sets what Read-Host returns (the typed site address) and the group ID of the connected site.
+      Sets what Read-Host returns, answer by answer, and the group ID of the connected site.
     .PARAMETER TypedSite
-      What the fake Read-Host returns; 'cancel' = the prompt fails (stands in for a cancel).
+      The answers of the fake Read-Host, in order; after the last, it returns '' (Enter). 'cancel' = the prompt fails.
     .PARAMETER SiteGroupId
       The group ID of the connected site (Get-PnPSite).
     .OUTPUTS
       None (changes $global:FakePnP).
     #>
-    param([string]$TypedSite, [guid]$SiteGroupId = '11111111-2222-3333-4444-555555555555')
-    $global:FakePnP.TypedSite = $TypedSite
+    param([string[]]$TypedSite = @(), [guid]$SiteGroupId = '11111111-2222-3333-4444-555555555555')
+    $global:FakePnP.TypedSite.Clear()
+    foreach ($answer in $TypedSite) { if ($answer) { $global:FakePnP.TypedSite.Enqueue($answer) } }
     $global:FakePnP.SiteGroupId = $SiteGroupId
 }
 
@@ -183,6 +185,13 @@ function global:Disconnect-PnPOnline {
     $global:FakePnP.Calls.Add('Disconnect-PnPOnline')
 }
 
+function global:Get-PnPWeb {
+    # Fake: the site's web; refused (403) when NoAccess is set.
+    [CmdletBinding()] param()
+    if ($global:FakePnP.NoAccess) { throw 'The remote server returned an error: (403) Forbidden.' }
+    [pscustomobject]@{ Title = 'Team A' }
+}
+
 function global:Get-PnPSite {
     # Fake: the site belongs to a team (a Microsoft 365 group).
     [CmdletBinding()] param($Includes)
@@ -195,7 +204,9 @@ function global:Read-Host {
     [CmdletBinding()] param($Prompt)
     $global:FakePnP.Calls.Add('Read-Host')
     # A real cancel stops the whole pipeline (the test run too); an error leaves through the same 'finally'.
-    if ($global:FakePnP.TypedSite -eq 'cancel') { throw 'FAKE: prompt cancelled' }
-    return $global:FakePnP.TypedSite
+    if ($global:FakePnP.TypedSite.Count -eq 0) { return '' }
+    $answer = $global:FakePnP.TypedSite.Dequeue()
+    if ($answer -eq 'cancel') { throw 'FAKE: prompt cancelled' }
+    return $answer
 }
 

@@ -90,7 +90,10 @@ function Convert-XmlToText {
       [string]
     #>
     param([string]$Xml)
-    $text = $Xml -replace '<w:tab/>|<w:br/>|<a:br/>', ' '
+    # Word field codes are not shown on the page: PAGEREF _Toc123456789, HYPERLINK addresses, form IDs. They gave
+    # false positives (a 9-digit bookmark number read as an SSN), so their text is dropped (the PAM, 2026-11-20).
+    $text = $Xml -replace '(?s)<w:instrText\b[^>]*>.*?</w:instrText>', ''
+    $text = $text -replace '<w:tab/>|<w:br/>|<a:br/>', ' '
     $text = $text -replace '</w:p>|</a:p>|</row>', "`n"
     $text = $text -replace '</si>|</c>|</w:tc>|</a:tc>', ' '
     $text = $text -replace '<[^>]+>', ''

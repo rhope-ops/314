@@ -26,11 +26,11 @@ Assert-Equal 1 $results.Count 'Script saved one workbook'
 Assert-Equal 0 @(Get-ChildItem -LiteralPath $runFolder -Recurse | Where-Object { $_.Extension -in @('.txt', '.csv') }).Count 'No .txt or .csv any more'
 Assert-Equal 'NOT SCANNED Phone SSN' (Get-WorkbookTypes $results[0].FullName) 'Script found every planted type'
 Assert-Equal 'Channel' (Get-XlsxSheets $results[0].FullName)['SSN'][0][1] 'A team: the folder column is named Channel'
-Assert-Equal $false (Test-FakePnPCall 'Read-Host') 'No question asked when the site is given'
+Assert-Equal 1 (Get-FakeCallCount 'Read-Host') 'Only one question when the site is given: another site or exit'
 Assert-Equal 1 @(Get-FakePnPConnection).Count 'One sign-in only: no posts sign-in'
 Assert-Equal $true ((Get-FakeProgressText) -match '2 of 3 files done \| read \d+ \| not scanned 0 \| possible PII \d+ in \d+ files') 'Progress bar shows the file counts'
 Assert-Equal $true ((Get-FakeProgressText) -match "folder 2 of 2: 'Ops'") 'Progress bar names the folder and its number'
-Assert-Equal $true ((Get-FakeProgressText) -match 'This file Checking for PII - \d+\.\d MB') 'Per-file bar shows the step and the size'
+Assert-Equal $false ((Get-FakeProgressText) -match 'This file (Downloading|Reading|Checking)') 'Small files: no per-file bar (it would only slow the scan)'
 
 # ---- A plain SharePoint site (no team): Folder column, top-of-library files ----
 Reset-FakePnP @{ "$library/top.txt" = $Txt }

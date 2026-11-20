@@ -65,8 +65,16 @@ Assert-Equal 0 (Get-HitSummary 'Suspense 03/14/2027').Count 'Date without birth 
 Assert-Equal 'Passport/Medium/*****567' (Get-HitSummary "Passport no. $($Sample.Passport)") 'Passport with label'
 Assert-Equal 'Phone/Medium/***-***-0142' (Get-HitSummary "my cell $($Sample.Phone)") 'Phone with personal label'
 Assert-Equal 'Phone/Low/***-***-0142' (Get-HitSummary "office $($Sample.PhoneParen)") 'Phone without label'
-Assert-Equal 'Personal e-mail/Medium/***@example.com' (Get-HitSummary "write to $($Sample.Email)") 'Personal e-mail'
+Assert-Equal 'Personal e-mail/Low/***@example.com' (Get-HitSummary "write to $($Sample.Email)") 'Personal e-mail'
 Assert-Equal 0 (Get-HitSummary $Sample.GovEmail).Count '.gov e-mail not reported'
+Assert-Equal 'Personal e-mail/Medium/***@gmail.com' (Get-HitSummary ('write to pat.sample' + '@gmail.com')) 'E-mail at a personal provider: Medium'
+
+# ---- False positives in typical documents (the PAM, 2026-11-20) ----
+Assert-Equal 0 (Get-HitSummary ('PAGEREF _Toc' + $Sample.SsnBare)).Count 'A Word bookmark number is no SSN'
+Assert-Equal 0 (Get-HitSummary ('Form ABC' + $Sample.SsnBare + ' rev')).Count 'Digits glued to letters are no SSN'
+Assert-Equal 0 (Get-HitSummary ('tracking 1234' + '5678' + '9012' + '3452')).Count 'A Luhn-valid number with no card issuer prefix is no card'
+Assert-Equal $true (Test-Luhn ('12345678' + '90123452')) 'The tracking sample passes Luhn (so the issuer check is what drops it)'
+Assert-Equal 0 (Get-HitSummary ('build v1-555-201' + '-0142x')).Count 'A phone-shaped run glued to letters is no phone'
 Assert-Equal 0 (Get-HitSummary $Sample.MilEmail).Count '.mil e-mail not reported'
 
 # ---- Home address ----
@@ -107,15 +115,15 @@ Assert-Equal $false (($named | ForEach-Object { $_.Context }) -join ' ' -match '
 # ---- Detection in names: underscores and accented e-mail names ----
 Assert-Equal 'DoD ID/High/******7890' (Get-HitSummary "CAC_$($Sample.DodId).docx") 'DoD ID after an underscore'
 Assert-Equal 'Date of birth/High/[date masked]' (Get-HitSummary 'Roster DOB_01-02-1990.xlsx') 'DOB after an underscore'
-Assert-Equal 'Personal e-mail/Medium/***@example.net' (Get-HitSummary "notes $($Sample.EmailAccent) here") 'E-mail with accents'
+Assert-Equal 'Personal e-mail/Low/***@example.net' (Get-HitSummary "notes $($Sample.EmailAccent) here") 'E-mail with accents'
 Assert-Equal 1 (Get-HitSummary "mail $($Sample.EmailIdn) here").Count 'E-mail with a non-ASCII domain'
 Assert-Equal 1 (Get-HitSummary ("see " + $Sample.MilEmail + '/' + $Sample.Email)).Count 'E-mail right after a slash'
 $afterAt = Get-HitSummary ('note x' + '@' + $Sample.Email)
-Assert-Equal 'Personal e-mail/Medium/***@example.com' ($afterAt -join ',') 'E-mail right after an @: only the real address, masked'
+Assert-Equal 'Personal e-mail/Low/***@example.com' ($afterAt -join ',') 'E-mail right after an @: only the real address, masked'
 # An address that ends a sentence and then has a closing quote, a dash or a star is still found. (A letter or digit
 # right after the final period reads as more domain, so such an address is not reported: an accepted loss.)
 foreach ($tail in @(".$([char]0x201D)", ".$([char]0x2019)", ".'", '.*', '.-')) {
-    Assert-Equal 'Personal e-mail/Medium/***@example.com' ((Get-HitSummary ("mail me at " + $Sample.Email + $tail + ' soon')) -join ',') "E-mail followed by [$tail]"
+    Assert-Equal 'Personal e-mail/Low/***@example.com' ((Get-HitSummary ("mail me at " + $Sample.Email + $tail + ' soon')) -join ',') "E-mail followed by [$tail]"
 }
 # A long run of short addresses glued by '@' is read in linear time.
 $gluedRun = (('ab' + '.cd' + '@') * 60000)
@@ -125,7 +133,7 @@ $timer.Stop()
 Assert-Equal $true ($timer.Elapsed.TotalSeconds -lt 2) "Long glued run of addresses scanned in under 2 s (took $([int]$timer.Elapsed.TotalMilliseconds) ms)"
 # An address followed by punctuation is still found: ? ! ' curly quote ... ellipsis -ok * 's .
 foreach ($tail in @('?', '!', "'", [string][char]0x201D, '...', [string][char]0x2026, '-ok', '*', "'s", '.')) {
-    Assert-Equal 'Personal e-mail/Medium/***@example.com' ((Get-HitSummary ("mail me at " + $Sample.Email + $tail + ' soon')) -join ',') "E-mail followed by [$tail]"
+    Assert-Equal 'Personal e-mail/Low/***@example.com' ((Get-HitSummary ("mail me at " + $Sample.Email + $tail + ' soon')) -join ',') "E-mail followed by [$tail]"
 }
 
 # ---- Protect-PiiText: names and messages shown as they are; every digit and e-mail name hidden ----

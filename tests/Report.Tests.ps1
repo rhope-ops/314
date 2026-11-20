@@ -66,8 +66,11 @@ Assert-Equal $true ((Get-ResultPath $reportFolder 'https://tenant.example.com/te
 Assert-Equal $true ((Get-ResultPath $reportFolder 'https://tenant.example.com/teams/nul.x') -match '[\\/]_nul\.x[\\/]') 'A device name with an extension too'
 
 # ---- The screen summary ----
-$screen = (Get-ScanSummaryText -Rows $reportRows -ItemsScanned 2 -Header $header -FolderLabel 'Channel') -join "`n"
-Assert-Equal $true ($screen -match 'POSSIBLE PII BY TYPE' -and $screen -match 'SSN\s+1\s+0\s+0\s+1') 'Screen: hits per type with High, Medium, Low, Total'
+$screenLines = @(Get-ScanSummaryText -Rows $reportRows -ItemsScanned 2 -Header $header -FolderLabel 'Channel')
+$screen = ($screenLines | ForEach-Object { $_.Text }) -join "`n"
+Assert-Equal $true ($screen -match 'POSSIBLE PII BY TYPE' -and $screen -match '\| SSN\s+\|\s+1 \|\s+0 \|\s+0 \|\s+1 \|') 'Screen: boxed table of hits per type (High, Medium, Low, Total)'
+Assert-Equal 'Alert' ($screenLines | Where-Object { $_.Text -match '^\| SSN ' } | Select-Object -First 1).Kind 'Screen: a type with High hits is red'
+Assert-Equal 'Muted' ($screenLines | Where-Object { $_.Text -match '^\| Phone ' } | Select-Object -First 1).Kind 'Screen: a type with only Low hits is grey'
 Assert-Equal $true ($screen.IndexOf('SSN ') -lt $screen.IndexOf('Date of birth')) 'Screen: worst type first'
 Assert-Equal $false $screen.Contains($Sample.Ssn) 'Screen: no full SSN'
 $masked = Get-ResultPath $reportFolder ('https://tenant.example.com/teams/' + $Sample.SsnBare)
