@@ -81,12 +81,16 @@ $printed = (Connect-TeamSite (Get-ScanTarget $channelLink) 6>&1 | Where-Object {
 Assert-Equal $true ($printed -match 'private or shared channel has its own site') 'Channel link prints the private-channel note'
 Reset-FakePnP @{}
 Set-FakeLookup -LookupSite '' -TypedSite 'cancel'
-try { Connect-TeamSite (Get-ScanTarget $teamLink) 6>$null | Out-Null } catch { Write-Verbose 'cancel reached the caller' }  # expected
-Assert-Equal $true (Test-FakePnPCall 'Disconnect-PnPOnline') 'Cancelled address prompt: signed out of the root'
+$refused = $false
+try { Connect-TeamSite (Get-ScanTarget $teamLink) 6>$null | Out-Null } catch { $refused = ($_.Exception.Message -match 'prompt cancelled') }  # expected
+Assert-Equal $true ($refused -and (Test-FakePnPCall 'Read-Host') -and (Test-FakePnPCall 'Disconnect-PnPOnline')) 'Failed address prompt: signed out of the root'
 $twoLinks = 'https://teams.example.com/l/team/A see also https://teams.example.com/l/team/B?groupId=' + $groupId
 $refused = $false
 try { Get-ScanTarget $twoLinks | Out-Null } catch { $refused = $true }  # expected: the first link has no groupId
 Assert-Equal $true $refused 'A second link pasted after the first is not read'
+$refused = $false
+try { Get-ScanTarget ('https://teams.example.com/l/team/A see also teams.example.com/l/team/B?groupId=' + $groupId) | Out-Null } catch { $refused = $true }
+Assert-Equal $true $refused 'A second link without https:// is not read either'
 Reset-FakePnP @{}
 $null = Connect-TeamSite (Get-ScanTarget $teamLink) 6>$null
 Assert-Equal $false (Test-FakePnPCall 'Disconnect-PnPOnline') 'Teams link: still signed in after success'
