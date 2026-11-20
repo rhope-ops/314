@@ -96,7 +96,7 @@ def test_settings(root, git):
 
 
 def test_third_party(root):
-    """Self-test of `audit-third-party:` (the PFM, 2026-11-20): a list key, written back as the same lines; a typo
+    """Self-test of `audit-third-party:` (the owner, 2026-11-20): a list key, written back as the same lines; a typo
     and a raised cap fail.
     Args:
         root: a temporary git repo; its `.check` is left empty at the end.
@@ -210,7 +210,7 @@ def test_migrate_header(root, git):
     block = "\n".join(HEADER_BLOCK) + "\n"
     old4 = [OLD_HEADERS[0], "# Below: exact strings that are allowed although they look like personal data, one per line.",
             "# `skip: <path or glob>` excludes a path.",
-            '# Only the PFM adds entries. Agents never add one to get past a block (AGENTS.md "Personal data").']
+            '# Only the owner adds entries. Agents never add one to get past a block (AGENTS.md "Personal data").']
     body = "profile: dod\n# A project comment after a setting.\n" + OLD_HEADERS[0] + "\nskip: a/*\n"
     for old in OLD_HEADERS:
         (root / OLD_CHECK).write_text("\n".join([old] + old4[1:3] + ["# Below: our own note."] + old4[3:]) + "\n" + body)

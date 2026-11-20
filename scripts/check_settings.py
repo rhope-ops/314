@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """The one reader of the code standard and audit settings in `.check`, and the one reader and writer of
-`.check.state.json` (the PFM, 2026-11-18: one config layout in every repo).
+`.check.state.json` (the owner, 2026-11-18: one config layout in every repo).
 
 The three files at the top of a repo:
     .check             every setting a person edits: one entry per line, `#` comments. The content check reads its
@@ -70,7 +70,7 @@ AUDIT_DEFAULTS = {"every_days": 14, "every_commits": 300, "start_read": [], "ign
                               "third_party_tokens": 1500,
                               "handoff_lines": 40, "file_kb": 500, "duplicate_lines": 20, "rules": 28,
                               "project_rules": 15}}
-# The PFM's caps for every repo (2026-11-18; third_party_tokens 2026-11-20): a project can lower one, never raise it.
+# The owner's caps for every repo (2026-11-18; third_party_tokens 2026-11-20): a project can lower one, never raise it.
 KIT_CAPS = ("session_load_tokens", "session_load_warn_tokens", "rules_file_lines", "third_party_tokens")
 CODE_LISTS = ("include", "exclude", "generated")
 AUDIT_LISTS = ("ignore", "start_read", "duplicate_ignore", "third_party")
@@ -99,7 +99,7 @@ HEADER_BLOCK = (
     "#   audit-<key>: <value>    a setting of the audit, for example `audit-ignore: ref/**`",
     "#                           (the keys and their defaults: the header of scripts/check_settings.py; a `code-` change",
     "#                           needs a docs/DECISIONS.md row that names this file)",
-    "# An allowed string or a skip line is added only on the PFM's request, never by an agent to get past a block"
+    "# An allowed string or a skip line is added only on the owner's request, never by an agent to get past a block"
     ' (AGENTS.md "Guards and checks").',
 )
 HEADER = HEADER_BLOCK[0]
@@ -110,10 +110,10 @@ OLD_HEADERS = (
 OLD_HEADER_LINES = frozenset(HEADER_BLOCK + OLD_HEADERS + (   # the other lines of older kit header blocks
     "# Below: exact strings that are allowed although they look like personal data, one per line.",
     "# `skip: <path or glob>` excludes a path.",
-    '# Only the PFM adds entries. Agents never add one to get past a block (AGENTS.md "Personal data").',
-    '# Only the PFM adds an allowed string or a skip line. Agents never add one to get past a block (AGENTS.md'
+    '# Only the owner adds entries. Agents never add one to get past a block (AGENTS.md "Personal data").',
+    '# Only the owner adds an allowed string or a skip line. Agents never add one to get past a block (AGENTS.md'
     ' "Personal data").',
-    "# An allowed string or a skip line is added only on the PFM's request, never by an agent to get past a block"
+    "# An allowed string or a skip line is added only on the owner's request, never by an agent to get past a block"
     ' (AGENTS.md "Personal data").',
 ))
 

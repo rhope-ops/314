@@ -1,6 +1,6 @@
 # Code standard
 
-Decided by the PFM, 2026-11-17 (docs/DECISIONS.md): all code is lean, modular, commented and human-editable, and stays so as work continues. Why: a person must be able to read any script and know what it does before they run it. [scripts/code_standard.py](../scripts/code_standard.py) enforces the rules marked **(check)**; the fresh reviewer of each pull request checks the rules marked **(review)**.
+Decided by the owner, 2026-11-17 (docs/DECISIONS.md): all code is lean, modular, commented and human-editable, and stays so as work continues. Why: a person must be able to read any script and know what it does before they run it. [scripts/code_standard.py](../scripts/code_standard.py) enforces the rules marked **(check)**; the fresh reviewer of each pull request checks the rules marked **(review)**.
 
 The kit owns this file and the check. A project gets both by sync. It sets its own caps, scope and opt-in rules (for example full docs per function) with `code-` lines in its own `.check` (the keys: the header of [scripts/check_settings.py](../scripts/check_settings.py)), keeps stricter rules of its own in its own gate file ("A project's own gate" below) and their text in a doc of its own that links here, never in a copy of the check or of this file.
 
@@ -36,7 +36,7 @@ The kit owns this file and the check. A project gets both by sync. It sets its o
 
 ## A project's own gate
 
-- The extension point for a project that wants more than the rules above: a file `scripts/code_standard_gate.py` of its own, next to the check. The kit has no such file. When it exists, the check loads it and calls its five entry points (their exact form: the header of [scripts/code_standard.py](../scripts/code_standard.py)): more debt kinds (`RULES`), more opt-in kinds (`OPT_IN`), per-file rules (`file_rules`), its own test for "the PFM decided this change" (`decided`), and a refusal that no decision lifts (`new_debt_refusal`, for example debt for a file that is new).
+- The extension point for a project that wants more than the rules above: a file `scripts/code_standard_gate.py` of its own, next to the check. The kit has no such file. When it exists, the check loads it and calls its five entry points (their exact form: the header of [scripts/code_standard.py](../scripts/code_standard.py)): more debt kinds (`RULES`), more opt-in kinds (`OPT_IN`), per-file rules (`file_rules`), its own test for "the owner decided this change" (`decided`), and a refusal that no decision lifts (`new_debt_refusal`, for example debt for a file that is new).
 - Two settings are a gate's to enforce: `code-max-line-chars: <number>` (the longest line of a hand-written file) and `code-c1-safety: strict`. The kit reads them; with one of them set and no gate file, the check fails.
 - A gate that cannot be imported, or lacks an entry point, fails the check: it is never skipped. The result line says when a gate is active.
 - The gate proves itself: when the file names `--test`, `scripts/check.sh` runs `python3 scripts/code_standard_gate.py --test` (the full lane always; the fast lane when the gate or the check changed). The self-test of the kit's check runs without the gate.

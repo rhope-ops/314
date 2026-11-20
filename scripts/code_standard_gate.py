@@ -3,7 +3,7 @@
 in its header; the text of the rules: docs/code-standard-33-332.md). The same rules as rhope-ops/RADE and rhope-ops/90-161.Z.
 
 Why: a rule that can be met with a word somewhere in a header, or with any line that names the settings file, is met by
-accident, not by work (the PFM, 2026-11-17; docs/DECISIONS.md "Code-standard checker made stricter").
+accident, not by work (the owner, 2026-11-17, in rhope-ops/90-161.Z and RADE; here: docs/DECISIONS.md 2026-11-20).
 The five entry points (their exact form: the header of scripts/code_standard.py):
   RULES             the debt kind `line` (C4 line, measured against `code-max-line-chars`) and the label of the strict
                     C1 safety form

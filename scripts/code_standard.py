@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Code standard check: measures every source file of this repo against docs/code-standard.md and fails on new debt.
 
-Why: the PFM, 2026-11-17: all code is lean, modular, commented and human-editable, and stays so as work continues.
+Why: the owner, 2026-11-17: all code is lean, modular, commented and human-editable, and stays so as work continues.
 A written rule alone is not always obeyed, so this check fails a push or a pull request instead. The kit owns this
 file; a project gets it by sync, keeps its own settings in its `.check` file and its own stricter rules in its own
 gate file (below), never in a copy of this file.
@@ -27,7 +27,7 @@ started. A violation that is not in that list fails. A listed function that grew
 fails too, until the baseline is lowered in the same change (`--update`), so the list can only shrink and always
 matches the code. The baseline and the settings are compared with those on the merge base with origin/main: an added
 item, a raised value or a changed `code-` setting fails, unless the same change adds a row to docs/DECISIONS.md that
-names `.check` (the PFM's decision). A merge base that still has the old .code-standard.json is compared from it.
+names `.check` (the owner's decision). A merge base that still has the old .code-standard.json is compared from it.
 
 A project's own gate (the extension point): when the file scripts/code_standard_gate.py stands next to this one, the
 check loads it and calls it. The kit has no gate file. A gate that cannot be imported, or lacks one of the five names
@@ -392,7 +392,7 @@ def git(*args):
 
 
 def decided_at(ref):
-    """Return (True when this change records the PFM's decision on `.check`, refusal lines). The kit's test: a line
+    """Return (True when this change records the owner's decision on `.check`, refusal lines). The kit's test: a line
     that docs/DECISIONS.md gained against `ref` names `.check`. A project's own gate replaces the test."""
     if GATE:
         return GATE.decided(ROOT, ref)
@@ -402,7 +402,7 @@ def decided_at(ref):
 
 def against_main(config, debt):
     """Compare the settings and the debt with those on the merge base with origin/main. An item added to the debt, a
-    value raised, or a changed `code-` setting is a problem, unless the same change records the PFM's decision
+    value raised, or a changed `code-` setting is a problem, unless the same change records the owner's decision
     (decided_at). An opt-in rule turned on or raised above main's level (--adopt) may list its debt with that
     decision. A debt key that a project's gate refuses (new_debt_refusal) is a problem that no decision lifts.
 
@@ -440,14 +440,14 @@ def against_main(config, debt):
             if refused:
                 problems.append(refused)
             elif adopting and decided:
-                continue   # an opt-in rule turned on or raised now (--adopt): its list is the PFM's decision
+                continue   # an opt-in rule turned on or raised now (--adopt): its list is the owner's decision
             elif key not in was:
                 problems.append('FAIL  baseline: %s item added by hand: %s' % (kind, key))
             elif value > was[key]:
                 problems.append('FAIL  baseline: %s value raised: %s (%d to %d)' % (kind, key, was[key], value))
     if config != old_config and not decided:
         problems.append('FAIL  baseline: a `code-` setting of %s (caps, scope or an opt-in rule) changed with no '
-                        'docs/DECISIONS.md row that names %s (a cap or scope change is the PFM\'s decision)'
+                        'docs/DECISIONS.md row that names %s (a cap or scope change is the owner\'s decision)'
                         % (settings.CHECK, settings.CHECK))
     return problems + (list(refusals) if problems and not decided else []), ''
 

@@ -14,10 +14,12 @@ if [ ! -f tests/Run-Tests.ps1 ]; then echo "SKIP  PowerShell tests: no tests/Run
 if [ -n "${GITHUB_ACTIONS:-}" ]; then
   pwsh -NoProfile -Command "Install-Module PSScriptAnalyzer -RequiredVersion 1.23.0 -Scope CurrentUser -Force" || exit 1
 fi
+# A dev machine may keep PSScriptAnalyzer outside the default module path (as 90-161.Z's scripts/lint.sh does).
+[ -d /opt/psmods ] && export PSModulePath="/opt/psmods:${PSModulePath:-}"
 rc=0
 # Each runs once; its output is shown (without the posts sign-in notice) and its exit code kept.
 out=$(pwsh -NoProfile -File tests/Run-Tests.ps1 2>&1) || rc=1
 printf '%s\n' "$out" | grep -v '^Posts: '
 out=$(pwsh -NoProfile -File tests/Lint.ps1 2>&1) || rc=1
-printf '%s\n' "$out" | grep -v '^$' | tail -n 20
+printf '%s\n' "$out" | grep -v '^$'
 exit "$rc"
