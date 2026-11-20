@@ -3,10 +3,10 @@
 Title: 33-332.Z · <task> · <date>. Read AGENTS.md first.
 
 1. Done 2026-11-20: kit sync (PR #2, merged a25b74d).
-2. The PII tool PR (branch claude/pii-spot-check: one commit from main with PR #1's reviewed code, the paste
-   bundle for ISE, README without Unblock-File or execution policy, cited breach advice): fresh review, then the
-   PAM approves (lane C: scripts/check.local.sh changes). Then close PR #1 with a link to it.
-3. Then one PR: the site page (index.html): header like 90-161.Z (γ logo,
-   name, subtitle "Privacy Act Management", line "Simple tools to help you protect PII.", Core logo right, same size),
-   FULCRUM colours only (no teal), much less on the page, the builder outputs the paste text. Preview first.
+2. Done 2026-11-20: the PII tool with its paste bundle (PR #3, merged dec64b6); PR #1 closed.
+3. The site page (index.html, branch claude/site-page): the PAM's 8 preview comments applied (preview v4:
+   https://claude.ai/artifact/R2QH26gZXYNjE6GUVxtJ4s); fresh review, then merge (the PAM said publish).
+   Next: a follow-up PR with PR #3's review minors (bundle test isolation, $Report check, dotted-run speed,
+   README step order, strict mode after a run in ISE); ask the PAM whether the report's breach line takes the
+   page's wording.
 4. The PAM: turn on GitHub Pages (main, / root) once index.html merges. (Denylist secret: added 2026-11-20.)
