@@ -254,8 +254,9 @@ footer{padding-block:0 36px;color:var(--mut);font-size:.85rem}
   as a .txt file to read first ("Open the script"). The choices are remembered in this browser only.
 
   Safety notes:
-  - Every value goes into the script inside a PowerShell single-quoted string ('...'), with any ' doubled, so no
-    value can end the string or add code.
+  - Every value goes into the script inside a PowerShell single-quoted string ('...'). PowerShell treats the
+    straight quote ' and the curly quotes U+2018 to U+201B alike, so every one of them is doubled, and the site
+    address itself may hold only plain URL characters (no quote of any kind): no value can end the string or add code.
   - The four lines are replaced as literal text (split and join), the same way tests/Bundle.Tests.ps1 does it.
     String.replace is not used: it reads $' $` $& in a value as special patterns.
   - Text is only ever shown with textContent, never as HTML.
@@ -268,9 +269,10 @@ footer{padding-block:0 36px;color:var(--mut);font-size:.85rem}
   var RAW_URL = 'https://raw.githubusercontent.com/rhope-ops/33-332.Z/main/' + SCRIPT_PATH;   // the fallback link
   var TXT_NAME = '33332Z-pii-spot-check.txt';                              // the name of the saved .txt file
   var STORAGE_KEY = '33-332Z.builder.v2';                                  // where this browser keeps the choices
-  // The site address rule of the script itself (src/ChannelScan.psm1, Test-TeamSiteUrl): https://<host>/sites/<name>
-  // or /teams/<name>; anything after the site name is cut off.
-  var SITE_RULE = /^https:\/\/[A-Za-z0-9.-]+\/(sites|teams)\/[^\/?#\s]+/i;
+  // The site address: https://<host>/sites/<name> or /teams/<name>; anything after the site name is cut off (as the
+  // script's own Test-TeamSiteUrl does). Stricter than the script on purpose: the site name may hold only plain URL
+  // characters (letters, digits, - _ . % ~), so no kind of quote can reach the copied script.
+  var SITE_RULE = /^https:\/\/[A-Za-z0-9.-]+\/(sites|teams)\/[A-Za-z0-9._~%-]+(?=$|[\/?#])/i;
   // The allowed values of the two choice groups; anything else read back from storage is ignored.
   var CHANNEL_VALUES = ['', 'All'];
   var REPORT_VALUES = ['Both', 'Text', 'Csv'];
@@ -300,9 +302,12 @@ footer{padding-block:0 36px;color:var(--mut);font-size:.85rem}
     statusLine.className = 'status' + (kind ? ' ' + kind : '');
   }
 
-  // Returns a value as a PowerShell single-quoted string: inside '...' only a ' is special, and '' stands for it.
+  // Returns a value as a PowerShell single-quoted string. Inside '...' the only special characters are the quote
+  // marks, and PowerShell counts five as a single quote: ' and the curly U+2018, U+2019, U+201A, U+201B. Each one
+  // found is written twice, which PowerShell reads as that character inside the string.
+  var QUOTE_MARKS = /['\u2018\u2019\u201A\u201B]/g;
   function powerShellString(value) {
-    return "'" + String(value).split("'").join("''") + "'";
+    return "'" + String(value).replace(QUOTE_MARKS, function (mark) { return mark + mark; }) + "'";
   }
 
   // Replaces one exact piece of text with another, with no special patterns (unlike String.replace).
@@ -434,7 +439,7 @@ footer{padding-block:0 36px;color:var(--mut);font-size:.85rem}
     link.click();
     document.body.removeChild(link);
     setTimeout(function () { URL.revokeObjectURL(link.href); }, 10000);   // free the file once the save has started
-    showStatus('Saved as ' + TXT_NAME + ' (in your Downloads). Open it to read the script.', 'ok');
+    showStatus('Saved as ' + TXT_NAME + '. Open the file to read the script before you run it.', 'ok');
   }
 
   // ---- Loading the script ------------------------------------------------------------------------------------
@@ -447,7 +452,9 @@ footer{padding-block:0 36px;color:var(--mut);font-size:.85rem}
         return response.text();
       })
       .then(function (text) {
-        if (text.indexOf(LINE_SITE) < 0 || text.indexOf(LINE_REPORT) < 0) throw new Error('unexpected script');
+        // All four Settings lines must be there, or a choice would silently not be filled in.
+        var missing = [LINE_SITE, LINE_CHANNEL, LINE_POSTS, LINE_REPORT].filter(function (line) { return text.indexOf(line) < 0; });
+        if (missing.length) throw new Error('the script has no line ' + missing.join(', '));
         scriptText = text;
         refresh();
       })
