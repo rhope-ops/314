@@ -1,20 +1,21 @@
 <#
 ChannelScan.psm1 - reads one team's channel files (and, if asked, its posts) and turns them into report rows.
 
-  Purpose:     The SharePoint and Teams steps of Find-ChannelPII.ps1, one function per step: check the
-               site address, find the library, list the channel folders, pick channels, scan each file,
-               try the posts.
-  Inputs:      the site address the person gives; their PnP connection.
+  Purpose:     The SharePoint and Teams steps of Find-ChannelPII.ps1, one function per step: read the
+               Teams link or site address, sign in to the team's site, find the library, list the channel
+               folders, pick channels, scan each file, try the posts.
+  Inputs:      the Teams link or site address the person gives.
   Outputs:     report rows (Report.psm1 New-ReportRow) added to the list the caller passes in.
   Depends on:  PnP.PowerShell 1.12.0; PiiDetectors.psm1, PiiMasking.psm1, TextExtract.psm1, Report.psm1
                (all imported first by Find-ChannelPII.ps1).
   How to run:  imported by Find-ChannelPII.ps1; not run on its own.
   Run target:  Windows PowerShell 5.1 (also PowerShell 7).
-  Network:     only the one SharePoint site the person gives, and for posts Microsoft Graph for that one
-               team. Nothing lists other sites or teams (no network reconnaissance).
+  Network:     only the one SharePoint site of the team the person gives; for a Teams link, first one
+               lookup of that one group's site at the tenant root address (the PAM, 2026-11-20); for posts,
+               Microsoft Graph for that one team. Nothing lists other sites or teams (no network reconnaissance).
   Writes:      none in SharePoint or Teams: read calls only. Rows go to an in-memory list.
-  Credentials: the PnP connection the caller opened (own CAC sign-in). Posts open a second, interactive
-               sign-in. Nothing is stored.
+  Credentials: the person's own CAC sign-in (PnP web login). Posts open a second, interactive sign-in.
+               Nothing is stored.
 #>
 
 Set-StrictMode -Version 2.0
@@ -33,9 +34,20 @@ $script:NotChannelFolders = @('Forms')
 # (list view threshold); 500 keeps each request small.
 $script:ListPageSize = 500
 
-# Accepted site address: https://<host>/sites/<name> or /teams/<name>. Anything after the site name
-# is cut off, so the scan can only touch that one site.
-$script:SiteUrlPattern = '^https://[A-Za-z0-9.-]+/(sites|teams)/[^/?#\s]+'
+# Accepted site address: https://<host>/sites/<name> or /teams/<name>, also as a file's "Copy link"
+# (https://<host>/:w:/r/teams/<name>/...). Anything after the site name is cut off, so the scan can only
+# touch that one site. Other sharing links (/:w:/s/, /:w:/t/) are refused: they do not name the site.
+$script:SiteUrlPattern = '^(?<host>https://[A-Za-z0-9.-]+)/(?::[a-z]:/r/)?(?<site>(?:sites|teams)/[^/?#\s]+)'
+
+# Accepted Teams link: a team's or a channel's "Copy link" (https://<teams-host>/l/team/... or /l/channel/...).
+# Only its groupId (the team's Microsoft 365 group) is used; the host is not, so any Teams cloud's link works.
+# The path may hold spaces (a channel name) but not a second address ('://' or '/l/'), so text pasted after the link is not read.
+$script:TeamsLinkPattern = '^https://[A-Za-z0-9.-]+/l/(?<kind>team|channel)/(?:(?!://|/l/)[^?#\r\n])+\?(?:[^#\s]*&)?groupId=' +
+                           '(?<id>[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12})(?![0-9A-Fa-f-])'
+
+# Where a Teams link's site is looked up: the tenant's root address. Only one call is made there, for the
+# one group ID in the link (the PAM, 2026-11-20); the site it gives must be on this same host.
+$script:SharePointRoot = 'https://usaf.dps.mil'
 
 # Microsoft cloud for the posts sign-in: DoD365 runs in the US Government DoD cloud.
 $script:GraphCloud = 'USGovernmentDoD'
@@ -48,21 +60,145 @@ $script:PostsBlockedAdvice = 'Needs admin consent for the Graph permission Chann
 # Site, library and channels
 # =====================================================================================
 
+function Add-UrlScheme {
+    <#
+    .SYNOPSIS
+      Adds https:// to an address typed without a scheme (usaf.dps.mil/teams/<team-site>); other text stays as it is.
+    .PARAMETER Url
+      The address the person gave.
+    .OUTPUTS
+      [string] the trimmed address, with https:// when it had no scheme.
+    #>
+    param([string]$Url)
+    $Url = $Url.Trim()
+    if ($Url -and $Url -notmatch '^[A-Za-z][A-Za-z0-9+.-]*://') { return 'https://' + $Url }
+    return $Url
+}
+
 function Test-TeamSiteUrl {
     <#
     .SYNOPSIS
       Checks that the address is one SharePoint site and returns it cut to the site name.
     .PARAMETER Url
-      The address the person gave (it may go on to a library or a file).
+      The address the person gave (it may go on to a library or a file, or be a file's "Copy link"; https:// may be left out).
     .OUTPUTS
-      [string] https://<host>/sites/<name>
+      [string] https://<host>/sites/<name> or https://<host>/teams/<name>
     #>
     param([string]$Url)
-    $match = [regex]::Match($Url.Trim(), $script:SiteUrlPattern, 'IgnoreCase')
+    $match = [regex]::Match((Add-UrlScheme $Url), $script:SiteUrlPattern, 'IgnoreCase')
     if (-not $match.Success) {
-        throw "Not a team site address: '$Url'. Expected https://usaf.dps.mil/sites/<team-site>."
+        throw "Not a team site address: '$Url'. Expected https://usaf.dps.mil/teams/<team-site> or /sites/<team-site>."
     }
-    return $match.Value
+    return $match.Groups['host'].Value + '/' + $match.Groups['site'].Value
+}
+
+function Get-ScanTarget {
+    <#
+    .SYNOPSIS
+      Reads what the person gave: a Teams link (team or channel) or a team site address.
+      Throws when it is neither.
+    .PARAMETER Address
+      The Teams link or the site address.
+    .OUTPUTS
+      [pscustomobject] GroupId ([guid] from a Teams link, else $null), SiteUrl (the site, else '') and
+      IsChannel (true for a channel's link).
+    #>
+    param([string]$Address)
+    $link = [regex]::Match((Add-UrlScheme $Address), $script:TeamsLinkPattern, 'IgnoreCase')
+    if ($link.Success) {
+        return [pscustomobject]@{ GroupId = [guid]$link.Groups['id'].Value; SiteUrl = ''; IsChannel = ($link.Groups['kind'].Value -ieq 'channel') }
+    }
+    if ($Address -match '/l/(team|channel)/') {
+        throw 'This Teams link has no groupId. In Teams: the ... next to the team or channel name > Copy link.'
+    }
+    return [pscustomobject]@{ GroupId = $null; SiteUrl = (Test-TeamSiteUrl $Address); IsChannel = $false }
+}
+
+function Find-GroupSiteUrl {
+    <#
+    .SYNOPSIS
+      Asks SharePoint for the site of one Microsoft 365 group (GroupSiteManager GetSiteStatus). Reads that one
+      group's record only; lists nothing. Needs a connection to $script:SharePointRoot.
+    .PARAMETER GroupId
+      The group ID from the Teams link.
+    .OUTPUTS
+      [string] the team's site (cut to the site name, on the root's host), or $null when SharePoint gives none.
+    #>
+    param([guid]$GroupId)
+    $answer = Invoke-PnPSPRestMethod -Method Post -Url '/_api/GroupSiteManager/GetSiteStatus' `
+        -Content @{ groupId = $GroupId.ToString() } -ErrorAction Stop
+    if ($answer -is [string]) { $answer = $answer | ConvertFrom-Json }
+    if ($answer -and $answer.PSObject.Properties['d']) { $answer = $answer.d }   # the verbose JSON form
+    if (-not $answer -or -not $answer.PSObject.Properties['SiteUrl'] -or -not $answer.SiteUrl) { return $null }
+    # SiteStatus 2 = the site is ready; any other status (none, being made, error) gives no site to scan.
+    if ($answer.PSObject.Properties['SiteStatus'] -and [int]$answer.SiteStatus -ne 2) { return $null }
+    $site = Test-TeamSiteUrl ([string]$answer.SiteUrl)
+    if (-not $site.StartsWith($script:SharePointRoot + '/', [StringComparison]::OrdinalIgnoreCase)) {
+        throw "The lookup gave a site on another host: $site"
+    }
+    return $site
+}
+
+function Assert-SiteGroup {
+    <#
+    .SYNOPSIS
+      Checks that the connected site belongs to the team in the Teams link; throws when not (Connect-TeamSite
+      then signs out), so nothing of another site is read.
+    .PARAMETER GroupId
+      The group ID from the Teams link.
+    #>
+    param([guid]$GroupId)
+    $actual = (Get-PnPSite -Includes GroupId -ErrorAction Stop).GroupId
+    if ($actual -ne $GroupId) {
+        throw 'This site does not belong to the team in the Teams link. Nothing was scanned.'
+    }
+}
+
+function Connect-TeamSite {
+    <#
+    .SYNOPSIS
+      Signs in (own CAC, PnP web login) to the team's site and returns its address. For a Teams link it first
+      looks up that one group's site; if the lookup gives nothing, it asks for the site address, and in both
+      cases it checks that the site belongs to the team in the link. On any error or cancel it signs out.
+    .PARAMETER Target
+      Output of Get-ScanTarget.
+    .OUTPUTS
+      [string] the site the scan may touch.
+    #>
+    param($Target)
+    $site = $Target.SiteUrl
+    $ok = $false   # set only at the end: a cancel (Ctrl+C, Cancel on a prompt) skips 'catch' but not 'finally'
+    try {
+        if ($null -ne $Target.GroupId) {
+            if ($Target.IsChannel) {
+                Write-Host 'Channel link: the scan covers the standard channels of its team. A private or shared channel has its own site: give that site address instead.' -ForegroundColor Yellow
+            }
+            Write-Host "Teams link: looking up this team's site at $script:SharePointRoot (one sign-in) ..."
+            try {
+                Connect-PnPOnline -Url $script:SharePointRoot -UseWebLogin
+                $site = Find-GroupSiteUrl $Target.GroupId
+            }
+            catch {
+                # The lookup is a help, not a must: on any failure the person gives the site address instead.
+                Write-Host ('The lookup did not work: ' + (Protect-PiiText $_.Exception.Message)) -ForegroundColor Yellow
+            }
+            if (-not $site) {
+                Write-Host "In Teams: the team's Shared tab > ... > Open in SharePoint, then copy the address." -ForegroundColor Yellow
+                $site = Test-TeamSiteUrl (Read-Host 'Team site address (https://usaf.dps.mil/teams/<team-site>)')
+            }
+        }
+        Write-Host "Signing in to $site ..."
+        Connect-PnPOnline -Url $site -UseWebLogin
+        if ($null -ne $Target.GroupId) { Assert-SiteGroup $Target.GroupId }
+        $ok = $true
+        return $site
+    }
+    finally {
+        # No scan starts after an error or a cancel here: sign out, so no connection stays open in the ISE session.
+        if (-not $ok) {
+            try { Disconnect-PnPOnline } catch { Write-Verbose 'Already signed out.' }  # nothing to sign out of: not an error
+        }
+    }
 }
 
 function Get-TeamDocumentLibrary {
@@ -420,5 +556,5 @@ function Invoke-PostScan {
     return $scanned
 }
 
-Export-ModuleMember -Function Test-TeamSiteUrl, Get-TeamDocumentLibrary, Get-ChannelFolderNames, Select-ChannelFolders,
+Export-ModuleMember -Function Test-TeamSiteUrl, Get-ScanTarget, Connect-TeamSite, Get-TeamDocumentLibrary, Get-ChannelFolderNames, Select-ChannelFolders,
 Invoke-FileScan, Invoke-PostScan

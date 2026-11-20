@@ -35,6 +35,11 @@ function Reset-FakePnP {
         Folders     = @('General', 'Ops', 'Forms')
         PostsAllowed = $false
         ListFails   = $false
+        LookupSite  = 'https://tenant.example.com/teams/TeamA'   # the group lookup's answer; '' = none, 'throw' = refused
+        TypedSite   = ''                                          # what the fake Read-Host returns
+        LookupForm  = 'd'                                         # the answer's form: 'd' (verbose), 'plain' or 'json'
+        LookupStatus = 2                                          # the answer's SiteStatus; 2 = ready
+        SiteGroupId = [guid]'11111111-2222-3333-4444-555555555555'
         Calls       = New-Object System.Collections.Generic.List[string]
         Progress    = New-Object System.Collections.Generic.List[string]
     }
@@ -44,6 +49,37 @@ function Set-FakePnPOption {
     # Changes one switch of the fake site: PostsAllowed or ListFails.
     param([ValidateSet('PostsAllowed', 'ListFails')][string]$Name, [bool]$Value)
     $global:FakePnP[$Name] = $Value
+}
+
+function Set-FakeLookup {
+    <#
+    .SYNOPSIS
+      Sets the fake group lookup's answer, what Read-Host returns, and the group ID of the connected site.
+    .PARAMETER LookupSite
+      The SiteUrl of the answer; '' = none; 'throw' = the lookup is refused.
+    .PARAMETER TypedSite
+      What the fake Read-Host returns; 'cancel' = the prompt fails (stands in for a cancel).
+    .PARAMETER SiteGroupId
+      The group ID of the connected site (Get-PnPSite).
+    .PARAMETER Form
+      The answer's form: 'd' (verbose JSON), 'plain' (nometadata JSON) or 'json' (a raw JSON string).
+    .PARAMETER Status
+      The answer's SiteStatus; 2 = ready (the default).
+    .OUTPUTS
+      None (changes $global:FakePnP).
+    #>
+    param([string]$LookupSite, [string]$TypedSite = '', [guid]$SiteGroupId = '11111111-2222-3333-4444-555555555555',
+          [string]$Form = 'd', [int]$Status = 2)
+    $global:FakePnP.LookupSite = $LookupSite
+    $global:FakePnP.LookupForm = $Form
+    $global:FakePnP.LookupStatus = $Status
+    $global:FakePnP.TypedSite = $TypedSite
+    $global:FakePnP.SiteGroupId = $SiteGroupId
+}
+
+function Get-FakePnPConnection {
+    # Every site the fake Connect-PnPOnline was called with since the last Reset-FakePnP, in order.
+    return @($global:FakePnP.Calls | Where-Object { $_ -like 'Connect *' } | ForEach-Object { $_.Substring(8) })
 }
 
 function Get-FakeProgressText {
@@ -134,6 +170,7 @@ function global:Write-Progress {
 function global:Connect-PnPOnline {
     # Fake: the web login always works; the Graph sign-in works only when PostsAllowed is set.
     [CmdletBinding()] param($Url, [switch]$UseWebLogin, [switch]$Interactive, $AzureEnvironment)
+    $global:FakePnP.Calls.Add('Connect ' + $Url)
     if ($Interactive -and -not $global:FakePnP.PostsAllowed) { throw 'AADSTS65001: consent missing (fake)' }
 }
 
@@ -146,7 +183,41 @@ function global:Disconnect-PnPOnline {
 function global:Get-PnPSite {
     # Fake: the site belongs to a team (a Microsoft 365 group).
     [CmdletBinding()] param($Includes)
-    [pscustomobject]@{ GroupId = [guid]'11111111-2222-3333-4444-555555555555' }
+    [pscustomobject]@{ GroupId = $global:FakePnP.SiteGroupId }
+}
+
+function global:Invoke-PnPSPRestMethod {
+    <#
+    .SYNOPSIS
+      Fake: GroupSiteManager GetSiteStatus for one group, in the form Set-FakeLookup chose; throws when the
+      lookup is set to be refused.
+    .PARAMETER Method
+      The HTTP method (not used).
+    .PARAMETER Url
+      The REST address; recorded with the group ID.
+    .PARAMETER Content
+      The request body: @{ groupId = ... }.
+    .OUTPUTS
+      [pscustomobject] or [string] the answer.
+    #>
+    [CmdletBinding()] param($Method, $Url, $Content)
+    $global:FakePnP.Calls.Add('Invoke-PnPSPRestMethod ' + $Url + ' ' + $Content.groupId)
+    if ($global:FakePnP.LookupSite -eq 'throw') { throw 'FAKE: lookup refused' }
+    $answer = [pscustomobject]@{ SiteStatus = $global:FakePnP.LookupStatus; SiteUrl = $global:FakePnP.LookupSite }
+    switch ($global:FakePnP.LookupForm) {
+        'plain' { return $answer }                                       # nometadata JSON, read as an object
+        'json'  { return ($answer | ConvertTo-Json -Compress) }          # a raw JSON string
+        default { return [pscustomobject]@{ d = $answer } }              # verbose JSON
+    }
+}
+
+function global:Read-Host {
+    # Fake: the address the person would type.
+    [CmdletBinding()] param($Prompt)
+    $global:FakePnP.Calls.Add('Read-Host')
+    # A real cancel stops the whole pipeline (the test run too); an error leaves through the same 'finally'.
+    if ($global:FakePnP.TypedSite -eq 'cancel') { throw 'FAKE: prompt cancelled' }
+    return $global:FakePnP.TypedSite
 }
 
 # Posts (Graph).
