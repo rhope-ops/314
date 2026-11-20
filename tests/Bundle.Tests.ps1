@@ -56,4 +56,16 @@ $types = (Import-Csv -LiteralPath $csvFiles[0].FullName | ForEach-Object { $_.De
 Assert-Equal 'DoD ID NOT SCANNED Personal e-mail Phone SSN' $types 'Bundle found every planted type'
 Assert-Equal $true (Test-FakePnPCall 'Disconnect-PnPOnline') 'Bundle signed out'
 
+# The clean-up also runs when the scan fails part way: the session's error setting comes back after the error.
+Reset-FakePnP @{}
+Set-FakePnPOption ListFails $true
+$ErrorActionPreference = 'Continue'
+Set-StrictMode -Off
+. $runCopy 6>$null
+$errorPathAction = $ErrorActionPreference
+Set-StrictMode -Version 2.0
+$ErrorActionPreference = 'Stop'
+Assert-Equal 'Continue' $errorPathAction 'Bundle put the session error setting back after a failed scan'
+Assert-Equal $true (@(Get-ChildItem -LiteralPath $bundleFolder -Filter 'PIIScan-*.csv').Count -ge 2) 'Failed scan still saved its report'
+
 Remove-Item -LiteralPath $bundleFolder -Recurse -Force

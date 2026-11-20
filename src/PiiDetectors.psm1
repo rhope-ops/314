@@ -296,10 +296,12 @@ function Find-PersonalEmailHits {
     # The domain uses the internet's own limits (RFC 1035: a label is at most 63 characters; at most 10 labels here;
     # a top-level label of 2 to 24 letters), so a long dotted run without spaces is tried a fixed number of ways,
     # not once per label: the time grows with the text, not with its square. The address ends where its domain ends:
-    # no letter or digit right after the top-level label, and no further label after a final period.
+    # no letter or digit right after the top-level label, and no letter or digit right after a final period (so an
+    # address that ends a sentence, then a quote, a dash or a star, is still found). The no-further-'@' look-ahead
+    # stops at the next '@', so a long run of glued addresses is read once, not again for every address in it.
     $notInAddress = '\s@<>()\[\],;:"/\\'
     $domain = '((?:[^' + $notInAddress + '.]{1,63}\.){1,10}((?>\p{L}{2,24})))'
-    $endsAddress = '(?![\p{L}\p{N}])(?!\.[^' + $notInAddress + '.])(?![^\s<>()\[\],;:"/\\]*@)'
+    $endsAddress = '(?![\p{L}\p{N}])(?!\.[\p{L}\p{N}])(?![^\s<>()\[\],;:"/\\@]*@)'
     $pattern = '(?<=^|[' + $notInAddress + '])[^' + $notInAddress + ']+@' + $domain + $endsAddress
     foreach ($m in [regex]::Matches($Text, $pattern)) {
         if ($script:GovernmentMailLabels -contains $m.Groups[2].Value.ToLower()) { continue }
