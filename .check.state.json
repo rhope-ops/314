@@ -1,0 +1,16 @@
+{
+ "code_standard": {
+  "debt": {
+   "comment": {},
+   "docs": {},
+   "duplicate": {},
+   "file_size": {},
+   "generated": {},
+   "header": {},
+   "length": {},
+   "line": {},
+   "parse": {},
+   "safety": {}
+  }
+ }
+}
