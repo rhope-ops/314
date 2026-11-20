@@ -395,7 +395,7 @@ function Remove-OverlappingHits {
     .DESCRIPTION
       The kept hits never overlap, so kept in order of their start they also end in order. A new hit overlaps a
       kept one only if it overlaps the kept hit that starts last before the new hit ends: one binary search per
-      hit (O(n log n) after the sort), not a check against every kept hit (O(n^2)).
+      hit instead of a check against every kept hit. (Each kept hit is inserted in place, a fast memory move.)
     .PARAMETER Hits
       All hits from Get-AllHits.
     .OUTPUTS

@@ -69,7 +69,8 @@ Assert-Equal 'Continue' $errorPathAction 'Bundle put the session error setting b
 Assert-Equal $true (@(Get-ChildItem -LiteralPath $bundleFolder -Filter 'PIIScan-*.csv').Count -ge 2) 'Failed scan still saved its report'
 
 # An error before the scan's own try (the sign-in fails) leaves the bundle through its outer 'finally' only: strict
-# mode off, the session's error setting back, signed out, and the error reaches the person.
+# mode off and the session's error setting back (the outer clean-up), signed out (Connect-TeamSite's own 'finally'),
+# and the error reaches the person.
 Reset-FakePnP @{}
 Set-FakePnPOption ConnectFails $true
 $ErrorActionPreference = 'Continue'
