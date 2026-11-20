@@ -22,7 +22,8 @@ Reset-FakePnP @{ "$library/General/Roster.docx" = $Docx; "$library/General/notes
 & $script -SiteUrl $Sample.Site -OutputFolder $runFolder 6>$null
 $results = @(Get-ResultFiles $runFolder)
 Assert-Equal 1 $results.Count 'Script saved one workbook'
-Assert-Equal 0 @(Get-ChildItem -LiteralPath $runFolder -Recurse -Include '*.txt', '*.csv').Count 'No .txt or .csv any more'
+# -Include is ignored with -LiteralPath in Windows PowerShell 5.1, so the extension is checked after the listing.
+Assert-Equal 0 @(Get-ChildItem -LiteralPath $runFolder -Recurse | Where-Object { $_.Extension -in @('.txt', '.csv') }).Count 'No .txt or .csv any more'
 Assert-Equal 'NOT SCANNED Phone SSN' (Get-WorkbookTypes $results[0].FullName) 'Script found every planted type'
 Assert-Equal 'Channel' (Get-XlsxSheets $results[0].FullName)['SSN'][0][1] 'A team: the folder column is named Channel'
 Assert-Equal $false (Test-FakePnPCall 'Read-Host') 'No question asked when the site is given'
