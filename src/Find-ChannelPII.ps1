@@ -78,7 +78,9 @@ $folderLabel = 'Folder'   # 'Channel' when the site belongs to a team (the PAM, 
 $finished = $false   # set only after the last step; a cancelled run (Ctrl+C) skips 'catch' but not 'finally'
 try {
     # ---- Step 3: the folders to scan: all of them (in a team, one per channel) ----
-    if (Test-TeamSite) { $folderLabel = 'Channel' }
+    # Only the column name depends on it: if the site's group cannot be read, the scan goes on with 'Folder'.
+    try { if (Test-TeamSite) { $folderLabel = 'Channel' } }
+    catch { Write-Verbose 'Team check not possible: the folder column is named Folder.' }
     $library = Get-TeamDocumentLibrary
     $selected = @(Get-ChannelFolderNames $library)
     $shownFolders = ($selected | ForEach-Object { Protect-PiiText $_ }) -join ', '

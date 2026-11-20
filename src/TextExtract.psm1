@@ -1,10 +1,10 @@
 <#
-TextExtract.psm1 - turns file bytes or a Teams post body into plain text, in memory.
+TextExtract.psm1 - turns file bytes into plain text, in memory.
 
   Purpose:     Plain text from Word, Excel and PowerPoint files (.docx/.xlsx/.pptx and macro versions),
                text files and HTML. Other types (PDF, images, legacy .doc/.xls/.ppt, scripts and
                anything else) are reported as NOT SCANNED, so a person checks them by hand.
-  Inputs:      file bytes and the file name (for its extension); HTML text of a Teams post.
+  Inputs:      file bytes and the file name (for its extension).
   Outputs:     an object with Status ('OK' or 'NOT SCANNED'), Reason and Text.
   How to run:  imported by Find-ChannelPII.ps1; not run on its own.
   Run target:  Windows PowerShell 5.1 (also PowerShell 7); .NET System.IO.Compression only.
@@ -60,11 +60,12 @@ function Convert-SheetXmlToText {
       [string]
     #>
     param([string]$Xml, [string[]]$Shared)
-    $lines = foreach ($row in [regex]::Matches($Xml, '(?s)<row\b[^>]*>(.*?)</row>')) {
-        $cells = foreach ($cell in [regex]::Matches($row.Groups[1].Value, '(?s)<c\b([^>]*?)(?:/>|>(.*?)</c>)')) {
+    # Tags may carry a namespace prefix (<x:row>, <x:c>): some tools write them so, and a missed tag would be a silent miss.
+    $lines = foreach ($row in [regex]::Matches($Xml, '(?s)<(?:\w+:)?row\b[^>]*>(.*?)</(?:\w+:)?row>')) {
+        $cells = foreach ($cell in [regex]::Matches($row.Groups[1].Value, '(?s)<(?:\w+:)?c\b([^>]*?)(?:/>|>(.*?)</(?:\w+:)?c>)')) {
             $type = [regex]::Match($cell.Groups[1].Value, '\bt="(\w+)"').Groups[1].Value
-            $inner = $cell.Groups[2].Value -replace '(?s)<f\b[^>]*/>|<f\b[^>]*>.*?</f>', ''   # formula text: not data
-            $value = [System.Net.WebUtility]::HtmlDecode([regex]::Match($inner, '(?s)<v>(.*?)</v>').Groups[1].Value)
+            $inner = $cell.Groups[2].Value -replace '(?s)<(?:\w+:)?f\b[^>]*/>|<(?:\w+:)?f\b[^>]*>.*?</(?:\w+:)?f>', ''   # formula text: not data
+            $value = [System.Net.WebUtility]::HtmlDecode([regex]::Match($inner, '(?s)<(?:\w+:)?v>(.*?)</(?:\w+:)?v>').Groups[1].Value)
             switch ($type) {
                 's' { $index = 0; if ([int]::TryParse($value, [ref]$index) -and $index -lt $Shared.Count) { $Shared[$index] } }
                 'inlineStr' { Convert-XmlToText $inner }
@@ -99,7 +100,7 @@ function Convert-XmlToText {
 function Convert-HtmlToText {
     <#
     .SYNOPSIS
-      Strips HTML (Teams post bodies, .html files) to plain text. Script and style blocks are dropped;
+      Strips HTML (.html files) to plain text. Script and style blocks are dropped;
       block ends become line breaks.
     .PARAMETER Html
       The HTML text.
@@ -131,7 +132,7 @@ function Get-SharedStrings {
     param($Zip)
     $entry = $Zip.GetEntry('xl/sharedStrings.xml')
     if (-not $entry) { return @() }
-    foreach ($item in [regex]::Matches((Read-ZipEntry $entry), '(?s)<si>(.*?)</si>')) { Convert-XmlToText $item.Groups[1].Value }
+    foreach ($item in [regex]::Matches((Read-ZipEntry $entry), '(?s)<(?:\w+:)?si>(.*?)</(?:\w+:)?si>')) { Convert-XmlToText $item.Groups[1].Value }
 }
 
 function Get-ZipPartText {

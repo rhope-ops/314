@@ -38,7 +38,7 @@ Assert-Equal '=HYPERLINK("x")' $book['Low confidence'][1][5] 'Formula-like text 
 Assert-Equal 'NOT SCANNED|Ops|scan.pdf' (($book['Not scanned'][1] | Select-Object -First 3) -join '|') 'Not scanned tab row'
 $summary = ($book['Summary'] | ForEach-Object { $_ -join '|' }) -join "`n"
 Assert-Equal $true ($summary -match 'Possible PII hits\|3') 'Summary: total hits'
-Assert-Equal $true ($summary -match '(?m)^SSN\|1\|1\|0\|0$' -and $summary -match '(?m)^Date of birth\|1\|1\|0\|0$' -and $summary -match '(?m)^Phone\|1\|0\|0\|1$') 'Summary: hits per type, worst first'
+Assert-Equal $true ($summary -match '(?m)^SSN\|1\|0\|0\|1$' -and $summary -match '(?m)^Date of birth\|1\|0\|0\|1$' -and $summary -match '(?m)^Phone\|0\|0\|1\|1$') 'Summary: hits per type (High, Medium, Low, Total), worst first'
 Assert-Equal $true ($summary -match 'potential or actual breach' -and $summary -match 'para 3\.1\.2') 'Summary gives the cited breach step'
 $allCells = ($book.Values | ForEach-Object { $_ | ForEach-Object { $_ -join ' ' } }) -join ' '
 Assert-Equal $false $allCells.Contains($Sample.Ssn) 'Workbook has no full SSN'
@@ -47,6 +47,21 @@ Assert-Equal $true ($again -ne $path) 'A second run never overwrites the first'
 Assert-Equal 'Folder' (Get-XlsxSheets $again)['SSN'][0][1] 'Folder column named Folder for a plain site'
 $plain = @(Get-WorkbookSheets @() 0 ([ordered]@{}) 'Folder')
 Assert-Equal 'Summary' (@($plain | ForEach-Object { $_.Name }) -join '|') 'No hits: only the Summary tab'
+
+# ---- The workbook writer: odd text and odd tab names ----
+$oddPath = Join-Path $reportFolder 'odd.xlsx'
+$long = 'x' * 40000
+Export-Xlsx -Path $oddPath -Sheets @(
+    (New-XlsxSheet 'A:B/C?D*E[F]G and a very long tab name past 31' @('Text') @(, @('bad' + [char]1 + 'char <&>')) @(20) -List),
+    (New-XlsxSheet 'A:B/C?D*E[F]G and a very long tab name past 31' @('Text') @(, @($long)) @(20) -List))
+$odd = Get-XlsxSheets $oddPath
+Assert-Equal 'A-B-C-D-E-F-G and a very long t|A-B-C-D-E-F-G and a very lo (2)' (@($odd.Keys) -join '|') 'Tab names: bad characters replaced, cut to 31, made unique'
+Assert-Equal 'badchar <&>' (@($odd.Values)[0][1][0]) 'Characters XML does not allow dropped; <&> kept as text'
+Assert-Equal 32767 (@($odd.Values)[1][1][0]).Length 'A cell is cut at 32,767 characters'
+$refused = $false
+try { Export-Xlsx -Path $oddPath -Sheets @((New-XlsxSheet 'S' @('T') @() @(5))) } catch { $refused = $true }  # expected: the file exists
+Assert-Equal $true $refused 'An existing workbook is never overwritten'
+Assert-Equal $true ((Get-ResultPath $reportFolder 'https://tenant.example.com/teams/CON') -match '[\\/]_CON[\\/]') 'A Windows device name gets a leading _'
 
 # ---- The screen summary ----
 $screen = (Get-ScanSummaryText -Rows $reportRows -ItemsScanned 2 -Header $header -FolderLabel 'Channel') -join "`n"

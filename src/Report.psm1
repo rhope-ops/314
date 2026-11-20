@@ -56,11 +56,11 @@ function New-ReportRow {
     .SYNOPSIS
       One report row: a possible-PII hit, or a note (NOT SCANNED, BLOCKED, INCOMPLETE) about an item.
     .PARAMETER Source
-      File, File name, Post or Scan.
+      File, File name or Scan.
     .PARAMETER Channel
       The channel (folder) name.
     .PARAMETER Item
-      The file path inside the channel, or the post (masked by the caller).
+      The file path inside the folder (masked by the caller).
     .PARAMETER Link
       A link to the item, or empty.
     .PARAMETER Modified
@@ -74,7 +74,7 @@ function New-ReportRow {
     .PARAMETER Context
       The masked snippet, or the reason for a note.
     .OUTPUTS
-      [pscustomobject] with the CSV columns.
+      [pscustomobject] Source, Channel, Item, Detector, Confidence, MaskedValue, Context, Modified, Link.
     #>
     param(
         [string]$Source, [string]$Channel, [string]$Item, [string]$Link, [string]$Modified,
@@ -250,6 +250,7 @@ function Get-ResultPath {
     $siteName = [uri]::UnescapeDataString(($SiteUrl.TrimEnd('/') -split '/')[-1])
     $siteName = ((Protect-PiiText $siteName) -replace '[\\/:*?"<>|]', '-').Trim(' .')
     if (-not $siteName) { $siteName = 'site' }
+    if ($siteName -match '^(CON|PRN|AUX|NUL|COM\d|LPT\d)$') { $siteName = '_' + $siteName }   # names Windows keeps for devices
     $now = Get-Date
     $folder = Join-Path (Join-Path $OutputFolder $siteName) ($now.ToString('yyyy-MM-dd'))
     if (-not (Test-Path -LiteralPath $folder)) { New-Item -ItemType Directory -Path $folder -Force -ErrorAction Stop | Out-Null }
@@ -323,8 +324,8 @@ function Get-SummaryRows {
     $hits = @($Rows | Where-Object { $script:Rank.ContainsKey($_.Confidence) })
     foreach ($pair in @($Header.GetEnumerator()) + @((Get-ScanMetrics $Rows $ItemsScanned).GetEnumerator())) { , @($pair.Key, $pair.Value) }
     , @('')
-    , @('Possible PII by type (worst first)', 'Total', 'High', 'Medium', 'Low')
-    foreach ($type in @(Get-TypeCounts $hits)) { , @($type.Type, $type.Total, $type.High, $type.Medium, $type.Low) }
+    , @('Possible PII by type (worst first)', 'High', 'Medium', 'Low', 'Total')
+    foreach ($type in @(Get-TypeCounts $hits)) { , @($type.Type, $type.High, $type.Medium, $type.Low, $type.Total) }
     if ($hits.Count -eq 0) { , @('None found in the files that were read.') }
     , @('')
     , @('Tabs', 'One tab per type with High or Medium hits, worst type first; then Low confidence; then Not scanned.')

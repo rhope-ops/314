@@ -189,8 +189,9 @@ function Export-Xlsx {
     }
     $rels += '<Relationship Id="rId' + ($Sheets.Count + 1) + '" Type="' + $script:RelNs + '/styles" Target="styles.xml"/></Relationships>'
     $stream = New-Object System.IO.FileStream($Path, [System.IO.FileMode]::CreateNew)   # CreateNew: never overwrite
-    $zip = New-Object System.IO.Compression.ZipArchive($stream, [System.IO.Compression.ZipArchiveMode]::Create)
+    $zip = $null
     try {
+        $zip = New-Object System.IO.Compression.ZipArchive($stream, [System.IO.Compression.ZipArchiveMode]::Create)
         Add-ZipText $zip '[Content_Types].xml' ($types + '</Types>')
         Add-ZipText $zip '_rels/.rels' ('<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="' + $script:PackageRelNs + '">' +
             '<Relationship Id="rId1" Type="' + $script:RelNs + '/officeDocument" Target="xl/workbook.xml"/></Relationships>')
@@ -199,7 +200,7 @@ function Export-Xlsx {
         Add-ZipText $zip 'xl/styles.xml' $script:StylesXml
         for ($i = 1; $i -le $Sheets.Count; $i++) { Add-ZipText $zip ('xl/worksheets/sheet' + $i + '.xml') (ConvertTo-SheetXml $Sheets[$i - 1]) }
     }
-    finally { $zip.Dispose(); $stream.Dispose() }
+    finally { if ($zip) { $zip.Dispose() }; $stream.Dispose() }
 }
 
 Export-ModuleMember -Function New-XlsxSheet, Export-Xlsx

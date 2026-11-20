@@ -19,12 +19,12 @@
   Built from these files; to change it, change them and rebuild with: python3 scripts/build_paste.py
     src/PiiDetectors.psm1, sha256 5758bbd9b581
     src/PiiMasking.psm1, sha256 dda7cdacfaf9
-    src/TextExtract.psm1, sha256 bacfeeebbd3a
-    src/XlsxWriter.psm1, sha256 0dc94c6ffc7a
-    src/Report.psm1, sha256 f5a54a30b458
-    src/ScanMeter.psm1, sha256 a97c4956cb1c
+    src/TextExtract.psm1, sha256 7d3ab72e3627
+    src/XlsxWriter.psm1, sha256 ec4f7b5f9610
+    src/Report.psm1, sha256 0a75aefe7707
+    src/ScanMeter.psm1, sha256 9825bc0e2aa8
     src/ChannelScan.psm1, sha256 c1f5308abae5
-    src/Find-ChannelPII.ps1, sha256 6df05da7947c
+    src/Find-ChannelPII.ps1, sha256 ccecf99228d2
 
   Read-only: it never changes, moves or deletes anything in Teams or SharePoint. Every value found is masked.
   Run target: Windows PowerShell 5.1 with PnP.PowerShell 1.12.0; no admin rights, no file to unblock.
@@ -37,12 +37,12 @@
     line    59  Module PiiDetectors.psm1
     line   523  Module PiiMasking.psm1
     line   709  Module TextExtract.psm1
-    line   925  Module XlsxWriter.psm1
-    line  1129  Module Report.psm1
-    line  1494  Module ScanMeter.psm1
-    line  1632  Module ChannelScan.psm1
-    line  2041  Body of Find-ChannelPII.ps1
-    line  2096  Clean-up
+    line   926  Module XlsxWriter.psm1
+    line  1131  Module Report.psm1
+    line  1497  Module ScanMeter.psm1
+    line  1635  Module ChannelScan.psm1
+    line  2044  Body of Find-ChannelPII.ps1
+    line  2101  Clean-up
 #>
 
 # ==== Settings ==== (optional: edit the values between the quotes; empty = the script asks)
@@ -708,12 +708,12 @@ function Protect-PiiText {
 
 # ==== Module TextExtract.psm1 ====
 <#
-TextExtract.psm1 - turns file bytes or a Teams post body into plain text, in memory.
+TextExtract.psm1 - turns file bytes into plain text, in memory.
 
   Purpose:     Plain text from Word, Excel and PowerPoint files (.docx/.xlsx/.pptx and macro versions),
                text files and HTML. Other types (PDF, images, legacy .doc/.xls/.ppt, scripts and
                anything else) are reported as NOT SCANNED, so a person checks them by hand.
-  Inputs:      file bytes and the file name (for its extension); HTML text of a Teams post.
+  Inputs:      file bytes and the file name (for its extension).
   Outputs:     an object with Status ('OK' or 'NOT SCANNED'), Reason and Text.
   How to run:  imported by Find-ChannelPII.ps1; not run on its own.
   Run target:  Windows PowerShell 5.1 (also PowerShell 7); .NET System.IO.Compression only.
@@ -768,11 +768,12 @@ function Convert-SheetXmlToText {
       [string]
     #>
     param([string]$Xml, [string[]]$Shared)
-    $lines = foreach ($row in [regex]::Matches($Xml, '(?s)<row\b[^>]*>(.*?)</row>')) {
-        $cells = foreach ($cell in [regex]::Matches($row.Groups[1].Value, '(?s)<c\b([^>]*?)(?:/>|>(.*?)</c>)')) {
+    # Tags may carry a namespace prefix (<x:row>, <x:c>): some tools write them so, and a missed tag would be a silent miss.
+    $lines = foreach ($row in [regex]::Matches($Xml, '(?s)<(?:\w+:)?row\b[^>]*>(.*?)</(?:\w+:)?row>')) {
+        $cells = foreach ($cell in [regex]::Matches($row.Groups[1].Value, '(?s)<(?:\w+:)?c\b([^>]*?)(?:/>|>(.*?)</(?:\w+:)?c>)')) {
             $type = [regex]::Match($cell.Groups[1].Value, '\bt="(\w+)"').Groups[1].Value
-            $inner = $cell.Groups[2].Value -replace '(?s)<f\b[^>]*/>|<f\b[^>]*>.*?</f>', ''   # formula text: not data
-            $value = [System.Net.WebUtility]::HtmlDecode([regex]::Match($inner, '(?s)<v>(.*?)</v>').Groups[1].Value)
+            $inner = $cell.Groups[2].Value -replace '(?s)<(?:\w+:)?f\b[^>]*/>|<(?:\w+:)?f\b[^>]*>.*?</(?:\w+:)?f>', ''   # formula text: not data
+            $value = [System.Net.WebUtility]::HtmlDecode([regex]::Match($inner, '(?s)<(?:\w+:)?v>(.*?)</(?:\w+:)?v>').Groups[1].Value)
             switch ($type) {
                 's' { $index = 0; if ([int]::TryParse($value, [ref]$index) -and $index -lt $Shared.Count) { $Shared[$index] } }
                 'inlineStr' { Convert-XmlToText $inner }
@@ -807,7 +808,7 @@ function Convert-XmlToText {
 function Convert-HtmlToText {
     <#
     .SYNOPSIS
-      Strips HTML (Teams post bodies, .html files) to plain text. Script and style blocks are dropped;
+      Strips HTML (.html files) to plain text. Script and style blocks are dropped;
       block ends become line breaks.
     .PARAMETER Html
       The HTML text.
@@ -839,7 +840,7 @@ function Get-SharedStrings {
     param($Zip)
     $entry = $Zip.GetEntry('xl/sharedStrings.xml')
     if (-not $entry) { return @() }
-    foreach ($item in [regex]::Matches((Read-ZipEntry $entry), '(?s)<si>(.*?)</si>')) { Convert-XmlToText $item.Groups[1].Value }
+    foreach ($item in [regex]::Matches((Read-ZipEntry $entry), '(?s)<(?:\w+:)?si>(.*?)</(?:\w+:)?si>')) { Convert-XmlToText $item.Groups[1].Value }
 }
 
 function Get-ZipPartText {
@@ -1113,8 +1114,9 @@ function Export-Xlsx {
     }
     $rels += '<Relationship Id="rId' + ($Sheets.Count + 1) + '" Type="' + $script:RelNs + '/styles" Target="styles.xml"/></Relationships>'
     $stream = New-Object System.IO.FileStream($Path, [System.IO.FileMode]::CreateNew)   # CreateNew: never overwrite
-    $zip = New-Object System.IO.Compression.ZipArchive($stream, [System.IO.Compression.ZipArchiveMode]::Create)
+    $zip = $null
     try {
+        $zip = New-Object System.IO.Compression.ZipArchive($stream, [System.IO.Compression.ZipArchiveMode]::Create)
         Add-ZipText $zip '[Content_Types].xml' ($types + '</Types>')
         Add-ZipText $zip '_rels/.rels' ('<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="' + $script:PackageRelNs + '">' +
             '<Relationship Id="rId1" Type="' + $script:RelNs + '/officeDocument" Target="xl/workbook.xml"/></Relationships>')
@@ -1123,7 +1125,7 @@ function Export-Xlsx {
         Add-ZipText $zip 'xl/styles.xml' $script:StylesXml
         for ($i = 1; $i -le $Sheets.Count; $i++) { Add-ZipText $zip ('xl/worksheets/sheet' + $i + '.xml') (ConvertTo-SheetXml $Sheets[$i - 1]) }
     }
-    finally { $zip.Dispose(); $stream.Dispose() }
+    finally { if ($zip) { $zip.Dispose() }; $stream.Dispose() }
 }
 
 # ==== Module Report.psm1 ====
@@ -1184,11 +1186,11 @@ function New-ReportRow {
     .SYNOPSIS
       One report row: a possible-PII hit, or a note (NOT SCANNED, BLOCKED, INCOMPLETE) about an item.
     .PARAMETER Source
-      File, File name, Post or Scan.
+      File, File name or Scan.
     .PARAMETER Channel
       The channel (folder) name.
     .PARAMETER Item
-      The file path inside the channel, or the post (masked by the caller).
+      The file path inside the folder (masked by the caller).
     .PARAMETER Link
       A link to the item, or empty.
     .PARAMETER Modified
@@ -1202,7 +1204,7 @@ function New-ReportRow {
     .PARAMETER Context
       The masked snippet, or the reason for a note.
     .OUTPUTS
-      [pscustomobject] with the CSV columns.
+      [pscustomobject] Source, Channel, Item, Detector, Confidence, MaskedValue, Context, Modified, Link.
     #>
     param(
         [string]$Source, [string]$Channel, [string]$Item, [string]$Link, [string]$Modified,
@@ -1378,6 +1380,7 @@ function Get-ResultPath {
     $siteName = [uri]::UnescapeDataString(($SiteUrl.TrimEnd('/') -split '/')[-1])
     $siteName = ((Protect-PiiText $siteName) -replace '[\\/:*?"<>|]', '-').Trim(' .')
     if (-not $siteName) { $siteName = 'site' }
+    if ($siteName -match '^(CON|PRN|AUX|NUL|COM\d|LPT\d)$') { $siteName = '_' + $siteName }   # names Windows keeps for devices
     $now = Get-Date
     $folder = Join-Path (Join-Path $OutputFolder $siteName) ($now.ToString('yyyy-MM-dd'))
     if (-not (Test-Path -LiteralPath $folder)) { New-Item -ItemType Directory -Path $folder -Force -ErrorAction Stop | Out-Null }
@@ -1451,8 +1454,8 @@ function Get-SummaryRows {
     $hits = @($Rows | Where-Object { $script:Rank.ContainsKey($_.Confidence) })
     foreach ($pair in @($Header.GetEnumerator()) + @((Get-ScanMetrics $Rows $ItemsScanned).GetEnumerator())) { , @($pair.Key, $pair.Value) }
     , @('')
-    , @('Possible PII by type (worst first)', 'Total', 'High', 'Medium', 'Low')
-    foreach ($type in @(Get-TypeCounts $hits)) { , @($type.Type, $type.Total, $type.High, $type.Medium, $type.Low) }
+    , @('Possible PII by type (worst first)', 'High', 'Medium', 'Low', 'Total')
+    foreach ($type in @(Get-TypeCounts $hits)) { , @($type.Type, $type.High, $type.Medium, $type.Low, $type.Total) }
     if ($hits.Count -eq 0) { , @('None found in the files that were read.') }
     , @('')
     , @('Tabs', 'One tab per type with High or Medium hits, worst type first; then Low confidence; then Not scanned.')
@@ -1495,7 +1498,7 @@ function Publish-ScanReport {
 <#
 ScanMeter.psm1 - the progress bars and the per-folder lines of a scan: counts only, so the screen shows no PII.
 
-  Purpose:     Lets the person follow a scan: files (or posts) done of the total, read, not scanned, possible PII,
+  Purpose:     Lets the person follow a scan: files done of the total, read, not scanned, possible PII,
                time used and time left (the PAM, 2026-11-20). No file name and no found value is shown; channel
                names are masked.
   Inputs:      the report row list and the counts the scan functions of ChannelScan.psm1 give.
@@ -1518,7 +1521,7 @@ function New-ScanMeter {
     .SYNOPSIS
       Starts a meter for one scan step: items done, read, not scanned, possible PII, and the time.
     .PARAMETER Total
-      How many items the step has (0 when not known up front, as for posts).
+      How many items the step has (0 when not known up front).
     .OUTPUTS
       [hashtable] the meter (Update-ScanMeter and Get-ScanMeterText use it).
     #>
@@ -1547,7 +1550,7 @@ function Update-ScanMeter {
     $Meter.Read += $ReadCount
     $Meter.Skipped += @($new | Where-Object { $_.Detector -eq 'NOT SCANNED' -or $_.Detector -eq 'BLOCKED' }).Count
     $Meter.Hits += $hits.Count
-    $Meter.HitItems += @($hits | Select-Object -ExpandProperty Item -Unique).Count   # files or posts with a hit
+    $Meter.HitItems += @($hits | Select-Object -ExpandProperty Item -Unique).Count   # files with a hit
 }
 
 function Format-Duration {
@@ -1563,7 +1566,7 @@ function Get-ScanMeterText {
     .PARAMETER Meter
       Output of New-ScanMeter.
     .PARAMETER Noun
-      What an item is: 'file' or 'post'.
+      What an item is, for example 'file'.
     .OUTPUTS
       [string] for example "12 of 40 files done | read 10 | not scanned 2 | possible PII 3 in 2 files | 00:42 used, about 01:48 left".
     #>
@@ -1618,7 +1621,7 @@ function Write-ChannelLine {
     .PARAMETER Meter
       The meter after the channel.
     .PARAMETER Noun
-      What an item is: 'file' or 'post'.
+      What an item is, for example 'file'.
     #>
     param([string]$Number, [string]$Channel, [hashtable]$Before, [hashtable]$Meter, [string]$Noun)
     $hits = $Meter.Hits - $Before.Hits
@@ -2058,7 +2061,9 @@ $folderLabel = 'Folder'   # 'Channel' when the site belongs to a team (the PAM, 
 $finished = $false   # set only after the last step; a cancelled run (Ctrl+C) skips 'catch' but not 'finally'
 try {
     # ---- Step 3: the folders to scan: all of them (in a team, one per channel) ----
-    if (Test-TeamSite) { $folderLabel = 'Channel' }
+    # Only the column name depends on it: if the site's group cannot be read, the scan goes on with 'Folder'.
+    try { if (Test-TeamSite) { $folderLabel = 'Channel' } }
+    catch { Write-Verbose 'Team check not possible: the folder column is named Folder.' }
     $library = Get-TeamDocumentLibrary
     $selected = @(Get-ChannelFolderNames $library)
     $shownFolders = ($selected | ForEach-Object { Protect-PiiText $_ }) -join ', '

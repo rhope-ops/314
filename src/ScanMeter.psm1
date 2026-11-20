@@ -1,7 +1,7 @@
 <#
 ScanMeter.psm1 - the progress bars and the per-folder lines of a scan: counts only, so the screen shows no PII.
 
-  Purpose:     Lets the person follow a scan: files (or posts) done of the total, read, not scanned, possible PII,
+  Purpose:     Lets the person follow a scan: files done of the total, read, not scanned, possible PII,
                time used and time left (the PAM, 2026-11-20). No file name and no found value is shown; channel
                names are masked.
   Inputs:      the report row list and the counts the scan functions of ChannelScan.psm1 give.
@@ -25,7 +25,7 @@ function New-ScanMeter {
     .SYNOPSIS
       Starts a meter for one scan step: items done, read, not scanned, possible PII, and the time.
     .PARAMETER Total
-      How many items the step has (0 when not known up front, as for posts).
+      How many items the step has (0 when not known up front).
     .OUTPUTS
       [hashtable] the meter (Update-ScanMeter and Get-ScanMeterText use it).
     #>
@@ -54,7 +54,7 @@ function Update-ScanMeter {
     $Meter.Read += $ReadCount
     $Meter.Skipped += @($new | Where-Object { $_.Detector -eq 'NOT SCANNED' -or $_.Detector -eq 'BLOCKED' }).Count
     $Meter.Hits += $hits.Count
-    $Meter.HitItems += @($hits | Select-Object -ExpandProperty Item -Unique).Count   # files or posts with a hit
+    $Meter.HitItems += @($hits | Select-Object -ExpandProperty Item -Unique).Count   # files with a hit
 }
 
 function Format-Duration {
@@ -70,7 +70,7 @@ function Get-ScanMeterText {
     .PARAMETER Meter
       Output of New-ScanMeter.
     .PARAMETER Noun
-      What an item is: 'file' or 'post'.
+      What an item is, for example 'file'.
     .OUTPUTS
       [string] for example "12 of 40 files done | read 10 | not scanned 2 | possible PII 3 in 2 files | 00:42 used, about 01:48 left".
     #>
@@ -125,7 +125,7 @@ function Write-ChannelLine {
     .PARAMETER Meter
       The meter after the channel.
     .PARAMETER Noun
-      What an item is: 'file' or 'post'.
+      What an item is, for example 'file'.
     #>
     param([string]$Number, [string]$Channel, [hashtable]$Before, [hashtable]$Meter, [string]$Noun)
     $hits = $Meter.Hits - $Before.Hits

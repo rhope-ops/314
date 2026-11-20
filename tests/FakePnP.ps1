@@ -23,7 +23,7 @@ function Reset-FakePnP {
     <#
     .SYNOPSIS
       Sets up the fake site: library '/sites/TeamA/Shared Documents', channels General and Ops, the
-      given files, posts refused, file download through -AsMemoryStream.
+      given files, file download through -AsMemoryStream.
     .PARAMETER Files
       Server-relative file path -> file bytes.
     .OUTPUTS
