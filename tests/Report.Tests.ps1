@@ -38,7 +38,8 @@ Assert-Equal '=HYPERLINK("x")' $book['Low confidence'][1][5] 'Formula-like text 
 Assert-Equal 'NOT SCANNED|Ops|scan.pdf' (($book['Not scanned'][1] | Select-Object -First 3) -join '|') 'Not scanned tab row'
 $summary = ($book['Summary'] | ForEach-Object { $_ -join '|' }) -join "`n"
 Assert-Equal $true ($summary -match 'Possible PII hits\|3') 'Summary: total hits'
-Assert-Equal $true ($summary -match '(?m)^SSN\|1\|0\|0\|1$' -and $summary -match '(?m)^Date of birth\|1\|0\|0\|1$' -and $summary -match '(?m)^Phone\|0\|0\|1\|1$') 'Summary: hits per type (High, Medium, Low, Total), worst first'
+$typeRows = $summary -match '(?m)^SSN\|1\|0\|0\|1$' -and $summary -match '(?m)^Date of birth\|1\|0\|0\|1$' -and $summary -match '(?m)^Phone\|0\|0\|1\|1$'
+Assert-Equal $true $typeRows 'Summary: hits per type (High, Medium, Low, Total), worst first'
 Assert-Equal $true ($summary -match 'potential or actual breach' -and $summary -match 'para 3\.1\.2') 'Summary gives the cited breach step'
 $allCells = ($book.Values | ForEach-Object { $_ | ForEach-Object { $_ -join ' ' } }) -join ' '
 Assert-Equal $false $allCells.Contains($Sample.Ssn) 'Workbook has no full SSN'
