@@ -71,6 +71,8 @@ Assert-Equal 'Date of birth/High/[date masked]' (Get-HitSummary 'Roster DOB_01-0
 Assert-Equal 'Personal e-mail/Medium/***@example.net' (Get-HitSummary "notes $($Sample.EmailAccent) here") 'E-mail with accents'
 Assert-Equal 1 (Get-HitSummary "mail $($Sample.EmailIdn) here").Count 'E-mail with a non-ASCII domain'
 Assert-Equal 1 (Get-HitSummary ("see " + $Sample.MilEmail + '/' + $Sample.Email)).Count 'E-mail right after a slash'
+$afterAt = Get-HitSummary ('note x' + '@' + $Sample.Email)
+Assert-Equal 'Personal e-mail/Medium/***@example.com' ($afterAt -join ',') 'E-mail right after an @: only the real address, masked'
 
 # ---- Protect-PiiText: names and messages shown as they are; every digit and e-mail name hidden ----
 Assert-Equal 'Roster ***-**-####.docx' (Protect-PiiText "Roster $($Sample.Ssn).docx") 'File name with SSN masked'

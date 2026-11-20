@@ -288,9 +288,12 @@ function Find-PersonalEmailHits {
     param([string]$Text)
     # Local part: any characters but spaces, delimiters and path slashes (accents and apostrophes included),
     # starting after a space, a delimiter, a slash, an '@' or the start of the text. Domain: any such
-    # characters too (non-ASCII domains), ending in a top-level label of 2 or more letters.
+    # characters too (non-ASCII domains), ending in a top-level label of 2 or more letters. The address must
+    # end there: at the end of the text, a space or delimiter, or a final period; never another '@' or label
+    # character (so 'x@jo.doe' is not taken out of a longer run like 'x@jo.doe@example.com').
     $notInAddress = '\s@<>()\[\],;:"/\\'
-    $pattern = '(?<=^|[' + $notInAddress + '])[^' + $notInAddress + ']+@((?:[^' + $notInAddress + '.]+\.)+(\p{L}{2,}))'
+    $endsAddress = '(?=$|[\s<>()\[\],;:"/\\]|\.(?:$|[\s<>()\[\],;:"/\\]))'
+    $pattern = '(?<=^|[' + $notInAddress + '])[^' + $notInAddress + ']+@((?:[^' + $notInAddress + '.]+\.)+(\p{L}{2,}))' + $endsAddress
     foreach ($m in [regex]::Matches($Text, $pattern)) {
         if ($script:GovernmentMailLabels -contains $m.Groups[2].Value.ToLower()) { continue }
         New-PiiHit 'Personal e-mail' 'Medium' $m.Index $m.Value

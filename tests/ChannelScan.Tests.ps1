@@ -82,3 +82,7 @@ Set-FakePnPOption PostsAllowed $true
 $rows = New-Object System.Collections.Generic.List[object]
 Assert-Equal 2 (Invoke-PostScan -SiteUrl $Sample.Site -Channels @('General', 'Ops') -Rows $rows) 'Post and reply scanned'
 Assert-Equal 'DoD ID Personal e-mail NOT SCANNED' (($rows | ForEach-Object { $_.Detector }) -join ' ') 'Post hits; Ops has no Teams channel'
+$rows = New-Object System.Collections.Generic.List[object]
+$null = Invoke-PostScan -SiteUrl $Sample.Site -Channels @("SSN $($Sample.Ssn)") -Rows $rows
+Assert-Equal $false (Get-FakeProgressText).Contains($Sample.Ssn) 'Posts progress bar never shows the SSN'
+Assert-Equal $false (($rows | ForEach-Object { $_.Channel }) -join ' ').Contains($Sample.Ssn) 'Posts rows never show the SSN'

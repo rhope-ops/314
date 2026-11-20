@@ -69,7 +69,7 @@ function Get-MaskedValue {
         'DoD ID' { return '******' + $lastDigits }
         'Payment card' { return ('*' * ($digits.Length - $lastDigits.Length)) + $lastDigits }
         'Phone' { return '***-***-' + $lastDigits }
-        'Personal e-mail' { return '***@' + ($Value -split '@')[-1] }
+        'Personal e-mail' { return '***@' + (($Value -split '@')[-1] -replace '\d', '#') }   # domain kept, its digits hidden
         'Passport' {
             $tail = Get-LastCharacters $Value $script:KeepLastPassportChars
             return ('*' * ($Value.Length - $tail.Length)) + $tail
