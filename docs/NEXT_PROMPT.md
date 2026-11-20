@@ -10,3 +10,7 @@ Title: 33-332.Z · <task> · <date>. Read AGENTS.md first.
    README step order, strict mode after a run in ISE); ask the PAM whether the report's breach line takes the
    page's wording.
 4. The PAM: turn on GitHub Pages (main, / root) once index.html merges. (Denylist secret: added 2026-11-20.)
+5. 2026-11-20: PII Scan takes a Teams link or a SharePoint address (PR #6,
+   https://github.com/rhope-ops/33-332.Z/pull/6; preview https://claude.ai/artifact/4vYLihr6qHtXFMtkyRQ4Ub).
+   Lane C (UI change): merge only after the PAM approves the preview. Open: the PAM tests the Teams-link lookup
+   on DoD365 (not testable here); the PAM decides on a `.check` allow line for the Teams host so docs can show it.
