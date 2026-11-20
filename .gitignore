@@ -4,4 +4,4 @@ CLAUDE.local.md
 .DS_Store
 __pycache__/
 .claude/worktrees/
-PIIScan-*.csv
+PIIScan-*
