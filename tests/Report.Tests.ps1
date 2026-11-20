@@ -42,7 +42,7 @@ Assert-Equal $true ($text.Contains('ITEMS WITH POSSIBLE PII') -and $text.Contain
 Assert-Equal $true ($text -match 'SSN\s+High\s+1') 'Hits-per-type table filled'
 Assert-Equal $true $text.Contains('scan.pdf') 'Not-scanned item listed'
 Assert-Equal $false $text.Contains($Sample.Ssn) 'Text report has no full SSN'
-Assert-Equal $true ($text -match 'servicing Privacy Manager/Monitor without delay' -and $text -match 'para 3\.1\.2') 'Text report gives the cited breach step'
+Assert-Equal $true ($text -match 'potential or actual breach; report it to your servicing Privacy' -and $text -match 'para 3\.1\.2') 'Text report gives the cited breach step'
 
 # ---- The CSV ----
 $csv = Get-Content -LiteralPath ($both | Where-Object { $_ -like '*.csv' }) -Raw

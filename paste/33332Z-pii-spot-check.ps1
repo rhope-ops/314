@@ -5,7 +5,7 @@
     src/PiiDetectors.psm1, sha256 816724438a45
     src/PiiMasking.psm1, sha256 dda7cdacfaf9
     src/TextExtract.psm1, sha256 1741328077ee
-    src/Report.psm1, sha256 9a09b871f535
+    src/Report.psm1, sha256 7ef040624291
     src/ChannelScan.psm1, sha256 f3394dccec12
     src/Find-ChannelPII.ps1, sha256 f1e5c47327c3
 
@@ -23,9 +23,9 @@
     line   497  Module PiiMasking.psm1
     line   683  Module TextExtract.psm1
     line   846  Module Report.psm1
-    line  1185  Module ChannelScan.psm1
-    line  1607  Body of Find-ChannelPII.ps1
-    line  1665  Clean-up
+    line  1186  Module ChannelScan.psm1
+    line  1608  Body of Find-ChannelPII.ps1
+    line  1666  Clean-up
 #>
 
 # ==== Settings ==== (edit the values between the quotes, or let the site page fill them in)
@@ -877,8 +877,9 @@ $script:TableWidth = 220
 
 # What to do with PII found where it should not be: the breach steps of the rule source, AFI 33-332 para 3.1.2 as
 # changed by AFI33-332_DAFGM2026-01 (7 July 2026; edition: docs/DECISIONS.md).
-$script:BreachAdvice = 'PII where it should not be is a potential breach: report it to your servicing Privacy Manager/Monitor ' +
-                       'without delay; only they enter it in DPIMS (AFI 33-332 para 3.1.2, as changed by DAFGM 2026-01).'
+# The wording is the same on the site page (the PAM, 2026-11-20).
+$script:BreachAdvice = 'PII where it should not be is a potential or actual breach; report it to your servicing Privacy ' +
+                       'Manager/Monitor without delay (AFI 33-332 para 3.1.2, as changed by AFI33-332_DAFGM2026-01).'
 
 # Report choices (Select-ReportFormat): what is saved besides the on-screen summary.
 $script:ReportFormats = @('Both', 'Text', 'Csv')
