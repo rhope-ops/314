@@ -13,8 +13,7 @@
   Outputs:     the summary on screen; PIIScan-<time>.txt and/or PIIScan-<time>.csv in -OutputFolder.
   How to run:  .\Find-ChannelPII.ps1   (README.md "Run it" gives every step)
   Run target:  Windows PowerShell 5.1 (also PowerShell 7) with PnP.PowerShell 1.12.0. No other modules.
-  Network:     only the one team's SharePoint site; for a Teams link, first one lookup of that one group's site at
-               https://usaf.dps.mil; with -IncludePosts, Microsoft Graph for that one team.
+  Network:     only the one team's SharePoint site; with -IncludePosts, Microsoft Graph for that one team.
   Writes:      only the report files in -OutputFolder (default Documents\PII-Scan); nothing in Teams or SharePoint.
   Credentials: the person's own CAC sign-in in the PnP sign-in window; nothing is stored or saved.
 
@@ -27,7 +26,7 @@
 .PARAMETER SiteUrl
   The team's Teams link or its SharePoint site address.
   Teams link: in Teams, open the team or one of its channels, click the ... next to its name > Copy link
-  (https://<teams-host>/l/team/...?groupId=...). The script looks up the team's site and checks it belongs to the team.
+  (https://<teams-host>/l/team/...?groupId=...). The script asks for the team's site address and checks the site belongs to that team.
   Site address: the team's Shared tab > ... > Open in SharePoint (https://usaf.dps.mil/teams/<team-site>);
   a file's Copy link from the Shared tab works too. Anything after the site name is cut off.
 .PARAMETER Channel

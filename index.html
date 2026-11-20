@@ -347,7 +347,7 @@ SharePoint address: the team's Shared tab, then "..." and "Open in SharePoint".<
     if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(typed)) typed = 'https://' + typed;
     var link = typed.match(TEAMS_RULE);
     if (link) {
-      hint.textContent = 'Teams link: only this team will be scanned; the script finds its site and checks it belongs to the team.' +
+      hint.textContent = 'Teams link: only this team will be scanned; the script asks for its site address and checks the site belongs to the team.' +
                          (link[2].toLowerCase() === 'channel' ? ' A private or shared channel has its own site: give that address instead.' : '');
       return 'https://' + link[1] + '/l/' + link[2].toLowerCase() + '/link?groupId=' + link[3].toLowerCase();
     }

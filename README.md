@@ -45,7 +45,7 @@ Needs: Windows PowerShell 5.1 and PnP.PowerShell 1.12.0. No other modules, no ad
 
 The team to scan, one of:
 
-- **Teams link:** in Teams, open the team or one of its channels, click the **...** next to its name, then **Copy link** (`https://<teams-host>/l/team/...?groupId=...`). The script asks SharePoint at `https://usaf.dps.mil` for the site of that one team (by the link's group ID), then checks that the site belongs to that team before it reads anything. If the lookup does not work, it asks for the site address.
+- **Teams link:** in Teams, open the team or one of its channels, click the **...** next to its name, then **Copy link** (`https://<teams-host>/l/team/...?groupId=...`). The script then asks for the team's site address (the team's Shared tab > **...** > **Open in SharePoint**) and checks that the site belongs to the team in the link (by its group ID) before it reads anything.
 - **SharePoint address:** in the team's **Shared** tab, click **...** > **Open in SharePoint** and copy the address (`https://usaf.dps.mil/teams/<team-site>`; some sites use `/sites/`). A file's **Copy link** from the **Shared** tab works too. Anything after the site name is cut off. `https://` may be left out.
 
 What each report holds:
@@ -69,7 +69,7 @@ Settings at the top of the paste text:
 ## Safety
 
 - **Read-only:** it never changes, moves or deletes anything in Teams or SharePoint.
-- **One team only:** it touches only the team you give: its site, and for a Teams link one lookup of that team's site. It never lists other sites or teams.
+- **One team only:** it touches only the team you give: its site. It never lists other sites or teams.
 - **No stored credentials:** your own CAC sign-in each run.
 - **Masked report:** the screen, the `.txt` and the `.csv` never hold a full value. The context snippet is cut from text that is already masked (digits become `#`, found values and e-mail names become `*`), so a cut cannot expose part of a value. Names the report shows as they are (file, folder and channel names, error messages) get a stricter mask: found values are masked, then every digit becomes `#` and every e-mail name `***` (so `FY27 Plan.docx` shows as `FY## Plan.docx`). A link goes to the file only when its path has nothing to mask; else to the deepest clean folder.
 - **Safe CSV:** a cell that Excel would read as a formula gets a leading `'`.
@@ -104,7 +104,7 @@ Each file starts with a header: purpose, inputs, outputs, how to run, run target
 | [docs/code-standard-33-332.md](docs/code-standard-33-332.md): kit rules C1–C11 with `code-c1-safety: on`, `code-c2: full`, `code-max-line-chars: 200`, and the RADE extras X1–X7 | Headers with safety lines and run target; full help for each function; functions ≤ 60 lines, files ≤ 600, lines ≤ 200; named values with their source; every discarded error says why; `Set-StrictMode -Version 2`. Checked on every pull request by `scripts/check.sh` (the `checks` job) |
 | Windows PowerShell 5.1, PnP.PowerShell 1.12.0, no other modules | Lint checks 5.1 syntax; the `ps51` job runs the tests on Windows PowerShell 5.1; only .NET built-ins are used |
 | Paste and run (ISSM ruling 2026-11-13) | One generated text pasted into ISE; no download, no unblocking, no execution-policy change |
-| No network reconnaissance | Only the one team given (its site; for a Teams link, one lookup of that one group's site); nothing lists other sites or teams |
+| No network reconnaissance | Only the one team given (its site); nothing lists other sites or teams |
 | Government data stays in DoD365 | File content is read in memory only; reports stay on your computer; the tests use invented data only |
 | Credentials | Your own CAC sign-in each run; nothing stored |
 | No scripts in results | Script files are not read; only their masked names can appear in a report |
