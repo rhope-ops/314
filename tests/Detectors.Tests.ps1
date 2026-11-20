@@ -73,6 +73,10 @@ Assert-Equal 1 (Get-HitSummary "mail $($Sample.EmailIdn) here").Count 'E-mail wi
 Assert-Equal 1 (Get-HitSummary ("see " + $Sample.MilEmail + '/' + $Sample.Email)).Count 'E-mail right after a slash'
 $afterAt = Get-HitSummary ('note x' + '@' + $Sample.Email)
 Assert-Equal 'Personal e-mail/Medium/***@example.com' ($afterAt -join ',') 'E-mail right after an @: only the real address, masked'
+# An address followed by punctuation is still found: ? ! ' curly quote ... ellipsis -ok * 's .
+foreach ($tail in @('?', '!', "'", [string][char]0x201D, '...', [string][char]0x2026, '-ok', '*', "'s", '.')) {
+    Assert-Equal 'Personal e-mail/Medium/***@example.com' ((Get-HitSummary ("mail me at " + $Sample.Email + $tail + ' soon')) -join ',') "E-mail followed by [$tail]"
+}
 
 # ---- Protect-PiiText: names and messages shown as they are; every digit and e-mail name hidden ----
 Assert-Equal 'Roster ***-**-####.docx' (Protect-PiiText "Roster $($Sample.Ssn).docx") 'File name with SSN masked'

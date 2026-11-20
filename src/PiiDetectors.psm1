@@ -288,12 +288,12 @@ function Find-PersonalEmailHits {
     param([string]$Text)
     # Local part: any characters but spaces, delimiters and path slashes (accents and apostrophes included),
     # starting after a space, a delimiter, a slash, an '@' or the start of the text. Domain: any such
-    # characters too (non-ASCII domains), ending in a top-level label of 2 or more letters. The address must
-    # end there: at the end of the text, a space or delimiter, or a final period; never another '@' or label
-    # character (so in a run of two addresses glued by '@', the first part is not taken for an address
-    # whose 'domain' is the second address's local part).
+    # characters too (non-ASCII domains), ending in a top-level label of 2 or more letters. No further '@' may
+    # follow before the next space or delimiter: in a run of two addresses glued by '@', the first part is not
+    # taken for an address whose 'domain' is the second address's local part. Any other trailing character
+    # (? ! quotes ... and so on) still ends the address normally.
     $notInAddress = '\s@<>()\[\],;:"/\\'
-    $endsAddress = '(?=$|[\s<>()\[\],;:"/\\]|\.(?:$|[\s<>()\[\],;:"/\\]))'
+    $endsAddress = '(?![^\s<>()\[\],;:"/\\]*@)'
     $pattern = '(?<=^|[' + $notInAddress + '])[^' + $notInAddress + ']+@((?:[^' + $notInAddress + '.]+\.)+(\p{L}{2,}))' + $endsAddress
     foreach ($m in [regex]::Matches($Text, $pattern)) {
         if ($script:GovernmentMailLabels -contains $m.Groups[2].Value.ToLower()) { continue }
