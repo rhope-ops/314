@@ -19,7 +19,7 @@
   Built from these files; to change it, change them and rebuild with: python3 scripts/build_paste.py
     src/PiiDetectors.psm1, sha256 ea19831b4d68
     src/PiiMasking.psm1, sha256 752c251a94b2
-    src/PdfText.psm1, sha256 2c8215db9c7a
+    src/PdfText.psm1, sha256 99e12941bd45
     src/TextExtract.psm1, sha256 778ad5729561
     src/XlsxWriter.psm1, sha256 e29becdc6a65
     src/Report.psm1, sha256 bc9f57c40be5
@@ -38,13 +38,13 @@
     line    61  Module PiiDetectors.psm1
     line   549  Module PiiMasking.psm1
     line   749  Module PdfText.psm1
-    line  1248  Module TextExtract.psm1
-    line  1507  Module XlsxWriter.psm1
-    line  1778  Module Report.psm1
-    line  2274  Module ScanMeter.psm1
-    line  2539  Module ChannelScan.psm1
-    line  3122  Body of Find-ChannelPII.ps1
-    line  3223  Clean-up
+    line  1249  Module TextExtract.psm1
+    line  1508  Module XlsxWriter.psm1
+    line  1779  Module Report.psm1
+    line  2275  Module ScanMeter.psm1
+    line  2540  Module ChannelScan.psm1
+    line  3123  Body of Find-ChannelPII.ps1
+    line  3224  Clean-up
 #>
 
 # ==== Settings ==== (optional: edit the values between the quotes; empty = the script asks)
@@ -768,8 +768,9 @@ Add-Type -AssemblyName System.IO.Compression
 # Bytes as characters one to one (ISO-8859-1), so binary PDF parts can be cut with string functions.
 $script:Latin1 = [System.Text.Encoding]::GetEncoding(28591)
 
-# A PDF string: (literal), with nested brackets and escapes, or <hex> (not a << dictionary).
-$script:PdfStringPattern = '\((?>[^()\\]+|\\.|\((?<d>)|\)(?<-d>))*(?(d)(?!))\)|<(?!<)[0-9A-Fa-f\s]*>'
+# A PDF string: (literal), with nested brackets and escapes, or <hex> (not a << dictionary). A literal holds at most
+# 2,000 parts: an unclosed bracket then fails after a short scan, not after the rest of the stream.
+$script:PdfStringPattern = '\((?>[^()\\]+|\\.|\((?<d>)|\)(?<-d>)){0,2000}(?(d)(?!))\)|<(?!<)[0-9A-Fa-f\s]*>'
 
 # The tokens of a content stream that matter for text: strings, array brackets, names, numbers and operators.
 $script:PdfTokenPattern = $script:PdfStringPattern + '|\[|\]|/[^\s/\[\]()<>{}%]+|[-+]?(?:\d+\.?\d*|\.\d+)|[A-Za-z''"*]+'
@@ -1115,7 +1116,7 @@ function Convert-PdfContentToText {
     $inImage = $false   # between ID and EI: the bytes of an inline image, not text
     $count = 0
     foreach ($token in (Get-PdfRegex $script:PdfTokenPattern).Matches($Content)) {
-        if ((++$count % 2000) -eq 0) { Assert-PdfTime }
+        if ((++$count % 100) -eq 0) { Assert-PdfTime }
         $t = $token.Value
         if ($inImage) { if ($t -ceq 'EI') { $inImage = $false }; continue }
         if ($t -ceq 'ID') { $inImage = $true; $stack.Clear(); continue }

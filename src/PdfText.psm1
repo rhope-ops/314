@@ -20,8 +20,9 @@ Add-Type -AssemblyName System.IO.Compression
 # Bytes as characters one to one (ISO-8859-1), so binary PDF parts can be cut with string functions.
 $script:Latin1 = [System.Text.Encoding]::GetEncoding(28591)
 
-# A PDF string: (literal), with nested brackets and escapes, or <hex> (not a << dictionary).
-$script:PdfStringPattern = '\((?>[^()\\]+|\\.|\((?<d>)|\)(?<-d>))*(?(d)(?!))\)|<(?!<)[0-9A-Fa-f\s]*>'
+# A PDF string: (literal), with nested brackets and escapes, or <hex> (not a << dictionary). A literal holds at most
+# 2,000 parts: an unclosed bracket then fails after a short scan, not after the rest of the stream.
+$script:PdfStringPattern = '\((?>[^()\\]+|\\.|\((?<d>)|\)(?<-d>)){0,2000}(?(d)(?!))\)|<(?!<)[0-9A-Fa-f\s]*>'
 
 # The tokens of a content stream that matter for text: strings, array brackets, names, numbers and operators.
 $script:PdfTokenPattern = $script:PdfStringPattern + '|\[|\]|/[^\s/\[\]()<>{}%]+|[-+]?(?:\d+\.?\d*|\.\d+)|[A-Za-z''"*]+'
@@ -367,7 +368,7 @@ function Convert-PdfContentToText {
     $inImage = $false   # between ID and EI: the bytes of an inline image, not text
     $count = 0
     foreach ($token in (Get-PdfRegex $script:PdfTokenPattern).Matches($Content)) {
-        if ((++$count % 2000) -eq 0) { Assert-PdfTime }
+        if ((++$count % 100) -eq 0) { Assert-PdfTime }
         $t = $token.Value
         if ($inImage) { if ($t -ceq 'EI') { $inImage = $false }; continue }
         if ($t -ceq 'ID') { $inImage = $true; $stack.Clear(); continue }
