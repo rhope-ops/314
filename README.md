@@ -75,7 +75,7 @@ Settings at the top of the paste text:
 - **Safe CSV:** a cell that Excel would read as a formula gets a leading `'`.
 - **Stops cleanly:** if something fails part way or you press Ctrl+C, the report is still saved and says INCOMPLETE; the script signs out even if the report cannot be saved.
 - **Handle the reports as CUI anyway:** file names and masked fragments still point to where PII is.
-- PII where it should not be is a potential or actual breach; report it to your servicing Privacy Manager/Monitor without delay (AFI 33-332 para 3.1.2, as changed by AFI33-332_DAFGM2026-01, 7 July 2026).
+- PII where it should not be is a potential or actual breach; report it to your servicing Privacy Manager/Monitor without delay (AFI 33-332 para 3.1.2, as changed by AFI33-332_DAFGM2026-01, 7 July 2026, page 1, second paragraph).
 
 ## Files
 

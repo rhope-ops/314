@@ -35,6 +35,7 @@ function Reset-FakePnP {
         Folders     = @('General', 'Ops', 'Forms')
         PostsAllowed = $false
         ListFails   = $false
+        ConnectFails = $false                                     # the web login to a site fails (an error before the scan)
         LookupSite  = 'https://tenant.example.com/teams/TeamA'   # the group lookup's answer; '' = none, 'throw' = refused
         TypedSite   = ''                                          # what the fake Read-Host returns
         LookupForm  = 'd'                                         # the answer's form: 'd' (verbose), 'plain' or 'json'
@@ -46,8 +47,8 @@ function Reset-FakePnP {
 }
 
 function Set-FakePnPOption {
-    # Changes one switch of the fake site: PostsAllowed or ListFails.
-    param([ValidateSet('PostsAllowed', 'ListFails')][string]$Name, [bool]$Value)
+    # Changes one switch of the fake site: PostsAllowed, ListFails or ConnectFails.
+    param([ValidateSet('PostsAllowed', 'ListFails', 'ConnectFails')][string]$Name, [bool]$Value)
     $global:FakePnP[$Name] = $Value
 }
 
@@ -171,6 +172,7 @@ function global:Connect-PnPOnline {
     # Fake: the web login always works; the Graph sign-in works only when PostsAllowed is set.
     [CmdletBinding()] param($Url, [switch]$UseWebLogin, [switch]$Interactive, $AzureEnvironment)
     $global:FakePnP.Calls.Add('Connect ' + $Url)
+    if ($UseWebLogin -and $global:FakePnP.ConnectFails) { throw 'FAKE: sign-in refused' }
     if ($Interactive -and -not $global:FakePnP.PostsAllowed) { throw 'AADSTS65001: consent missing (fake)' }
 }
 

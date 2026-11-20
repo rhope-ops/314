@@ -392,10 +392,14 @@ function Remove-OverlappingHits {
     .SYNOPSIS
       Keeps one hit per stretch of text: the type earlier in $DetectorOrder wins, then the higher
       confidence. Example: the 9 digits inside a 16-digit card number are not also an SSN.
+    .DESCRIPTION
+      The kept hits never overlap, so kept in order of their start they also end in order. A new hit overlaps a
+      kept one only if it overlaps the kept hit that starts last before the new hit ends: one binary search per
+      hit (O(n log n) after the sort), not a check against every kept hit (O(n^2)).
     .PARAMETER Hits
       All hits from Get-AllHits.
     .OUTPUTS
-      The kept hits (a list).
+      The kept hits (a list, in priority order).
     #>
     param([object[]]$Hits)
     $sorted = $Hits | Where-Object { $_ } | Sort-Object `
@@ -403,12 +407,18 @@ function Remove-OverlappingHits {
         @{ Expression = { Get-ConfidenceRank $_.Confidence }; Descending = $true },
         Index
     $kept = New-Object System.Collections.Generic.List[object]
+    $starts = New-Object System.Collections.Generic.List[int]   # starts of the kept hits, ascending
+    $ends = New-Object System.Collections.Generic.List[int]     # their ends, in the same order (also ascending)
     foreach ($hit in $sorted) {
-        $overlaps = $false
-        foreach ($k in $kept) {
-            if ($hit.Index -lt ($k.Index + $k.Length) -and $k.Index -lt ($hit.Index + $hit.Length)) { $overlaps = $true; break }
-        }
-        if (-not $overlaps) { $kept.Add($hit) }
+        $end = $hit.Index + $hit.Length
+        # The first kept hit that starts at or after this hit's end (BinarySearch gives its place as ~n if absent).
+        $after = $starts.BinarySearch($end)
+        if ($after -lt 0) { $after = -bnot $after }
+        while ($after -gt 0 -and $starts[$after - 1] -ge $end) { $after-- }
+        if ($after -gt 0 -and $ends[$after - 1] -gt $hit.Index) { continue }   # overlaps the kept hit before it
+        $starts.Insert($after, $hit.Index)
+        $ends.Insert($after, $end)
+        $kept.Add($hit)
     }
     return , $kept
 }

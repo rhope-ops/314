@@ -68,4 +68,22 @@ $ErrorActionPreference = 'Stop'
 Assert-Equal 'Continue' $errorPathAction 'Bundle put the session error setting back after a failed scan'
 Assert-Equal $true (@(Get-ChildItem -LiteralPath $bundleFolder -Filter 'PIIScan-*.csv').Count -ge 2) 'Failed scan still saved its report'
 
+# An error before the scan's own try (the sign-in fails) leaves the bundle through its outer 'finally' only: strict
+# mode off, the session's error setting back, signed out, and the error reaches the person.
+Reset-FakePnP @{}
+Set-FakePnPOption ConnectFails $true
+$ErrorActionPreference = 'Continue'
+Set-StrictMode -Off
+$outerError = ''
+try { . $runCopy 6>$null } catch { $outerError = $_.Exception.Message }
+$outerAction = $ErrorActionPreference
+$outerStrict = $false
+try { $null = $notDefinedAnywhereEither } catch { $outerStrict = $true }  # strict mode makes an unset variable an error
+Set-StrictMode -Version 2.0
+$ErrorActionPreference = 'Stop'
+Assert-Equal 'FAKE: sign-in refused' $outerError 'Sign-in error reached the person'
+Assert-Equal 'Continue' $outerAction 'Outer clean-up put the session error setting back'
+Assert-Equal $false $outerStrict 'Outer clean-up turned strict mode off'
+Assert-Equal $true (Test-FakePnPCall 'Disconnect-PnPOnline') 'Outer error path signed out'
+
 Remove-Item -LiteralPath $bundleFolder -Recurse -Force

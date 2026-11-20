@@ -31,6 +31,30 @@ Assert-Equal 'Payment card/Medium/************4444' (Get-HitSummary 'number 5555
 Assert-Equal 0 (Get-HitSummary 'number 4111 1111 1111 1112').Count 'Card failing Luhn not reported'
 Assert-Equal 1 (Get-HitSummary 'card 4111111111111111').Count 'Card digits not also reported as SSN (overlap)'
 
+# Many overlapping hits: the fast overlap removal keeps exactly what a check against every kept hit keeps.
+$random = New-Object System.Random 332   # fixed seed: the same invented hits every run
+$types = @('SSN', 'DoD ID', 'Payment card', 'Phone', 'Name')
+$manyHits = @(foreach ($n in 1..1500) {
+    [pscustomobject]@{ Index = $random.Next(0, 3000); Length = $random.Next(1, 40)
+                       Detector = $types[$random.Next(0, $types.Count)]; Confidence = @('High', 'Medium', 'Low')[$random.Next(0, 3)] }
+})
+$fastKept = & (Get-Module PiiDetectors) { param($hits) Remove-OverlappingHits $hits } $manyHits
+$order = & (Get-Module PiiDetectors) { $script:DetectorOrder }
+$slowSorted = $manyHits | Sort-Object @{ Expression = { [array]::IndexOf($order, $_.Detector) } },
+    @{ Expression = { @{ High = 3; Medium = 2; Low = 1 }[$_.Confidence] }; Descending = $true }, Index
+$slowKept = New-Object System.Collections.Generic.List[object]
+foreach ($hit in $slowSorted) {
+    $clash = @($slowKept | Where-Object { $hit.Index -lt ($_.Index + $_.Length) -and $_.Index -lt ($hit.Index + $hit.Length) }).Count
+    if ($clash -eq 0) { $slowKept.Add($hit) }
+}
+function ConvertTo-HitListText {
+    # The kept hits as one line (start+length:type each), so two lists compare as text.
+    param($List)
+    return ($List | ForEach-Object { '{0}+{1}:{2}' -f $_.Index, $_.Length, $_.Detector }) -join ' '
+}
+Assert-Equal (ConvertTo-HitListText $slowKept) (ConvertTo-HitListText $fastKept) 'Many overlapping hits: same hits kept as the full check'
+Assert-Equal $true ($fastKept.Count -gt 50) 'Many overlapping hits: a real mix kept'
+
 # ---- Date of birth ----
 Assert-Equal 'Date of birth/High/[date masked]' (Get-HitSummary 'DOB: 03/14/1985') 'DOB numeric'
 Assert-Equal 'Date of birth/High/[date masked]' (Get-HitSummary 'Date of birth 14 Mar 1985') 'DOB day month year'
