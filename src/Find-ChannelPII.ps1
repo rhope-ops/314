@@ -79,17 +79,19 @@ Connect-PnPOnline -Url $SiteUrl -UseWebLogin
 $rows = New-Object System.Collections.Generic.List[object]
 $scanned = 0
 $selected = @()
+$finished = $false   # set only after the last step; a cancelled run (Ctrl+C) skips 'catch' but not 'finally'
 try {
     # ---- Step 3: the channels to scan ----
     $library = Get-TeamDocumentLibrary
     $selected = @(Select-ChannelFolders -Available @(Get-ChannelFolderNames $library) -Requested $Channel)
-    Write-Host ('Channels to scan: ' + ($selected -join ', '))
+    Write-Host ('Channels to scan: ' + (($selected | ForEach-Object { Protect-PiiText $_ }) -join ', '))
 
     # ---- Step 4: the files ----
     $scanned += Invoke-FileScan -Library $library -Channels $selected -SiteUrl $SiteUrl -MaxFileMB $MaxFileMB -Rows $rows
 
     # ---- Step 5 (optional): the posts ----
     if ($IncludePosts) { $scanned += Invoke-PostScan -SiteUrl $SiteUrl -Channels $selected -Rows $rows }
+    $finished = $true
 }
 catch {
     # Keep what was found so far: the report says the scan stopped early, and why (PII in the message masked).
@@ -98,16 +100,24 @@ catch {
     $rows.Add((New-ReportRow 'Scan' '(all)' '(scan)' '' '' 'INCOMPLETE' '' '' ('Stopped early: ' + $reason)))
 }
 finally {
-    # ---- Step 6: the report (also after an error), then sign out ----
+    # ---- Step 6: the report (also after an error or a cancel), then sign out ----
+    if (-not $finished -and -not @($rows | Where-Object { $_.Detector -eq 'INCOMPLETE' })) {
+        $rows.Add((New-ReportRow 'Scan' '(all)' '(scan)' '' '' 'INCOMPLETE' '' '' 'Stopped before the end (cancelled?)'))
+    }
     $postsLine = 'not scanned (-IncludePosts not used)'
     if ($IncludePosts) { $postsLine = 'tried (see BLOCKED rows if refused)' }
     $header = @(
         ('Site:     ' + $SiteUrl),
-        ('Channels: ' + ($selected -join ', ')),
+        ('Channels: ' + (($selected | ForEach-Object { Protect-PiiText $_ }) -join ', ')),
         ('Posts:    ' + $postsLine),
         ('Run:      ' + (Get-Date -Format 'yyyy-MM-dd HH:mm'))
     )
-    $null = Publish-ScanReport -Rows $rows.ToArray() -ItemsScanned $scanned -Header $header -Format $format -OutputFolder $OutputFolder
-    try { Disconnect-PnPOnline }
-    catch { Write-Verbose 'Already signed out.' }  # nothing to sign out of: not an error for the person
+    try {
+        $null = Publish-ScanReport -Rows $rows.ToArray() -ItemsScanned $scanned -Header $header -Format $format -OutputFolder $OutputFolder
+    }
+    finally {
+        # Sign out even when the report could not be saved (for example, a folder that cannot be written).
+        try { Disconnect-PnPOnline }
+        catch { Write-Verbose 'Already signed out.' }  # nothing to sign out of: not an error for the person
+    }
 }

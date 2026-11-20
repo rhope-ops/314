@@ -36,6 +36,7 @@ $Sample = @{
     Passport   = 'X12' + '34567'
     Email      = 'pat.sample' + '@example.com'
     EmailQuote = "o'connor.jane" + '@example.org'
+    EmailAccent = 'jos' + [char]0xE9 + '.garc' + [char]0xED + 'a' + '@example.net'
     GovEmail   = 'first.last' + '@agency.gov'
     MilEmail   = 'first.last' + '@unit.af.' + 'mil'
     Street     = '42 Elm' + ' Street'

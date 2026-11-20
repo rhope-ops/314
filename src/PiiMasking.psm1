@@ -25,7 +25,9 @@ Set-StrictMode -Version 2.0
 # 2026-11-20: enough to see the label ("SSN:", "DOB") without copying a whole paragraph.
 $script:SnippetRadiusChars = 30
 
-# How many trailing characters a masked value keeps, so a reviewer can find it in the file.
+# How many trailing characters a masked value keeps, so a reviewer can find it in the file. The author's
+# choice, 2026-11-20, after common practice: receipts and DoD forms show at most the last 4 digits of an
+# SSN or card number. Passports keep 3, as their numbers are shorter.
 $script:KeepLastDigits = 4
 $script:KeepLastPassportChars = 3
 
@@ -158,23 +160,25 @@ function Find-PiiInText {
 function Protect-PiiText {
     <#
     .SYNOPSIS
-      Replaces each PII hit in a short text with its masked value and leaves the rest readable.
-      Used for text the report shows as it is: a file named after a person's SSN must not put the
-      SSN in the report. Text with no hits comes back unchanged.
+      Masks a short text that the report shows as it is: file, folder and channel names, and error
+      messages. Strict on purpose, because a detector can miss a pattern in a name: each found value
+      becomes its masked value, then EVERY digit becomes '#' and every e-mail name becomes '***'.
+      Example: "Roster_123-45-6789.docx" -> "Roster_***-**-####.docx"; "FY27 Plan.docx" -> "FY## Plan.docx".
     .PARAMETER Text
-      A file or folder path, or an error message.
+      The name or message.
     .OUTPUTS
       [string]
     #>
     param([AllowEmptyString()][string]$Text)
     if ([string]::IsNullOrEmpty($Text)) { return $Text }
     $result = $Text
-    # Replace from the end, so the positions of earlier hits stay valid.
+    # Replace found values from the end, so the positions of earlier ones stay valid.
     foreach ($hit in (@(Get-PiiSpan $Text) | Sort-Object Index -Descending)) {
         $masked = Get-MaskedValue $hit.Detector $hit.Value
         $result = $result.Substring(0, $hit.Index) + $masked + $result.Substring($hit.Index + $hit.Length)
     }
-    return $result
+    $result = [regex]::Replace($result, $script:EmailLocalPartPattern, '***')
+    return ($result -replace '\d', '#')
 }
 
 Export-ModuleMember -Function Find-PiiInText, Protect-PiiText, Get-MaskedValue

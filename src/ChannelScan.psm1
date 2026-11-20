@@ -119,7 +119,8 @@ function Select-ChannelFolders {
         return $found
     }
     Write-Host 'Channel folders on this site:'
-    for ($i = 0; $i -lt $Available.Count; $i++) { Write-Host ('  {0}. {1}' -f ($i + 1), $Available[$i]) }
+    # Channel names are shown masked too (a channel named after a person's record must not show it).
+    for ($i = 0; $i -lt $Available.Count; $i++) { Write-Host ('  {0}. {1}' -f ($i + 1), (Protect-PiiText $Available[$i])) }
     $answer = Read-Host 'Type a number, several numbers with commas (1,3), or A for all'
     if ($answer.Trim() -ieq 'A') { return $Available }
     $picked = foreach ($part in ($answer -split ',')) {
@@ -148,21 +149,22 @@ function Get-FieldValue {
 function Get-SafeLink {
     <#
     .SYNOPSIS
-      A link for the report. Each path part is escaped, so names with '#', '%' or spaces still work.
-      When the path holds PII, the link goes to the library only, so the PII is not in the link.
+      A link for the report that holds nothing to mask. It goes to the file when no folder or file name
+      in the path would be changed by Protect-PiiText; else to the deepest folder whose name is clean
+      (at least the library). Each part is escaped, so names with '#', '%' or spaces still work.
     .PARAMETER Origin
       https://<host>
     .PARAMETER ServerRelativeUrl
       /sites/<name>/<library>/<folder>/<file>
-    .PARAMETER PathHasPii
-      True when Protect-PiiText changed the path.
     .OUTPUTS
       [string]
     #>
-    param([string]$Origin, [string]$ServerRelativeUrl, [bool]$PathHasPii)
+    param([string]$Origin, [string]$ServerRelativeUrl)
     $parts = $ServerRelativeUrl.TrimStart('/').Split('/')
-    if ($PathHasPii) { $parts = $parts[0..([Math]::Min(2, $parts.Count - 1))] }
-    return $Origin + '/' + (($parts | ForEach-Object { [uri]::EscapeDataString($_) }) -join '/')
+    # The first three parts are the site and the library, which the person gave or Teams named.
+    $keep = [Math]::Min(3, $parts.Count)
+    while ($keep -lt $parts.Count -and (Protect-PiiText $parts[$keep]) -ceq $parts[$keep]) { $keep++ }
+    return $Origin + '/' + (($parts[0..($keep - 1)] | ForEach-Object { [uri]::EscapeDataString($_) }) -join '/')
 }
 
 function Get-FileBytes {
@@ -232,11 +234,12 @@ function Invoke-OneFileScan {
     param($File, [string]$Channel, [string]$Prefix, [string]$Origin, [int]$MaxFileMB, $Rows)
     $name = Get-FieldValue $File 'FileLeafRef'
     $ref = Get-FieldValue $File 'FileRef'
+    $Channel = Protect-PiiText $Channel   # from here on, the channel name as the report shows it
     $modified = Get-FieldValue $File 'Modified'
     # The path is shown in the report: mask PII in it, and report a name that holds PII as a hit.
     $rawItem = $ref.Substring($Prefix.Length)
     $item = Protect-PiiText $rawItem
-    $link = Get-SafeLink $Origin $ref ($item -ne $rawItem)
+    $link = Get-SafeLink $Origin $ref
     foreach ($hit in @(Find-PiiInText $rawItem)) {
         $Rows.Add((New-ReportRow 'File name' $Channel $item $link $modified $hit.Detector $hit.Confidence $hit.MaskedValue 'In the file or folder name'))
     }
@@ -360,12 +363,13 @@ function Invoke-ChannelPostScan {
     #>
     param($Team, [string]$Channel, $Rows)
     $teamsChannel = @($Team.Channels | Where-Object { $_.DisplayName -ieq $Channel })
+    $Channel = Protect-PiiText $Channel   # from here on, the channel name as the report shows it
     if ($teamsChannel.Count -eq 0) { $Rows.Add((New-ReportRow 'Posts' $Channel '(posts)' '' '' 'NOT SCANNED' '' '' 'No Teams channel with this folder name')); return 0 }
     $channelId = $teamsChannel[0].Id
     try { $messages = @(Get-PnPTeamsChannelMessage -Team $Team.GroupId -Channel $channelId -ErrorAction Stop) }
     catch {
         # Posts are optional: a refusal is reported, and the file results stay.
-        $Rows.Add((New-ReportRow 'Posts' $Channel '(posts)' '' '' 'BLOCKED' '' '' ('Posts could not be read: ' + $_.Exception.Message + ' | ' + $script:PostsBlockedAdvice)))
+        $Rows.Add((New-ReportRow 'Posts' $Channel '(posts)' '' '' 'BLOCKED' '' '' ((Protect-PiiText ('Posts could not be read: ' + $_.Exception.Message)) + ' | ' + $script:PostsBlockedAdvice)))
         return 0
     }
     $scanned = 0
@@ -378,7 +382,7 @@ function Invoke-ChannelPostScan {
         }
         catch {
             # Replies of one post could not be read: note it and go on with the next post.
-            $Rows.Add((New-ReportRow 'Posts' $Channel ('Replies to post id ' + $message.Id) '' '' 'NOT SCANNED' '' '' ('Replies could not be read: ' + $_.Exception.Message)))
+            $Rows.Add((New-ReportRow 'Posts' $Channel ('Replies to post id ' + $message.Id) '' '' 'NOT SCANNED' '' '' (Protect-PiiText ('Replies could not be read: ' + $_.Exception.Message))))
         }
     }
     return $scanned
@@ -403,7 +407,7 @@ function Invoke-PostScan {
     try { $team = Connect-TeamGraph $SiteUrl }
     catch {
         # Posts are optional: a refused sign-in is reported, and the file results stay.
-        $Rows.Add((New-ReportRow 'Posts' '(all)' '(posts)' '' '' 'BLOCKED' '' '' ('Posts could not be read: ' + $_.Exception.Message + ' | ' + $script:PostsBlockedAdvice)))
+        $Rows.Add((New-ReportRow 'Posts' '(all)' '(posts)' '' '' 'BLOCKED' '' '' ((Protect-PiiText ('Posts could not be read: ' + $_.Exception.Message)) + ' | ' + $script:PostsBlockedAdvice)))
         return 0
     }
     $scanned = 0

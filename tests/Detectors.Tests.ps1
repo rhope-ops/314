@@ -65,9 +65,18 @@ Assert-Equal $false (($quoted | ForEach-Object { $_.Context }) -join ' ' -match 
 $named = @(Find-PiiInText "Name: Pat Q. Sample SSN $($Sample.Ssn)")
 Assert-Equal $false (($named | ForEach-Object { $_.Context }) -join ' ' -match 'Pat|Sample') 'Snippet hides a found name'
 
-# ---- Protect-PiiText: short texts shown as they are ----
-Assert-Equal 'Roster ***-**-6789.docx' (Protect-PiiText "Roster $($Sample.Ssn).docx") 'File name with SSN masked'
-Assert-Equal 'FY27 Roster.docx' (Protect-PiiText 'FY27 Roster.docx') 'File name without PII unchanged'
+# ---- Detection in names: underscores and accented e-mail names ----
+Assert-Equal 'DoD ID/High/******7890' (Get-HitSummary "CAC_$($Sample.DodId).docx") 'DoD ID after an underscore'
+Assert-Equal 'Date of birth/High/[date masked]' (Get-HitSummary 'Roster DOB_01-02-1990.xlsx') 'DOB after an underscore'
+Assert-Equal 'Personal e-mail/Medium/***@example.net' (Get-HitSummary "notes $($Sample.EmailAccent) here") 'E-mail with accents'
+
+# ---- Protect-PiiText: names and messages shown as they are; every digit and e-mail name hidden ----
+Assert-Equal 'Roster ***-**-####.docx' (Protect-PiiText "Roster $($Sample.Ssn).docx") 'File name with SSN masked'
+Assert-Equal 'FY## Roster.docx' (Protect-PiiText 'FY27 Roster.docx') 'Digits in a name masked'
+Assert-Equal 'Team Roster.docx' (Protect-PiiText 'Team Roster.docx') 'Name with nothing to mask unchanged'
+Assert-Equal '***@example.org.docx' (Protect-PiiText "$($Sample.EmailQuote).docx") 'E-mail name with apostrophe hidden'
+Assert-Equal '***@example.net notes.txt' (Protect-PiiText "$($Sample.EmailAccent) notes.txt") 'E-mail name with accents hidden'
+Assert-Equal 'CAC_******####.docx' (Protect-PiiText "CAC_$($Sample.DodId).docx") 'DoD ID after an underscore hidden'
 
 # ---- Validators ----
 Assert-Equal $true (Test-Luhn '4111111111111111') 'Luhn true'

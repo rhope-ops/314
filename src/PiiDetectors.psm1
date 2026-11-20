@@ -286,7 +286,9 @@ function Find-PersonalEmailHits {
       Hit objects (New-PiiHit), always Medium.
     #>
     param([string]$Text)
-    $pattern = '\b[A-Za-z0-9._%+-]+@([A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.([A-Za-z]{2,}))\b'
+    # Local part: any characters but spaces and delimiters (accents and apostrophes included), starting
+    # after a space, a delimiter or the start of the text.
+    $pattern = '(?<=^|[\s<>()\[\],;:"])[^\s@<>()\[\],;:"]+@([A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.([A-Za-z]{2,}))\b'
     foreach ($m in [regex]::Matches($Text, $pattern)) {
         if ($script:GovernmentMailLabels -contains $m.Groups[2].Value.ToLower()) { continue }
         New-PiiHit 'Personal e-mail' 'Medium' $m.Index $m.Value
@@ -427,8 +429,12 @@ function Get-PiiSpan {
     #>
     param([AllowEmptyString()][string]$Text)
     if ([string]::IsNullOrEmpty($Text)) { return @() }
-    $kept = Remove-OverlappingHits @(Get-AllHits $Text)
+    # Underscores join words in file names ("CAC_1234..."), which defeats word-boundary checks.
+    # Seen as spaces by the detectors only; the length is the same, so positions still fit the text.
+    $searchText = $Text.Replace('_', ' ')
+    $kept = Remove-OverlappingHits @(Get-AllHits $searchText)
     Set-NameNearIdentifierHigh $kept.ToArray()
+    foreach ($hit in $kept) { $hit.Value = $Text.Substring($hit.Index, $hit.Length) }  # the value as written
     return @($kept | Sort-Object Index)
 }
 

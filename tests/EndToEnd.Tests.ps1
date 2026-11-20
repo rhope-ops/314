@@ -34,5 +34,16 @@ $failFolder = Join-Path $runFolder 'fail'
 $failCsv = @(Get-ChildItem -LiteralPath $failFolder -Filter 'PIIScan-*.csv')
 Assert-Equal 1 $failCsv.Count 'Report saved after a failure'
 Assert-Equal 'INCOMPLETE' (Import-Csv -LiteralPath $failCsv[0].FullName)[0].Detector 'Report says INCOMPLETE'
+Assert-Equal $true (Test-FakePnPCall 'Disconnect-PnPOnline') 'Signed out after a failure'
+
+# ---- A report that cannot be saved: the script still signs out ----
+Reset-FakePnP @{}
+$blocker = Join-Path $runFolder 'not-a-folder.txt'
+Set-Content -LiteralPath $blocker -Value 'x'
+$saveFailed = $false
+try { & $script -SiteUrl $Sample.Site -Channel All -Report Csv -OutputFolder (Join-Path $blocker 'sub') 6>$null }
+catch { $saveFailed = $true }  # the save error is the expected result here
+Assert-Equal $true $saveFailed 'Save error reaches the person'
+Assert-Equal $true (Test-FakePnPCall 'Disconnect-PnPOnline') 'Signed out when the report could not be saved'
 
 Remove-Item -LiteralPath $runFolder -Recurse -Force

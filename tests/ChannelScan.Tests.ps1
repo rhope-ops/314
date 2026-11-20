@@ -27,7 +27,7 @@ Reset-FakePnP @{
     "$library/General/Roster.docx"  = $Docx
     "$library/General/notes.txt"    = $Txt
     "$library/General/$ssnFileName" = [System.Text.Encoding]::UTF8.GetBytes('no PII inside')
-    "$library/Ops/scan #2.pdf"      = $Txt
+    "$library/Ops/scan #A.pdf"      = $Txt
 }
 $lib = Get-TeamDocumentLibrary
 Assert-Equal 'General Ops' (Get-ChannelFolderNames $lib) 'Channel folders without Forms'
@@ -35,11 +35,11 @@ $rows = New-Object System.Collections.Generic.List[object]
 Assert-Equal 3 (Invoke-FileScan -Library $lib -Channels @('General', 'Ops') -SiteUrl $Sample.Site -MaxFileMB 25 -Rows $rows) 'Files scanned'
 Assert-Equal 1 @($rows | Where-Object { $_.Detector -eq 'SSN' -and $_.Item -eq 'Roster.docx' }).Count 'SSN found in docx'
 Assert-Equal 1 @($rows | Where-Object { $_.Detector -eq 'Phone' -and $_.Item -eq 'notes.txt' }).Count 'Phone found in txt'
-Assert-Equal 1 @($rows | Where-Object { $_.Detector -eq 'NOT SCANNED' -and $_.Item -eq 'scan #2.pdf' }).Count 'pdf listed'
+Assert-Equal 1 @($rows | Where-Object { $_.Detector -eq 'NOT SCANNED' -and $_.Item -eq 'scan #A.pdf' }).Count 'pdf listed'
 Assert-Equal 'https://tenant.example.com/sites/TeamA/Shared%20Documents/General/Roster.docx' `
     ($rows | Where-Object { $_.Item -eq 'Roster.docx' } | Select-Object -First 1).Link 'Link built'
-Assert-Equal 'https://tenant.example.com/sites/TeamA/Shared%20Documents/Ops/scan%20%232.pdf' `
-    ($rows | Where-Object { $_.Item -eq 'scan #2.pdf' }).Link 'Link escapes #'
+Assert-Equal 'https://tenant.example.com/sites/TeamA/Shared%20Documents/Ops/scan%20%23A.pdf' `
+    ($rows | Where-Object { $_.Item -eq 'scan #A.pdf' }).Link 'Link escapes #'
 
 # A file named after an SSN: reported as a hit, and neither the item nor the link shows the SSN.
 $nameRows = @($rows | Where-Object { $_.Source -eq 'File name' })
@@ -47,6 +47,21 @@ Assert-Equal 1 $nameRows.Count 'SSN in a file name reported'
 $allText = ($rows | ForEach-Object { $_.Item + ' ' + $_.Link + ' ' + $_.Context }) -join ' '
 Assert-Equal $false $allText.Contains($Sample.Ssn) 'No full SSN in any item, link or snippet'
 Assert-Equal $false $allText.Contains($Sample.SsnBare) 'No bare SSN in any link'
+Assert-Equal 'https://tenant.example.com/sites/TeamA/Shared%20Documents/General' `
+    ($nameRows[0].Link) 'Link of a file named with PII stops at its folder'
+
+# A channel named with PII: masked in every row.
+Reset-FakePnP @{ "$library/SSN $($Sample.Ssn)/a.txt" = $Txt }
+$rows = New-Object System.Collections.Generic.List[object]
+$null = Invoke-FileScan -Library $lib -Channels @("SSN $($Sample.Ssn)") -SiteUrl $Sample.Site -MaxFileMB 25 -Rows $rows
+Assert-Equal 'SSN ***-**-####' (($rows | Select-Object -ExpandProperty Channel -Unique) -join ',') 'Channel name masked'
+Assert-Equal $false ((($rows | ForEach-Object { $_.Link }) -join ' ').Contains('6789')) 'Channel link holds no SSN digits'
+Reset-FakePnP @{
+    "$library/General/Roster.docx"  = $Docx
+    "$library/General/notes.txt"    = $Txt
+    "$library/General/$ssnFileName" = [System.Text.Encoding]::UTF8.GetBytes('no PII inside')
+    "$library/Ops/scan #A.pdf"      = $Txt
+}
 
 # ---- Download fallback: a PnP version without -AsMemoryStream ----
 Remove-FakeMemoryStreamSwitch
@@ -60,6 +75,7 @@ Assert-Equal 1 @($rows | Where-Object { $_.Detector -eq 'SSN' -and $_.Item -eq '
 $rows = New-Object System.Collections.Generic.List[object]
 Assert-Equal 0 (Invoke-PostScan -SiteUrl $Sample.Site -Channels @('General') -Rows $rows) 'Refused posts give 0'
 Assert-Equal 1 @($rows | Where-Object { $_.Detector -eq 'BLOCKED' }).Count 'BLOCKED row added'
+Assert-Equal $false ($rows[0].Context -match '\d') 'Error text in a BLOCKED row is masked'
 Set-FakePnPOption PostsAllowed $true
 $rows = New-Object System.Collections.Generic.List[object]
 Assert-Equal 2 (Invoke-PostScan -SiteUrl $Sample.Site -Channels @('General', 'Ops') -Rows $rows) 'Post and reply scanned'

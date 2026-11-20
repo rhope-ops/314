@@ -78,9 +78,9 @@ Options:
 - **Read-only:** it never changes, moves or deletes anything in Teams or SharePoint.
 - **One site only:** it touches only the site URL you give. It never lists other sites or teams.
 - **No stored credentials:** your own CAC sign-in each run.
-- **Masked report:** the screen, the `.txt` and the `.csv` never hold a full value. The context snippet is cut from text that is already masked (digits become `#`, found values and e-mail names become `*`), so a cut cannot expose part of a value. PII in a file or folder name is masked too, and its link then points to the library only.
+- **Masked report:** the screen, the `.txt` and the `.csv` never hold a full value. The context snippet is cut from text that is already masked (digits become `#`, found values and e-mail names become `*`), so a cut cannot expose part of a value. Names the report shows as they are (file, folder and channel names, error messages) get a stricter mask: found values are masked, then every digit becomes `#` and every e-mail name `***` (so `FY27 Plan.docx` shows as `FY## Plan.docx`). A link goes to the file only when its path has nothing to mask; else to the deepest clean folder.
 - **Safe CSV:** a cell that Excel would read as a formula gets a leading `'`.
-- **Stops cleanly:** if something fails part way, the report is still saved, says INCOMPLETE and why, and the script signs out.
+- **Stops cleanly:** if something fails part way or you press Ctrl+C, the report is still saved and says INCOMPLETE; the script signs out even if the report cannot be saved.
 - **Handle the reports as CUI anyway:** file names and masked fragments still point to where PII is.
 - If it finds PII, follow your wing's PII breach process (DAFI 33-332) through your Privacy Manager.
 

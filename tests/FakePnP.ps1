@@ -125,8 +125,9 @@ function global:Connect-PnPOnline {
 }
 
 function global:Disconnect-PnPOnline {
-    # Fake: nothing to close.
+    # Fake: nothing to close; records the call.
     [CmdletBinding()] param()
+    $global:FakePnP.Calls.Add('Disconnect-PnPOnline')
 }
 
 function global:Get-PnPSite {
