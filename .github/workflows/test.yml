@@ -1,0 +1,21 @@
+# Runs the tests and the Windows PowerShell 5.1 syntax lint on every push and pull request.
+name: test
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Tests
+        shell: pwsh
+        run: ./tests/Run-Tests.ps1
+      - name: Install PSScriptAnalyzer
+        shell: pwsh
+        run: Install-Module PSScriptAnalyzer -RequiredVersion 1.23.0 -Scope CurrentUser -Force
+      - name: Lint (PowerShell 5.1 syntax)
+        shell: pwsh
+        run: ./tests/Lint.ps1

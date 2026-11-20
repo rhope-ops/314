@@ -1,0 +1,2 @@
+# Scan reports hold masked PII locations: never commit them.
+PIIScan-*.csv
