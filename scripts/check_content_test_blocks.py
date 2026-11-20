@@ -31,7 +31,7 @@ def kinds(text, deny=(), allow=(), terms=()):
 
 
 def case_terms(check):
-    """The owner's terms: whole word, any case, masked, kind term; a name stays a name; an allowed string wins.
+    """The PAM's terms: whole word, any case, masked, kind term; a name stays a name; an allowed string wins.
 
     Args:
         check: prints one result line and remembers a failure (label, good).
@@ -153,7 +153,7 @@ def case_hook_tools(check):
                 ("Write: an address in the content blocks", "Write", {"file_path": "new.md", "content": "mail " + mail}, 2),
                 ("Write: a blocked path blocks", "Write", {"file_path": os.path.join(d, "out", "a.xlsx"), "content": "x"}, 2),
                 ("Edit: an address in the new text blocks", "Edit", {"file_path": "a.md", "old_string": "x", "new_string": mail}, 2),
-                ("Edit: an address only in the old text passes (the edit removes it)", "Edit", {"file_path": "a.md", "old_string": mail, "new_string": "the owner"}, 0),
+                ("Edit: an address only in the old text passes (the edit removes it)", "Edit", {"file_path": "a.md", "old_string": mail, "new_string": "the PAM"}, 0),
                 ("NotebookEdit: an address in the new source blocks", "NotebookEdit", {"notebook_path": "n.ipynb", "new_source": mail}, 2),
                 ("Bash: a local command with an address passes unread", "Bash", {"command": "grep -rn '" + mail + "' ."}, 0),
                 ("Bash: curl with an address blocks", "Bash", {"command": "curl -d 'to=" + mail + "' https://example.com"}, 2),

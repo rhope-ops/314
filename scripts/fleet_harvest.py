@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Read a project's handoff and decisions files in the fleet format, for the fleet page and its format check.
 
-Format: docs/reviews/2026-11-19-fleet-contract.md, section 2 (the owner, 2026-11-19); steps: the handoff skill.
+Format: docs/reviews/2026-11-19-fleet-contract.md, section 2 (the PAM, 2026-11-19); steps: the handoff skill.
 A project turns the format on with the line `fleet: on` in `.check`. Without it, --check prints a SKIP line.
 
 Usage:
@@ -48,7 +48,7 @@ ROW = re.compile(r"^\|\s*(D\d+)\s*\|\s*(" + DATE + r")\s*\|(.*)\|\s*$")
 ROW_START = re.compile(r"(?i)^\|\s*(D\d+\s*\||" + DATE + r"\s*\|)")  # any decision row, also one that ROW does not read
 CELL_SPLIT = re.compile(r"(?<!\\)\|")  # a cell border; an escaped pipe (\|) stays inside the cell
 DECISIONS_HEAD = re.compile(r"^\|\s*(ID\s*\|\s*Date|Date\s*\|\s*Decision)\s*\|")  # the decisions table header
-NEEDED = ("Timeline", "Needs the owner")  # handoff sections the format check requires
+NEEDED = ("Timeline", "Needs the PAM")  # handoff sections the format check requires
 NONE_LINE = re.compile(r"^-?\s*(none|nothing)\.?\s*$", re.I)
 
 
@@ -75,7 +75,7 @@ def sections(lines):
     out, cur = {}, None
     for n, ln in enumerate(lines, 1):
         if ln.startswith("## "):
-            cur = re.sub(r"\s*\(.*\)\s*$", "", ln[3:].strip())  # "Needs the owner (2)" -> "Needs the owner"
+            cur = re.sub(r"\s*\(.*\)\s*$", "", ln[3:].strip())  # "Needs the PAM (2)" -> "Needs the PAM"
             out.setdefault(cur, [])
         elif cur is not None:
             out[cur].append((n, ln))
@@ -136,7 +136,7 @@ def parse_handoff(text, name):
                 for _, m, _ in parse_body(sec.get("Timeline", []), TIMELINE, name + " Timeline", unread)]
     needs = [{"id": m.group(1), "text": m.group(2).strip(), "options": [o.strip() for o in m.group(3).split("/")],
               "rec": m.group(4).strip(), "line": n, "raw": s}
-             for n, m, s in parse_body(sec.get("Needs the owner", []), NEED, name + " Needs the owner", unread)]
+             for n, m, s in parse_body(sec.get("Needs the PAM", []), NEED, name + " Needs the PAM", unread)]
     steps = [summary(re.sub(r"^(\d+\.|-)\s*", "", ln.strip())) for _, ln in sec.get("Open", [])
              if re.match(r"^(\d+\.|-)\s", ln.strip())]
     return {"updated": updated, "next_update": {"date": nxt.group(1), "text": nxt.group(2).strip()} if nxt else None,
@@ -219,7 +219,7 @@ def check(root):
     ids = [r["id"] for r in rows] + [d["id"] for d in h["needs"]]
     dup = sorted({i for i in ids if ids.count(i) > 1})
     if dup:
-        print("FLEET an ID is used more than once (in DECISIONS.md rows and \"Needs the owner\" together): " + ", ".join(dup))
+        print("FLEET an ID is used more than once (in DECISIONS.md rows and \"Needs the PAM\" together): " + ", ".join(dup))
     unset = [f for f, v in (("Updated:", h["updated"]), ("Next update:", h["next_update"])) if not v]
     print("fleet: %d open, %d resolved, %d lines not read%s" % (len(h["needs"]), len(rows), len(unread),
           "; not set: " + ", ".join(unset) if unset else ""))

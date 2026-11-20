@@ -9,16 +9,16 @@
 #   audit-<key>: <value>    a setting of the audit, for example `audit-ignore: ref/**`
 #                           (the keys and their defaults: the header of scripts/check_settings.py; a `code-` change
 #                           needs a docs/DECISIONS.md row that names this file)
-# An allowed string or a skip line is added only on the owner's request, never by an agent to get past a block (AGENTS.md "Guards and checks").
-# This project: DoD/M365 data, so the DoD tier and the strict code standard (the owner, 2026-11-20; docs/DECISIONS.md).
+# An allowed string or a skip line is added only on the PAM's request, never by an agent to get past a block (AGENTS.md "Guards and checks").
+# This project: DoD/M365 data, so the DoD tier and the strict code standard (the PAM, 2026-11-20; docs/DECISIONS.md).
 profile: dod
 code-max-line-chars: 200
 code-c1-safety: on
 code-c2: full
 code-generated: paste/*.ps1
 audit-ignore: paste/**
-# The SharePoint host names in the placeholder site address that people type (the owner, 2026-11-20).
+# The SharePoint host names in the placeholder site address that people type (the PAM, 2026-11-20).
 sharepoint-mil.us
 usaf.dps.mil
-# A tool's scan report holds masked PII locations: never commit one (the owner, 2026-11-20).
+# A tool's scan report holds masked PII locations: never commit one (the PAM, 2026-11-20).
 block: PIIScan-*

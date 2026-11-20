@@ -160,8 +160,8 @@ def rule_count_cases(bloat):
     assert kit == ["Rule one.", "Rule two."] and project == ["Project rule."], "header, Commands, fences, comments and starter blocks are not rules"
     assert "Build: none." in every, "the list of changed lines also covers sections that are not counted"
     assert rule_lines("## A\n\n- Rule start\n  continues with a | b here.\n")[0] == ["Rule start continues with a | b here."], "a continuation with a pipe stays in its rule (a change to it shows)"
-    keyed = rule_lines("## Hard rules\n\n- **Git history.** Never x.\n- **The owner may change anything** here.\n- Plain.\n\n## Project rules\n\n- **Own.** P.\n", with_sections=True)
-    assert [k for k, _ in keyed] == ["Git history", "The owner may change anything", "Hard rules", "Own"], "a bold label is the lint key, without its dot; else the heading"
+    keyed = rule_lines("## Hard rules\n\n- **Git history.** Never x.\n- **The PAM may change anything** here.\n- Plain.\n\n## Project rules\n\n- **Own.** P.\n", with_sections=True)
+    assert [k for k, _ in keyed] == ["Git history", "The PAM may change anything", "Hard rules", "Own"], "a bold label is the lint key, without its dot; else the heading"
     kit, project, _ = rule_lines("## A\n\n* Star.\n1. Numbered.\n  - Nested.\nA paragraph.\n\n## Project rules\n\n+ Plus.\n  wrapped.\nA rule as a paragraph.\n")
     assert kit == ["Star.", "Numbered.", "Nested. A paragraph."] and project == ["Plus. wrapped.", "A rule as a paragraph."], \
         "every list marker counts; in the kit a line right below an item continues it, in Project rules only an indented one"
@@ -169,13 +169,13 @@ def rule_count_cases(bloat):
     assert project == ["Rule one.", "Rule two.", "Rule three.", "Bullet.", "After a bullet.", "#1 priority: never do X."], "Project rules: unindented lines are rules each; '#1' is text, not a heading"
     _, project, _ = rule_lines("## Project rules\n\nRule | Why\n--- | ---\nT one | x\nT two | y\n\n| R | W |\n|---|---|\n| T three | z |\n-\n")
     assert project == ["T one | x", "T two | y", "| T three | z |"], "tables without leading pipes: one rule per row; a lone '-' removes no row"
-    kit, project, every = rule_lines("## Order of authority\n\n1. The owner.\n2. This file.\n- A bullet here counts.\n\n## B\n\n"
+    kit, project, every = rule_lines("## Order of authority\n\n1. The PAM.\n2. This file.\n- A bullet here counts.\n\n## B\n\n"
                                      "- One rule,\n  wrapped.\n~~~\n- in a tilde fence\n~~~\n* * *\n---\n### Sub\n\n"
                                      "## Project rules\n\n### Group\n\n- P one,\n  wrapped.\n\nA paragraph rule\nover two lines.\n\n---\n\n| Rule | Why |\n|---|---|\n| T one | x |\n| T two | y |\n")
     assert kit == ["A bullet here counts.", "One rule, wrapped."], "the ranking is not counted, a bullet in that section is; wraps, fences, rules and sub-headings are not rules"
     assert project == ["P one, wrapped.", "A paragraph rule", "over two lines.", "| T one | x |", "| T two | y |"], \
         "Project rules: wrapped bullet 1, an unindented paragraph line 1 each, table rows without header and separator"
-    assert "The owner." in every, "ranking lines are still listed when they change"
+    assert "The PAM." in every, "ranking lines are still listed when they change"
 
 
 def caps_and_paths_cases(bloat, ro, caps):
@@ -240,7 +240,7 @@ def caps_and_paths_cases(bloat, ro, caps):
 
 def third_party_cases(bloat, ro, caps):
     """The `audit-third-party` globs: a matched skill folder or agent file leaves the session load and counts
-    against its own cap (the owner, 2026-11-20).
+    against its own cap (the PAM, 2026-11-20).
 
     Args:
         bloat: the bloat_check module.
@@ -418,7 +418,7 @@ def hard_rule_cases(rs):
             "Never repin an approval.", "A review finding is not approval.", "Review on a model tier no lower than the author's.",
             "Never review with a lower tier."]
     passes = ['Rules: see (AGENTS.md "Hard rules").', "| pre-push | blocks every force-push form and a push to main |",
-              "Run git clean up on a scratch folder.", "The owner's approval is in the pull request.",
+              "Run git clean up on a scratch folder.", "The PAM's approval is in the pull request.",
               "Check that the hook refuses --no-verify."]
     for i, line in enumerate(hits + passes):
         write_skill(rs, f"s{i}", f"---\nname: s{i}\ndescription: Use when testing.\n---\n{line}\n")
