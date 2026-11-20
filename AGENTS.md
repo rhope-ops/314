@@ -4,7 +4,7 @@ This file is the source of truth for every Claude agent on this repo, subagents 
 
 - Repo: rhope-ops/33-332.Z
 - Purpose: Privacy Act Management: small, read-only tools that help a DAF unit find and protect PII in Microsoft 365 (DAFI 33-332).
-- Owner: the PFM
+- Owner: the owner
 - Time zone: America/Chicago
 - Tier: full
 - Short name: 33-332.Z
@@ -71,3 +71,4 @@ These are defaults: how work normally goes here. The method is yours unless the 
 - Masked output (2026-11-20): every found PII value is masked wherever a tool shows or saves it.
 - Platform (2026-11-20): Windows PowerShell 5.1 and PnP.PowerShell 1.12.0 only; own CAC sign-in, read-only, no admin, no service account, no stored credentials; a tool reaches the gov device as one generated text pasted into PowerShell ISE (ISSM ruling 2026-11-13), never with an execution-policy change or unblocked files.
 - Code standard (2026-11-20): docs/code-standard-33-332.md.
+- Project log (2026-11-20): in the private doc https://claude.ai/artifact/AczuD9hQ8NkU7UMUEUTgCA, never in this repo.

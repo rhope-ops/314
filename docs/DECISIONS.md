@@ -4,6 +4,7 @@ A record, read on demand: a decision binds the task or thing it names. A decisio
 
 | Date | Decision | By | Replaces |
 |---|---|---|---|
+| 2026-11-20 | Project log: a new private Claude Doc (https://claude.ai/artifact/AczuD9hQ8NkU7UMUEUTgCA), as 90-161.Z's; never in this public repo. Scope: this repo. | the PFM | — |
 | 2026-11-20 | Higher level of checks for DoD/M365 code: `.check` with `profile: dod`, `code-c1-safety: on`, `code-c2: full`, `code-max-line-chars: 200` and `code-generated: paste/*.ps1`; the code-standard gate of 90-161.Z/RADE; the PowerShell tests on Windows PowerShell 5.1 in CI (ps51 workflow). Scope: this repo. | the PFM | — |
 | 2026-11-20 | Kit sync: rhope-ops/archimedes_lever 6.0.0 (commit 763b163; no v6.0.0 tag yet), tier full, so the required check `checks` (the kit's content check) runs. Scope: this repo. | the PFM | — |
 | 2026-11-20 | Branch rule: the required status check is `checks` (was `scan`; the kit's job is shown as `checks`). Scope: this repo. | the PFM | — |

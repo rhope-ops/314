@@ -10,5 +10,5 @@ Title: 33-332.Z · <task> · <date>. Read AGENTS.md first.
    steps without Unblock-File or execution policy, and the site page (index.html): header like 90-161.Z (γ logo,
    name, subtitle "Privacy Act Management", line "Simple tools to help you protect PII.", Core logo right, same size),
    FULCRUM colours only (no teal), much less on the page, the builder outputs the paste text. Preview first.
-4. The PFM: say where the project log lives (AGENTS.md has no log place yet). Add the secret PII_GUARD_DENYLIST to this repo (Settings > Secrets and variables > Actions), as in 90-161.Z;
+4. The PFM: add the secret PII_GUARD_DENYLIST to this repo (Settings > Secrets and variables > Actions), as in 90-161.Z;
    the DoD profile fails the content check without it. Turn on GitHub Pages (main, / root) once index.html merges.
