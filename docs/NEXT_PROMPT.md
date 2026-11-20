@@ -14,3 +14,7 @@ Title: 33-332.Z · <task> · <date>. Read AGENTS.md first.
    https://github.com/rhope-ops/33-332.Z/pull/6; preview https://claude.ai/artifact/4vYLihr6qHtXFMtkyRQ4Ub).
    Lane C (UI change): merge only after the PAM approves the preview. Open: the PAM tests the Teams-link lookup
    on DoD365 (not testable here); the PAM decides on a `.check` allow line for the Teams host so docs can show it.
+6. Queued (the PAM, 2026-11-20): after PR #6 merges, one new PR with the PR #5 review minors: (a) Bundle test
+   reaches the outer finally (strict mode off, error setting back, sign-out ran); (b) DECISIONS edition row takes
+   $script:BreachAdvice wording + a dated row; (c) Remove-OverlappingHits linear (sort, sweep; test many overlaps);
+   (d) cite the DAFGM2026-01 page-1 paragraph for "without delay"; (e) refresh this file.
