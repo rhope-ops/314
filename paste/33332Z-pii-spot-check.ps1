@@ -19,12 +19,13 @@
   Built from these files; to change it, change them and rebuild with: python3 scripts/build_paste.py
     src/PiiDetectors.psm1, sha256 ea19831b4d68
     src/PiiMasking.psm1, sha256 752c251a94b2
-    src/TextExtract.psm1, sha256 62ca719925d7
+    src/PdfText.psm1, sha256 db30c7e01d14
+    src/TextExtract.psm1, sha256 778ad5729561
     src/XlsxWriter.psm1, sha256 e29becdc6a65
-    src/Report.psm1, sha256 5d04193f9d58
-    src/ScanMeter.psm1, sha256 0d3f2df493cb
-    src/ChannelScan.psm1, sha256 c6c82f3a84b7
-    src/Find-ChannelPII.ps1, sha256 2870478a2776
+    src/Report.psm1, sha256 997c14fecccf
+    src/ScanMeter.psm1, sha256 2c2a5a750104
+    src/ChannelScan.psm1, sha256 3a794db4e70e
+    src/Find-ChannelPII.ps1, sha256 00f939a3e839
 
   Read-only: it never changes, moves or deletes anything in Teams or SharePoint. Every value found is masked.
   Run target: Windows PowerShell 5.1 with PnP.PowerShell 1.12.0; no admin rights, no file to unblock.
@@ -33,16 +34,17 @@
   Credentials: your own CAC sign-in in the PnP sign-in window; nothing is stored.
 
   Contents (line numbers of this file):
-    line    48  Settings
-    line    59  Module PiiDetectors.psm1
-    line   547  Module PiiMasking.psm1
-    line   747  Module TextExtract.psm1
-    line   999  Module XlsxWriter.psm1
-    line  1270  Module Report.psm1
-    line  1764  Module ScanMeter.psm1
-    line  2006  Module ChannelScan.psm1
-    line  2554  Body of Find-ChannelPII.ps1
-    line  2651  Clean-up
+    line    50  Settings
+    line    61  Module PiiDetectors.psm1
+    line   549  Module PiiMasking.psm1
+    line   749  Module PdfText.psm1
+    line  1142  Module TextExtract.psm1
+    line  1401  Module XlsxWriter.psm1
+    line  1672  Module Report.psm1
+    line  2168  Module ScanMeter.psm1
+    line  2433  Module ChannelScan.psm1
+    line  3013  Body of Find-ChannelPII.ps1
+    line  3114  Clean-up
 #>
 
 # ==== Settings ==== (optional: edit the values between the quotes; empty = the script asks)
@@ -744,16 +746,411 @@ function Protect-PiiName {
     return [regex]::Replace($result, $script:EmailLocalPartPattern, '***')
 }
 
+# ==== Module PdfText.psm1 ====
+<#
+PdfText.psm1 - the text of a PDF file, in memory, with .NET only (no module; the PAM, 2026-11-20).
+
+  Purpose:     Page text (Tj/TJ text in Flate, ASCII85 or hex streams, with ToUnicode font maps) and filled-in
+               form-field values (name: value), so the detectors can check a PDF (ISO 32000). An encrypted PDF,
+               a PDF with no text (a scanned image) or a file that is not a PDF gets a reason instead.
+  Inputs:      the file bytes.
+  Outputs:     a hashtable with Text and Reason (Get-PdfText).
+  How to run:  imported by Find-ChannelPII.ps1 (used by TextExtract.psm1); not run on its own.
+  Run target:  Windows PowerShell 5.1 (also PowerShell 7); .NET System.IO.Compression only.
+  Network:     none.
+  Writes:      none. Bytes stay in memory; nothing is saved to disk.
+  Credentials: none.
+#>
+
+Add-Type -AssemblyName System.IO.Compression
+
+
+# Bytes as characters one to one (ISO-8859-1), so binary PDF parts can be cut with string functions.
+$script:Latin1 = [System.Text.Encoding]::GetEncoding(28591)
+
+# A PDF string: (literal), with nested brackets and escapes, or <hex> (not a << dictionary).
+$script:PdfStringPattern = '\((?>[^()\\]+|\\.|\((?<d>)|\)(?<-d>))*(?(d)(?!))\)|<(?!<)[0-9A-Fa-f\s]*>'
+
+# The tokens of a content stream that matter for text: strings, array brackets, names, numbers and operators.
+$script:PdfTokenPattern = $script:PdfStringPattern + '|\[|\]|/[^\s/\[\]()<>{}%]+|[-+]?(?:\d+\.?\d*|\.\d+)|[A-Za-z''"*]+'
+
+# A TJ gap wider than this (thousandths of a text unit) is a space between words.
+$script:PdfWordGap = 250
+
+# A ToUnicode range longer than this is not expanded (a damaged or hostile file cannot fill the memory).
+$script:MaxCMapRange = 65536
+
+$script:PdfNoTextReason = 'No text in this PDF (a scanned image?): check by hand'
+$script:PdfEncryptedReason = 'Encrypted PDF (password or label): check by hand'
+
+function Expand-PdfStream {
+    <#
+    .SYNOPSIS
+      A FlateDecode stream (zlib: a 2-byte header, then deflate) inflated; what was read before an error is kept.
+    .PARAMETER Raw
+      The raw bytes as Latin-1 text.
+    #>
+    param([string]$Raw)
+    $bytes = $script:Latin1.GetBytes($Raw)
+    $skip = 0; if ($bytes.Length -ge 2 -and $bytes[0] -eq 0x78) { $skip = 2 }
+    $source = New-Object System.IO.MemoryStream -ArgumentList $bytes, $skip, ($bytes.Length - $skip)
+    $inflate = New-Object System.IO.Compression.DeflateStream($source, [System.IO.Compression.CompressionMode]::Decompress)
+    $output = New-Object System.IO.MemoryStream
+    try { $inflate.CopyTo($output) }
+    catch { Write-Verbose 'A PDF stream ended early: its text so far is kept.' }
+    finally { $inflate.Dispose(); $source.Dispose() }
+    return $script:Latin1.GetString($output.ToArray())
+}
+
+function Read-PdfStream {
+    <#
+    .SYNOPSIS
+      A stream's data with its filters undone in order: FlateDecode, ASCII85Decode, ASCIIHexDecode (often chained,
+      such as [/ASCII85Decode /FlateDecode]). $null for any other filter (images and the like are not text).
+    .PARAMETER Dict
+      The stream's dictionary.
+    .PARAMETER Raw
+      The stream's bytes as Latin-1 text.
+    .OUTPUTS
+      [string] or $null.
+    #>
+    param([string]$Dict, [string]$Raw)
+    $filter = [regex]::Match($Dict, '/Filter\s*(\[[^\]]*\]|/\w+)')
+    $data = $Raw
+    foreach ($name in @([regex]::Matches($filter.Groups[1].Value, '/(\w+)') | ForEach-Object { $_.Groups[1].Value })) {
+        switch ($name) {
+            'FlateDecode' { $data = Expand-PdfStream $data }
+            'ASCII85Decode' { $data = ConvertFrom-Ascii85 $data }
+            'ASCIIHexDecode' { $data = ConvertFrom-PdfString ('<' + ($data -replace '[^0-9A-Fa-f]', '') + '>') }
+            default { return $null }
+        }
+    }
+    return $data
+}
+
+function ConvertFrom-Ascii85 {
+    <#
+    .SYNOPSIS
+      ASCII85 text (PDF ASCII85Decode, ending in ~>) to its bytes as Latin-1 text; z = four zero bytes.
+    .PARAMETER Text
+      The text.
+    #>
+    param([string]$Text)
+    $end = $Text.IndexOf('~>'); if ($end -ge 0) { $Text = $Text.Substring(0, $end) }
+    $Text = ($Text -replace '\s', '') -replace 'z', '!!!!!'
+    $out = New-Object System.Text.StringBuilder
+    for ($i = 0; $i -lt $Text.Length; $i += 5) {
+        $group = $Text.Substring($i, [Math]::Min(5, $Text.Length - $i))
+        $count = $group.Length - 1
+        if ($count -lt 1) { break }
+        $group = $group.PadRight(5, 'u')
+        [long]$value = 0
+        foreach ($c in $group.ToCharArray()) { $value = $value * 85 + ([int]$c - 33) }
+        for ($k = 0; $k -lt $count; $k++) { [void]$out.Append([char](($value -shr (24 - 8 * $k)) -band 0xFF)) }
+    }
+    return $out.ToString()
+}
+
+function Get-PdfObjects {
+    <#
+    .SYNOPSIS
+      The objects of a PDF by number: each its dictionary text and its stream (inflated when FlateDecode; $null for
+      other filters, such as images). Objects packed in object streams (PDF 1.5) are unpacked too.
+    .PARAMETER Text
+      The PDF bytes as Latin-1 text.
+    .OUTPUTS
+      [System.Collections.Specialized.OrderedDictionary] number -> @{ Dict; Stream }, in file order.
+    #>
+    param([string]$Text)
+    $objects = New-Object System.Collections.Specialized.OrderedDictionary
+    foreach ($match in [regex]::Matches($Text, '(?s)(\d+)\s+\d+\s+obj\b(.*?)\bendobj')) {
+        $body = $match.Groups[2].Value
+        $stream = $null
+        $split = [regex]::Match($body, '(?s)^(.*?)\bstream\r?\n(.*?)\r?\n?endstream')
+        if ($split.Success) {
+            $body = $split.Groups[1].Value
+            $stream = Read-PdfStream $body $split.Groups[2].Value
+        }
+        $objects[$match.Groups[1].Value] = @{ Dict = $body; Stream = $stream }
+    }
+    foreach ($packed in @($objects.Values | Where-Object { $_.Dict -match '/Type\s*/ObjStm' -and $_.Stream })) { Add-PackedObjects $objects $packed }
+    return $objects
+}
+
+function Add-PackedObjects {
+    <#
+    .SYNOPSIS
+      Adds the objects of one object stream (/Type /ObjStm: N pairs "number offset", then the objects from /First).
+    .PARAMETER Objects
+      Output of Get-PdfObjects.
+    .PARAMETER Packed
+      One object stream of Get-PdfObjects.
+    #>
+    param($Objects, $Packed)
+    $count = [int][regex]::Match($Packed.Dict, '/N\s+(\d+)').Groups[1].Value
+    $first = [int][regex]::Match($Packed.Dict, '/First\s+(\d+)').Groups[1].Value
+    if ($first -le 0 -or $first -gt $Packed.Stream.Length) { return }
+    $pairs = @($Packed.Stream.Substring(0, $first).Trim() -split '\s+')
+    for ($k = 0; $k -lt $count -and 2 * $k + 1 -lt $pairs.Count; $k++) {
+        $start = $first + [int]$pairs[2 * $k + 1]
+        $end = $Packed.Stream.Length
+        if (2 * $k + 3 -lt $pairs.Count) { $end = $first + [int]$pairs[2 * $k + 3] }
+        if ($start -ge $end -or $end -gt $Packed.Stream.Length) { continue }
+        if (-not $Objects.Contains($pairs[2 * $k])) { $Objects[$pairs[2 * $k]] = @{ Dict = $Packed.Stream.Substring($start, $end - $start); Stream = $null } }
+    }
+}
+
+function ConvertFrom-PdfString {
+    <#
+    .SYNOPSIS
+      The bytes of one PDF string token, as Latin-1 characters: (literal) with its escapes undone, or <hex>.
+    .PARAMETER Token
+      One PDF string token.
+    #>
+    param([string]$Token)
+    if ($Token.StartsWith('<')) {
+        $hex = $Token.Substring(1, $Token.Length - 2) -replace '\s', ''
+        if ($hex.Length % 2) { $hex += '0' }
+        return -join @(for ($i = 0; $i -lt $hex.Length; $i += 2) { [char][Convert]::ToInt32($hex.Substring($i, 2), 16) })
+    }
+    $undo = [System.Text.RegularExpressions.MatchEvaluator] {
+        param($m)
+        $code = $m.Value.Substring(1)
+        if ($code -match '^[0-7]+$') { return [string][char]([Convert]::ToInt32($code, 8) -band 0xFF) }
+        switch -CaseSensitive ($code) { 'n' { "`n" } 'r' { "`r" } 't' { "`t" } 'b' { ' ' } 'f' { ' ' } default { $code.Trim("`r", "`n") } }
+    }
+    return [regex]::Replace($Token.Substring(1, $Token.Length - 2), '\\(?:[0-7]{1,3}|\r?\n|.)', $undo)
+}
+
+function ConvertFrom-PdfTextString {
+    # A PDF text string (a form field's name or value): UTF-16 when it starts with the FE FF mark, else Latin-1.
+    param([string]$Token)
+    $raw = ConvertFrom-PdfString $Token
+    if ($raw.Length -ge 2 -and [int]$raw[0] -eq 0xFE -and [int]$raw[1] -eq 0xFF) {
+        return [System.Text.Encoding]::BigEndianUnicode.GetString($script:Latin1.GetBytes($raw.Substring(2)))
+    }
+    return $raw
+}
+
+function ConvertFrom-Utf16Hex {
+    # The text of a ToUnicode target: UTF-16BE given as hex.
+    param([string]$Hex)
+    $bytes = [byte[]]@(for ($i = 0; $i + 1 -lt $Hex.Length; $i += 2) { [Convert]::ToByte($Hex.Substring($i, 2), 16) })
+    return [System.Text.Encoding]::BigEndianUnicode.GetString($bytes)
+}
+
+function Get-PdfCMap {
+    <#
+    .SYNOPSIS
+      A font's ToUnicode map: glyph code (hex, upper case) -> text, from its bfchar and bfrange entries.
+    .PARAMETER Text
+      The CMap stream.
+    .OUTPUTS
+      [hashtable] Bytes (bytes per code), Map.
+    #>
+    param([string]$Text)
+    $map = @{}
+    $bytes = 1
+    foreach ($block in [regex]::Matches($Text, '(?s)beginbfchar(.*?)endbfchar')) {
+        foreach ($pair in [regex]::Matches($block.Groups[1].Value, '<([0-9A-Fa-f]+)>\s*<([0-9A-Fa-f]*)>')) {
+            $map[$pair.Groups[1].Value.ToUpper()] = ConvertFrom-Utf16Hex $pair.Groups[2].Value
+            $bytes = [int]($pair.Groups[1].Value.Length / 2)
+        }
+    }
+    foreach ($block in [regex]::Matches($Text, '(?s)beginbfrange(.*?)endbfrange')) {
+        foreach ($range in [regex]::Matches($block.Groups[1].Value, '<([0-9A-Fa-f]+)>\s*<([0-9A-Fa-f]+)>\s*(<[0-9A-Fa-f]*>|\[[^\]]*\])')) {
+            $width = $range.Groups[1].Value.Length
+            $bytes = [int]($width / 2)
+            $low = [Convert]::ToInt64($range.Groups[1].Value, 16)
+            $high = [Convert]::ToInt64($range.Groups[2].Value, 16)
+            if ($high -lt $low -or $high - $low -ge $script:MaxCMapRange) { continue }
+            $target = $range.Groups[3].Value
+            $list = @([regex]::Matches($target, '<([0-9A-Fa-f]*)>') | ForEach-Object { $_.Groups[1].Value })
+            for ($code = $low; $code -le $high; $code++) {
+                $key = $code.ToString('X' + $width)
+                if ($target.StartsWith('[')) { if ($code - $low -lt $list.Count) { $map[$key] = ConvertFrom-Utf16Hex $list[$code - $low] } }
+                elseif ($list.Count -gt 0 -and $list[0].Length -ge 4) {
+                    $last = [Convert]::ToInt32($list[0].Substring($list[0].Length - 4), 16) + ($code - $low)
+                    $map[$key] = ConvertFrom-Utf16Hex ($list[0].Substring(0, $list[0].Length - 4) + ($last -band 0xFFFF).ToString('X4'))
+                }
+            }
+        }
+    }
+    return @{ Bytes = $bytes; Map = $map }
+}
+
+function Get-PdfFonts {
+    <#
+    .SYNOPSIS
+      The fonts the pages name (/F1 ...) -> their ToUnicode map, or $null (simple fonts: bytes read as Latin-1).
+    .PARAMETER Objects
+      Output of Get-PdfObjects.
+    #>
+    param($Objects)
+    $fonts = @{}
+    foreach ($obj in $Objects.Values) {
+        foreach ($resource in [regex]::Matches($obj.Dict, '/Font\s*(?:<<(?<inline>[^<>]*)>>|(?<ref>\d+)\s+\d+\s+R)')) {
+            $names = $resource.Groups['inline'].Value
+            if ($resource.Groups['ref'].Success -and $Objects.Contains($resource.Groups['ref'].Value)) { $names = $Objects[$resource.Groups['ref'].Value].Dict }
+            foreach ($font in [regex]::Matches($names, '/([^\s/<>\[\]()]+)\s+(\d+)\s+\d+\s+R')) {
+                if ($fonts.ContainsKey($font.Groups[1].Value) -or -not $Objects.Contains($font.Groups[2].Value)) { continue }
+                $unicode = [regex]::Match($Objects[$font.Groups[2].Value].Dict, '/ToUnicode\s+(\d+)\s+\d+\s+R')
+                $map = $null
+                if ($unicode.Success -and $Objects.Contains($unicode.Groups[1].Value) -and $Objects[$unicode.Groups[1].Value].Stream) {
+                    $map = Get-PdfCMap $Objects[$unicode.Groups[1].Value].Stream
+                }
+                $fonts[$font.Groups[1].Value] = $map
+            }
+        }
+    }
+    return $fonts
+}
+
+function ConvertFrom-PdfGlyphs {
+    <#
+    .SYNOPSIS
+      The text of one shown string: each glyph code looked up in the font's ToUnicode map; Latin-1 without a map.
+    .PARAMETER Raw
+      The raw bytes as Latin-1 text.
+    .PARAMETER Font
+      A ToUnicode map of Get-PdfFonts, or $null.
+    #>
+    param([string]$Raw, $Font)
+    if (-not $Font) { return $Raw }
+    $out = New-Object System.Text.StringBuilder
+    $step = [Math]::Max(1, [int]$Font.Bytes)
+    for ($i = 0; $i + $step -le $Raw.Length; $i += $step) {
+        $code = -join @(for ($j = 0; $j -lt $step; $j++) { ([int]$Raw[$i + $j]).ToString('X2') })
+        $text = $Font.Map[$code]
+        if ($null -ne $text) { [void]$out.Append($text) } elseif ($step -eq 1) { [void]$out.Append($Raw[$i]) }
+    }
+    return $out.ToString()
+}
+
+function Convert-PdfContentToText {
+    <#
+    .SYNOPSIS
+      The text a page content stream shows: Tj, TJ, ' and " strings in the current font; a line break at each
+      line move and text block end; a space at a wide TJ gap.
+    .PARAMETER Content
+      The (inflated) content stream.
+    .PARAMETER Fonts
+      Output of Get-PdfFonts.
+    .OUTPUTS
+      [string]
+    #>
+    param([string]$Content, [hashtable]$Fonts)
+    $out = New-Object System.Text.StringBuilder
+    $stack = New-Object System.Collections.Generic.List[object]
+    $array = $null
+    $font = $null
+    foreach ($token in [regex]::Matches($Content, $script:PdfTokenPattern)) {
+        $t = $token.Value
+        if ($t -eq '[') { $array = New-Object System.Collections.Generic.List[string]; continue }
+        if ($t -eq ']') { if ($null -ne $array) { $stack.Add($array) }; $array = $null; continue }
+        if ($t[0] -eq '(' -or $t[0] -eq '<' -or $t[0] -eq '/' -or $t -match '^[-+.\d]') {
+            if ($null -ne $array) { $array.Add($t) } else { $stack.Add($t) }
+            continue
+        }
+        $last = $null; if ($stack.Count -gt 0) { $last = $stack[$stack.Count - 1] }
+        switch -CaseSensitive ($t) {
+            'Tf' { if ($stack.Count -ge 2) { $font = $Fonts[([string]$stack[$stack.Count - 2]).TrimStart('/')] } }
+            'Tj' { if ($last -is [string]) { [void]$out.Append((ConvertFrom-PdfGlyphs (ConvertFrom-PdfString $last) $font)) } }
+            "'" { [void]$out.Append("`n"); if ($last -is [string]) { [void]$out.Append((ConvertFrom-PdfGlyphs (ConvertFrom-PdfString $last) $font)) } }
+            '"' { [void]$out.Append("`n"); if ($last -is [string]) { [void]$out.Append((ConvertFrom-PdfGlyphs (ConvertFrom-PdfString $last) $font)) } }
+            'TJ' { if ($last -is [System.Collections.Generic.List[string]]) { [void]$out.Append((Convert-PdfArrayToText $last $font)) } }
+            'Td' { if ($stack.Count -ge 2 -and (ConvertTo-PdfNumber $last) -ne 0) { [void]$out.Append("`n") } else { [void]$out.Append(' ') } }
+            'TD' { [void]$out.Append("`n") }
+            'T*' { [void]$out.Append("`n") }
+            'Tm' { [void]$out.Append("`n") }
+            'ET' { [void]$out.Append("`n") }
+        }
+        $stack.Clear()
+    }
+    return $out.ToString()
+}
+
+function ConvertTo-PdfNumber {
+    # A PDF number token as a number; 0 when it is not one.
+    param($Token)
+    $number = 0.0
+    if (-not [double]::TryParse([string]$Token, [Globalization.NumberStyles]::Float, [Globalization.CultureInfo]::InvariantCulture, [ref]$number)) { return 0.0 }
+    return $number
+}
+
+function Convert-PdfArrayToText {
+    # The text of a TJ array: its strings in the font, a space where a gap is wider than $PdfWordGap.
+    param($Items, $Font)
+    $out = New-Object System.Text.StringBuilder
+    foreach ($item in $Items) {
+        if ($item[0] -eq '(' -or $item[0] -eq '<') { [void]$out.Append((ConvertFrom-PdfGlyphs (ConvertFrom-PdfString $item) $Font)) }
+        elseif ((ConvertTo-PdfNumber $item) -lt -$script:PdfWordGap) { [void]$out.Append(' ') }
+    }
+    return $out.ToString()
+}
+
+function Get-PdfFormValues {
+    <#
+    .SYNOPSIS
+      The filled-in form fields: one line "name: value" per field with a text value (/V), so labels stay with values.
+    .PARAMETER Objects
+      Output of Get-PdfObjects.
+    #>
+    param($Objects)
+    foreach ($obj in $Objects.Values) {
+        $value = [regex]::Match($obj.Dict, '/V\s*(' + $script:PdfStringPattern + ')')
+        if (-not $value.Success) { continue }
+        $name = [regex]::Match($obj.Dict, '/T\s*(' + $script:PdfStringPattern + ')')
+        $label = ''; if ($name.Success) { $label = (ConvertFrom-PdfTextString $name.Groups[1].Value) + ': ' }
+        $label + (ConvertFrom-PdfTextString $value.Groups[1].Value)
+    }
+}
+
+function Get-PdfText {
+    <#
+    .SYNOPSIS
+      The text of a PDF: the text of every page and the values of its form fields. A PDF that is encrypted, has
+      no text (a scanned image) or is not a PDF gets a reason instead. Fonts without a ToUnicode map and other
+      unusual encodings can give partial text: what can be read is checked.
+    .PARAMETER Bytes
+      The file bytes.
+    .OUTPUTS
+      [hashtable] Text, Reason (empty when the text was read).
+    #>
+    param([byte[]]$Bytes)
+    $text = $script:Latin1.GetString($Bytes)
+    if ($text.IndexOf('%PDF') -lt 0 -or $text.IndexOf('%PDF') -gt 1024) {
+        return @{ Text = ''; Reason = 'Not a valid PDF (damaged, or another type with a .pdf name): check by hand' }
+    }
+    if ($text -match '/Encrypt\s*(?:\d+\s+\d+\s+R|<<)') { return @{ Text = ''; Reason = $script:PdfEncryptedReason } }
+    $objects = Get-PdfObjects $text
+    $fonts = Get-PdfFonts $objects
+    $parts = New-Object System.Collections.Generic.List[string]
+    foreach ($page in @($objects.Values | Where-Object { $_.Dict -match '/Type\s*/Page(?![s\w])' })) {
+        $contents = [regex]::Match($page.Dict, '/Contents\s*(\[[^\]]*\]|\d+\s+\d+\s+R)').Groups[1].Value
+        foreach ($ref in [regex]::Matches($contents, '(\d+)\s+\d+\s+R')) {
+            $content = $objects[$ref.Groups[1].Value]
+            if ($content -and $content.Stream) { $parts.Add((Convert-PdfContentToText $content.Stream $fonts)) }
+        }
+    }
+    foreach ($line in @(Get-PdfFormValues $objects)) { $parts.Add($line) }
+    $all = $parts -join "`n"
+    if (-not $all.Trim()) { return @{ Text = ''; Reason = $script:PdfNoTextReason } }
+    return @{ Text = $all; Reason = '' }
+}
+
 # ==== Module TextExtract.psm1 ====
 <#
 TextExtract.psm1 - turns file bytes into plain text, in memory.
 
   Purpose:     Plain text from Word, Excel and PowerPoint files (.docx/.xlsx/.pptx and macro versions),
-               text files and HTML. Other types (PDF, images, legacy .doc/.xls/.ppt, scripts and
-               anything else) are reported as NOT SCANNED, so a person checks them by hand.
+               PDF (page text and form fields; the PAM, 2026-11-20), text files and HTML. Other types (images,
+               legacy .doc/.xls/.ppt, scripts and anything else), encrypted files and PDFs without text are
+               reported as NOT SCANNED, so a person checks them by hand.
   Inputs:      file bytes and the file name (for its extension).
   Outputs:     an object with Status ('OK' or 'NOT SCANNED'), Reason and Text.
   How to run:  imported by Find-ChannelPII.ps1; not run on its own.
+  Depends on:  PdfText.psm1 (Get-PdfText), imported first by Find-ChannelPII.ps1.
   Run target:  Windows PowerShell 5.1 (also PowerShell 7); .NET System.IO.Compression only.
   Network:     none.
   Writes:      none. Bytes stay in memory; nothing is saved to disk.
@@ -958,7 +1355,7 @@ function Test-SupportedFile {
     param([string]$FileName)
     $extension = [System.IO.Path]::GetExtension($FileName).ToLower()
     return ($script:PlainTextExtensions -contains $extension) -or ($script:HtmlExtensions -contains $extension) -or
-        $script:OfficeParts.ContainsKey($extension)
+        $script:OfficeParts.ContainsKey($extension) -or $extension -eq '.pdf'
 }
 
 function Get-TextFromBytes {
@@ -978,6 +1375,11 @@ function Get-TextFromBytes {
     try {
         if ($script:PlainTextExtensions -contains $extension) { $result.Text = Get-PlainText $Bytes }
         elseif ($script:HtmlExtensions -contains $extension) { $result.Text = Convert-HtmlToText (Get-PlainText $Bytes) }
+        elseif ($extension -eq '.pdf') {
+            $pdf = Get-PdfText $Bytes
+            if ($pdf.Reason) { $result.Status = 'NOT SCANNED'; $result.Reason = $pdf.Reason }
+            else { $result.Text = $pdf.Text }
+        }
         elseif ($script:OfficeParts.ContainsKey($extension)) {
             $notZip = Get-NotZipReason $Bytes
             if ($notZip) { $result.Status = 'NOT SCANNED'; $result.Reason = $notZip }
@@ -1307,9 +1709,10 @@ $script:TopItems = 10
 
 # Screen colours (the PAM, 2026-11-20: less grey, more format). Write-Host has only the 16 console colours:
 # Cyan = headings and labels, White = values, Green = clean or done, Yellow = check by hand and Medium,
-# Red = possible PII, High and errors, Gray = hints only, DarkGray = rules and table borders.
+# Red = possible PII, High and errors, Gray = hints and the labels of the folder rows, DarkGray = rules and table
+# borders, DarkCyan (teal) = folder names on the folder rows (the PAM, 2026-11-20).
 $script:ScreenColors = @{ Title = 'Cyan'; Label = 'Cyan'; Text = 'White'; Good = 'Green'; Accent = 'Yellow'; Alert = 'Red'
-    Muted = 'Gray'; Rule = 'DarkGray' }
+    Muted = 'Gray'; Rule = 'DarkGray'; Folder = 'DarkCyan' }
 
 # Not-scanned reasons in groups for the counts on screen and on the Summary tab: a pattern on the reason, its group.
 # A file type that is not read is counted per extension (Get-NotScannedGroup).
@@ -1317,6 +1720,7 @@ $script:NotScannedGroups = [ordered]@{
     '^Encrypted' = 'Encrypted or labelled with encryption'
     '^Larger than' = 'Too large'
     '^Empty file' = 'Empty file'
+    '^No text in this PDF' = 'PDF without text (scanned image?)'
     'web page' = 'Download gave a web page'
     '^Download failed' = 'Download failed'
     '^Not a valid Office file|^Could not read' = 'Damaged or not readable'
@@ -1394,11 +1798,11 @@ function Write-Ui {
     .PARAMETER Text
       The text (already masked by the caller).
     .PARAMETER Kind
-      Title, Label, Text, Good, Accent, Alert, Muted or Rule.
+      Title, Label, Text, Good, Accent, Alert, Muted, Rule or Folder.
     .PARAMETER NoNewline
       Keep writing on the same line (for a line with several colours).
     #>
-    param([AllowEmptyString()][string]$Text, [ValidateSet('Title', 'Label', 'Text', 'Good', 'Accent', 'Alert', 'Muted', 'Rule')][string]$Kind = 'Text',
+    param([AllowEmptyString()][string]$Text, [ValidateSet('Title', 'Label', 'Text', 'Good', 'Accent', 'Alert', 'Muted', 'Rule', 'Folder')][string]$Kind = 'Text',
           [switch]$NoNewline)
     Write-Host $Text -ForegroundColor $script:ScreenColors[$Kind] -NoNewline:$NoNewline
 }
@@ -1797,6 +2201,10 @@ $script:CountWidth = 5
 # Length of the grey rule after each folder's lines.
 $script:RuleWidth = 100
 
+# The name column of the folder rows: as wide as the longest folder name, at most this; the total row says "Total".
+$script:MaxNameWidth = 40
+$script:TotalName = 'Total'
+
 # Short PII type names for the live line, in the PAM's order (Report.psm1 $SeverityOrder).
 $script:ShortTypeNames = [ordered]@{ 'SSN' = 'SSN'; 'Date of birth' = 'DOB'; 'Passport' = 'Passport'; 'Payment card' = 'Card'
     'DoD ID' = 'DoD ID'; 'Home address' = 'Address'; 'Name' = 'Name'; 'Phone' = 'Phone'; 'Personal e-mail' = 'E-mail' }
@@ -1812,7 +2220,7 @@ function New-ScanMeter {
     #>
     param([int]$Total)
     # Clock: anything with an Elapsed [TimeSpan] (a running stopwatch here; a fixed time in the tests).
-    @{ Total = $Total; Done = 0; Read = 0; Skipped = 0; Hits = 0; HitItems = 0; Types = @{}; LastLine = [TimeSpan]::Zero
+    @{ Total = $Total; Done = 0; Read = 0; Skipped = 0; Hits = 0; HitItems = 0; Types = @{}; LastLine = [TimeSpan]::Zero; NameWidth = 0
        Clock = [Diagnostics.Stopwatch]::StartNew() }
 }
 
@@ -1894,10 +2302,10 @@ function Get-TypeCountText {
 }
 
 function Write-CountPart {
-    # One part of a live line: " | " (grey rule), the label (cyan), the count (fixed width) in its colour.
+    # One part of a folder or total row: " | " (dark grey), the label (grey), the count (fixed width) in its colour.
     param([string]$Label, [long]$Value, [string]$Kind)
     Write-Ui ' | ' 'Rule' -NoNewline
-    Write-Ui ($Label + ' ') 'Label' -NoNewline
+    Write-Ui ($Label + ' ') 'Muted' -NoNewline
     Write-Ui (Format-Count $Value) $Kind -NoNewline
 }
 
@@ -1908,11 +2316,33 @@ function Get-CountKind {
     return 'Text'
 }
 
+function Get-NameWidth {
+    # The width of the name column: the longest (shown) folder name, at least "Total", at most $MaxNameWidth.
+    param([string[]]$Names)
+    $width = $script:TotalName.Length
+    foreach ($name in $Names) { $width = [Math]::Max($width, $name.Length) }
+    return [Math]::Min($width, $script:MaxNameWidth)
+}
+
+function Format-Name {
+    # A name padded (or cut, ending in "...") to the name column's width, so every row lines up.
+    param([string]$Name, [int]$Width)
+    if ($Name.Length -gt $Width) { return $Name.Substring(0, $Width - 3) + '...' }
+    return $Name.PadRight($Width)
+}
+
+function Get-RowWidth {
+    # The name column's width of a meter (a meter made in a test may have none).
+    param([hashtable]$Meter)
+    if ($Meter.ContainsKey('NameWidth') -and $Meter.NameWidth -gt 0) { return [int]$Meter.NameWidth }
+    return $script:TotalName.Length
+}
+
 function Write-MeterLine {
     <#
     .SYNOPSIS
-      Prints the live counts as one coloured line under the progress bar, every count in a fixed width: done of the
-      total and percent, read, not scanned, possible PII, time used and left, then the PII per type. At most every
+      Prints the running total as one row in the same columns as the folder rows: "Total", files done of the total
+      and percent, read, not scanned, possible PII, time used and left, then the PII per type. At most every
       $LiveLineSeconds, unless -Force. Counts only: no file name and no value.
     .PARAMETER Meter
       Output of New-ScanMeter.
@@ -1925,14 +2355,15 @@ function Write-MeterLine {
     $elapsed = $Meter.Clock.Elapsed
     if (-not $Force -and ($elapsed - $Meter.LastLine).TotalSeconds -lt $script:LiveLineSeconds) { return }
     $Meter.LastLine = $elapsed
-    Write-Ui '  > ' 'Rule' -NoNewline
-    Write-Ui ('{0}/{1} {2}s {3,3}%' -f (Format-Count $Meter.Done), (Format-Count $Meter.Total), $Noun, (Get-MeterPercent $Meter)) 'Title' -NoNewline
+    Write-Ui ('  ' + (Format-Name $script:TotalName (Get-RowWidth $Meter))) 'Text' -NoNewline
+    Write-Ui ' | ' 'Rule' -NoNewline
+    Write-Ui ($Noun + 's ') 'Muted' -NoNewline
+    Write-Ui ('{0}/{1} {2,3}%' -f (Format-Count $Meter.Done), (Format-Count $Meter.Total), (Get-MeterPercent $Meter)) 'Text' -NoNewline
     Write-CountPart 'read' $Meter.Read 'Text'
     Write-CountPart 'not scanned' $Meter.Skipped (Get-CountKind $Meter.Skipped 'Accent')
-    $kind = 'Good'; if ($Meter.Hits -gt 0) { $kind = 'Alert' }
-    Write-CountPart 'possible PII' $Meter.Hits $kind
+    Write-CountPart 'possible PII' $Meter.Hits (Get-CountKind $Meter.Hits 'Alert')
     Write-Ui ' | ' 'Rule' -NoNewline
-    Write-Ui ('{0} used{1}' -f (Format-Duration $elapsed), (Get-TimeLeftText $Meter)) 'Text' -NoNewline
+    Write-Ui ('{0} used{1}' -f (Format-Duration $elapsed), (Get-TimeLeftText $Meter)) 'Muted' -NoNewline
     $types = Get-TypeCountText $Meter
     if ($types) { Write-Ui ' | ' 'Rule' -NoNewline; Write-Ui $types 'Alert' -NoNewline }
     Write-Ui ''
@@ -1968,12 +2399,9 @@ function Write-FileStep {
 function Write-ChannelLine {
     <#
     .SYNOPSIS
-      Prints one line when a folder (a channel) is done: its counts in fixed widths, then its (masked) name, then a
-      grey rule. Not scanned in yellow and possible PII in red when there are some; no PII in green.
-    .PARAMETER Number
-      Which folder this is (1-based).
-    .PARAMETER Count
-      How many folders there are.
+      Prints one row when a folder (a channel) is done: its (masked) name first in teal, in a fixed-width column,
+      then its counts in fixed widths with grey labels (the PAM, 2026-11-20). Not scanned in yellow and possible
+      PII in red when there are some; other numbers white.
     .PARAMETER Channel
       The channel name (masked here).
     .PARAMETER Before
@@ -1983,19 +2411,18 @@ function Write-ChannelLine {
     .PARAMETER Noun
       What an item is, for example 'file'.
     #>
-    param([int]$Number, [int]$Count, [string]$Channel, [hashtable]$Before, [hashtable]$Meter, [string]$Noun)
+    param([string]$Channel, [hashtable]$Before, [hashtable]$Meter, [string]$Noun)
     $hits = $Meter.Hits - $Before.Hits
     $skipped = $Meter.Skipped - $Before.Skipped
-    $width = ([string]$Count).Length
-    Write-Ui ('  [{0}/{1}] ' -f ([string]$Number).PadLeft($width), $Count) 'Title' -NoNewline
-    Write-Ui ($Noun + 's ') 'Label' -NoNewline
-    Write-Ui (Format-Count ($Meter.Done - $Before.Done)) 'Text' -NoNewline
+    Write-Ui ('  ' + (Format-Name (Protect-PiiName $Channel) (Get-RowWidth $Meter))) 'Folder' -NoNewline
+    Write-Ui ' | ' 'Rule' -NoNewline
+    Write-Ui ($Noun + 's ') 'Muted' -NoNewline
+    # Padded to the width of the total row's "done/total percent", so the next columns line up.
+    Write-Ui ((Format-Count ($Meter.Done - $Before.Done)).PadRight($script:CountWidth * 2 + 6)) 'Text' -NoNewline
     Write-CountPart 'read' ($Meter.Read - $Before.Read) 'Text'
     Write-CountPart 'not scanned' $skipped (Get-CountKind $skipped 'Accent')
-    $kind = 'Good'; if ($hits -gt 0) { $kind = 'Alert' }
-    Write-CountPart 'possible PII' $hits $kind
-    Write-Ui ' | ' 'Rule' -NoNewline
-    Write-Ui (Protect-PiiName $Channel) 'Title'
+    Write-CountPart 'possible PII' $hits (Get-CountKind $hits 'Alert')
+    Write-Ui ''
 }
 
 function Write-RuleLine {
@@ -2028,8 +2455,14 @@ ChannelScan.psm1 - reads one team's or site's files and turns them into report r
 # Settings
 # =====================================================================================
 
-# A team site's file library: Teams names it "Documents" (URL "Shared Documents"); some sites renamed it.
+# A team site's file library: Teams names it "Documents" (URL "Shared Documents"). It is scanned first.
 $script:LibraryNames = @('Shared Documents', 'Documents')
+
+# A document library is list template 101 (SharePoint ListTemplateType.DocumentLibrary).
+$script:DocumentLibraryTemplate = 101
+
+# Visible libraries that hold SharePoint's own files or copies, not people's files: not scanned.
+$script:NotScannedLibraries = @('Style Library', 'Form Templates', 'Site Assets', 'Preservation Hold Library', 'Site Collection Documents')
 
 # Teams makes one top-level folder per standard channel. "Forms" is SharePoint's own folder, not a channel.
 $script:NotChannelFolders = @('Forms')
@@ -2227,24 +2660,27 @@ function Connect-TeamSite {
     }
 }
 
-function Get-TeamDocumentLibrary {
+function Get-SiteDocumentLibraries {
     <#
     .SYNOPSIS
-      Finds the team's file library on the connected site.
+      The document libraries of the connected site that hold people's files: every visible library (template 101),
+      without SharePoint's own ($NotScannedLibraries). The team's "Documents" library comes first. Only this one
+      site: subsites are not read (the PAM, 2026-11-20).
     .OUTPUTS
-      [pscustomobject] List (the PnP list), ServerRelativeUrl (/sites/<name>/Shared Documents),
-      SiteRelativeUrl (Shared Documents).
+      [pscustomobject] Title, List (the PnP list), ServerRelativeUrl (/sites/<name>/Shared Documents),
+      SiteRelativeUrl (Shared Documents); one per library.
     #>
-    $list = $null
-    foreach ($name in $script:LibraryNames) {
-        # A name that is not on this site is normal (the library may be renamed): try the next one.
-        $list = Get-PnPList -Identity $name -ErrorAction SilentlyContinue
-        if ($list) { break }
+    $lists = @(Get-PnPList -ErrorAction Stop | Where-Object {
+        [int]$_.BaseTemplate -eq $script:DocumentLibraryTemplate -and -not $_.Hidden -and $script:NotScannedLibraries -notcontains $_.Title
+    })
+    $libraries = foreach ($list in $lists) {
+        $rootUrl = (Get-PnPProperty -ClientObject $list -Property RootFolder -ErrorAction Stop).ServerRelativeUrl.TrimEnd('/')
+        $siteRelative = $rootUrl -replace '^.*?/(sites|teams)/[^/]+/', ''
+        [pscustomobject]@{ Title = [string]$list.Title; List = $list; ServerRelativeUrl = $rootUrl; SiteRelativeUrl = $siteRelative }
     }
-    if (-not $list) { throw "No 'Shared Documents' library on this site. Is this the team's own site?" }
-    $rootUrl = (Get-PnPProperty -ClientObject $list -Property RootFolder -ErrorAction Stop).ServerRelativeUrl.TrimEnd('/')
-    $siteRelative = $rootUrl -replace '^.*?/(sites|teams)/[^/]+/', ''
-    [pscustomobject]@{ List = $list; ServerRelativeUrl = $rootUrl; SiteRelativeUrl = $siteRelative }
+    $libraries = @($libraries | Sort-Object @{ Expression = { $script:LibraryNames -notcontains $_.SiteRelativeUrl } }, Title)
+    if ($libraries.Count -eq 0) { throw 'No document library with files on this site. Check the address, or ask the site owner.' }
+    return $libraries
 }
 
 function Get-ChannelFolderNames {
@@ -2253,7 +2689,7 @@ function Get-ChannelFolderNames {
       Lists the channel folders: the top-level folders of the library, without SharePoint's own. The scan
       covers all of them (the PAM, 2026-11-20: no channel choice). A plain SharePoint site may have none.
     .PARAMETER Library
-      Output of Get-TeamDocumentLibrary.
+      One library of Get-SiteDocumentLibraries.
     .OUTPUTS
       [string[]] folder names, sorted.
     #>
@@ -2475,14 +2911,41 @@ function Get-ScanTiming {
     [ordered]@{ 'Time downloading' = (& $format $script:Timing.Download); 'Time reading and checking' = (& $format $script:Timing.Check) }
 }
 
+function Get-ScanGroups {
+    <#
+    .SYNOPSIS
+      The scan groups of one library: one per top-level folder, then the files at the top of the library.
+    .PARAMETER Library
+      One library of Get-SiteDocumentLibraries.
+    .PARAMETER Folders
+      The top-level folder names.
+    .PARAMETER Label
+      Put before each group name ("Library / ") when the site has several libraries; else empty.
+    .OUTPUTS
+      [pscustomobject] Name, Prefix, Files; a group without files is kept only when it is a folder.
+    #>
+    param($Library, [string[]]$Folders, [string]$Label)
+    $fields = @('FileLeafRef', 'FileRef', 'FSObjType', 'File_x0020_Size', 'Modified', 'UniqueId')
+    $allItems = @(Get-PnPListItem -List $Library.List -PageSize $script:ListPageSize -Fields $fields -ErrorAction Stop)
+    foreach ($folder in $Folders) {
+        $prefix = $Library.ServerRelativeUrl + '/' + $folder + '/'
+        [pscustomobject]@{ Name = $Label + $folder; Prefix = $prefix; Files = @(Get-ChannelFiles $allItems $prefix) }
+    }
+    $rootFiles = @(Get-RootFiles $allItems $Library.ServerRelativeUrl)
+    if ($rootFiles.Count -gt 0) {
+        [pscustomobject]@{ Name = $Label + $script:RootGroupName; Prefix = $Library.ServerRelativeUrl + '/'; Files = $rootFiles }
+    }
+}
+
 function Invoke-FileScan {
     <#
     .SYNOPSIS
-      Scans every file in the given channel folders (all of the team's) and adds report rows.
+      Scans every file in the given libraries' top-level folders and at their top, and adds report rows.
     .PARAMETER Library
-      Output of Get-TeamDocumentLibrary.
+      One or more libraries of Get-SiteDocumentLibraries.
     .PARAMETER Channels
-      The channel folder names to scan.
+      The channel folder names to scan when there is one library; with several libraries, each library's own
+      top-level folders are scanned.
     .PARAMETER SiteUrl
       The site address (for the links in the report).
     .PARAMETER MaxFileMB
@@ -2495,21 +2958,18 @@ function Invoke-FileScan {
     param($Library, [string[]]$Channels, [string]$SiteUrl, [int]$MaxFileMB, $Rows)
     $origin = ([uri]$SiteUrl).GetLeftPart([System.UriPartial]::Authority)
     $script:Timing = @{ Download = [TimeSpan]::Zero; Check = [TimeSpan]::Zero }
-    $fields = @('FileLeafRef', 'FileRef', 'FSObjType', 'File_x0020_Size', 'Modified', 'UniqueId')
-    $allItems = @(Get-PnPListItem -List $Library.List -PageSize $script:ListPageSize -Fields $fields -ErrorAction Stop)
-    # One group per folder; files at the top of the library (a plain SharePoint site) are one more group.
-    $groups = @(foreach ($channel in $Channels) {
-        $prefix = $Library.ServerRelativeUrl + '/' + $channel + '/'
-        [pscustomobject]@{ Name = $channel; Prefix = $prefix; Files = @(Get-ChannelFiles $allItems $prefix) }
+    $libraries = @($Library)
+    $groups = @(foreach ($one in $libraries) {
+        $folders = $Channels
+        $label = ''
+        if ($libraries.Count -gt 1) { $folders = @(Get-ChannelFolderNames $one); $label = $one.Title + ' / ' }   # "Library / Folder"
+        Get-ScanGroups $one $folders $label
     })
-    $rootFiles = @(Get-RootFiles $allItems $Library.ServerRelativeUrl)
-    if ($rootFiles.Count -gt 0) {
-        $groups += [pscustomobject]@{ Name = $script:RootGroupName; Prefix = $Library.ServerRelativeUrl + '/'; Files = $rootFiles }
-    }
     $total = 0
     foreach ($group in $groups) { $total += $group.Files.Count }
     Write-Ui ('==== Scanning {0} files in {1} folders ====' -f $total, $groups.Count) 'Title'
     $meter = New-ScanMeter $total
+    $meter.NameWidth = Get-NameWidth @($groups | ForEach-Object { Protect-PiiName $_.Name })
     for ($c = 0; $c -lt $groups.Count; $c++) {
         $group = $groups[$c]
         $shownChannel = Protect-PiiName $group.Name   # the progress bar is on screen too
@@ -2523,15 +2983,14 @@ function Invoke-FileScan {
             $read = Invoke-OneFileScan $file $group.Name $group.Prefix $origin $MaxFileMB $Rows
             Write-Progress -Id 2 -Activity 'This file' -Completed
             Update-ScanMeter $meter $Rows $firstRow $read
-            Write-MeterLine $meter 'file'   # live counts, at most every few seconds
+            Write-MeterLine $meter 'file'   # the running total, at most every $LiveLineSeconds (a long folder does not look hung)
         }
-        Write-ChannelLine ($c + 1) $groups.Count $group.Name $before $meter 'file'
-        Write-MeterLine $meter 'file' -Force   # the running totals after each folder
-        Write-RuleLine
+        Write-ChannelLine $group.Name $before $meter 'file'
     }
     Write-Progress -Id 1 -Activity 'Scanning files' -Completed
-    $kind = 'Good'; if ($meter.Hits -gt 0) { $kind = 'Alert' }   # green only when nothing was found
-    Write-Ui ('Files done: ' + (Get-ScanMeterText $meter 'file')) $kind
+    # The folder rows form one table; the total closes it, under a rule.
+    Write-RuleLine
+    Write-MeterLine $meter 'file' -Force
     return $meter.Read
 }
 
@@ -2575,16 +3034,19 @@ function Invoke-SiteFiles {
     $scanned = 0
     $selected = @()
     $folderLabel = 'Folder'   # 'Channel' when the site belongs to a team (the PAM, 2026-11-20)
+    $listName = ''            # what the header lists: 'Channels', 'Folders' or 'Libraries'
     $finished = $false   # set only after the last step; a cancelled run (Ctrl+C) skips 'catch' but not 'finally'
     try {
         # Only the column name depends on it: if the site's group cannot be read, the scan goes on with 'Folder'.
         try { if (Test-TeamSite) { $folderLabel = 'Channel' } }
         catch { Write-Verbose 'Team check not possible: the folder column is named Folder.' }
-        $library = Get-TeamDocumentLibrary
-        $selected = @(Get-ChannelFolderNames $library)
-        Write-Ui ($folderLabel + 's to scan: ') 'Label' -NoNewline
-        Write-Ui ((($selected | ForEach-Object { Protect-PiiName $_ }) -join ', ') + '; also any files at the top of the library') 'Text'
-        $scanned += Invoke-FileScan -Library $library -Channels $selected -SiteUrl $SiteUrl -MaxFileMB $MaxFileMB -Rows $rows
+        $libraries = @(Get-SiteDocumentLibraries)
+        if ($libraries.Count -eq 1) { $selected = @(Get-ChannelFolderNames $libraries[0]) }
+        else { $folderLabel = 'Library / Folder'; $selected = @($libraries | ForEach-Object { $_.Title }) }   # every library of the site
+        $listName = $folderLabel + 's'; if ($libraries.Count -gt 1) { $listName = 'Libraries' }
+        Write-Ui ($listName + ' to scan: ') 'Label' -NoNewline
+        Write-Ui ((($selected | ForEach-Object { Protect-PiiName $_ }) -join ', ') + '; also any files at the top of each library') 'Text'
+        $scanned += Invoke-FileScan -Library $libraries -Channels $selected -SiteUrl $SiteUrl -MaxFileMB $MaxFileMB -Rows $rows
         $finished = $true
     }
     catch {
@@ -2597,7 +3059,8 @@ function Invoke-SiteFiles {
         Add-IncompleteRow -Rows $rows -Finished $finished
         $header = [ordered]@{}
         $header['Site'] = $SiteUrl
-        $header[$folderLabel + 's'] = ($selected | ForEach-Object { Protect-PiiName $_ }) -join ', '
+        if (-not $listName) { $listName = $folderLabel + 's' }
+        $header[$listName] = ($selected | ForEach-Object { Protect-PiiName $_ }) -join ', '
         $header['Run'] = Get-Date -Format 'yyyy-MM-dd HH:mm'
         $header['Time used'] = '{0:00}:{1:00}' -f [int][Math]::Floor($clock.Elapsed.TotalMinutes), $clock.Elapsed.Seconds
         foreach ($pair in (Get-ScanTiming).GetEnumerator()) { $header[$pair.Key] = $pair.Value }

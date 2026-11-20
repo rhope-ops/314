@@ -20,4 +20,5 @@ Title: 33-332.Z · <task> · <date>. Read AGENTS.md first.
    Follow-ups (MINOR, review of c379e78; no leak): Get-ShownItem drops parent folders when a hit crosses the folder's
    slash; a channel named with PII now adds a File name hit per file (no test); TrimStart misses a form feed; the
    file-ID link may not work in a subsite (unverified).
-9. Approved plan 2026-11-20 (in work): Ion round 2, docs/reviews/2026-11-20-ion-round2-plan.md.
+9. Ion round 2 built 2026-11-20 (plan: docs/reviews/2026-11-20-ion-round2-plan.md): folder rows, all libraries, PDF
+   reader (src/PdfText.psm1). Teams-link lookup waits on the PAM's test snippet result.

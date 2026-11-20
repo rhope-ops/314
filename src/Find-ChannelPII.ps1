@@ -22,7 +22,7 @@
   Policy:      Read-only; one site only (no network reconnaissance); file content stays in memory; values
                masked (the PAM, 2026-11-20). No script file is collected or sent: script types are not
                read and only their (masked) names appear in the report.
-  Not scanned: PDF, images, legacy .doc/.xls/.ppt (reported as NOT SCANNED); channel posts; private and shared
+  Not scanned: images, legacy .doc/.xls/.ppt, encrypted files, PDFs without text (reported as NOT SCANNED); channel posts; private and shared
                channels (each has its own site: run again with that site's address); 1:1, group and meeting chats.
 
 .PARAMETER SiteUrl
@@ -54,7 +54,7 @@ Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
 
 # Modules, in dependency order (each module's header names what it needs).
-foreach ($module in @('PiiDetectors.psm1', 'PiiMasking.psm1', 'TextExtract.psm1', 'XlsxWriter.psm1', 'Report.psm1', 'ScanMeter.psm1', 'ChannelScan.psm1')) {
+foreach ($module in @('PiiDetectors.psm1', 'PiiMasking.psm1', 'PdfText.psm1', 'TextExtract.psm1', 'XlsxWriter.psm1', 'Report.psm1', 'ScanMeter.psm1', 'ChannelScan.psm1')) {
     Import-Module (Join-Path $PSScriptRoot $module) -Force
 }
 
@@ -82,16 +82,19 @@ function Invoke-SiteFiles {
     $scanned = 0
     $selected = @()
     $folderLabel = 'Folder'   # 'Channel' when the site belongs to a team (the PAM, 2026-11-20)
+    $listName = ''            # what the header lists: 'Channels', 'Folders' or 'Libraries'
     $finished = $false   # set only after the last step; a cancelled run (Ctrl+C) skips 'catch' but not 'finally'
     try {
         # Only the column name depends on it: if the site's group cannot be read, the scan goes on with 'Folder'.
         try { if (Test-TeamSite) { $folderLabel = 'Channel' } }
         catch { Write-Verbose 'Team check not possible: the folder column is named Folder.' }
-        $library = Get-TeamDocumentLibrary
-        $selected = @(Get-ChannelFolderNames $library)
-        Write-Ui ($folderLabel + 's to scan: ') 'Label' -NoNewline
-        Write-Ui ((($selected | ForEach-Object { Protect-PiiName $_ }) -join ', ') + '; also any files at the top of the library') 'Text'
-        $scanned += Invoke-FileScan -Library $library -Channels $selected -SiteUrl $SiteUrl -MaxFileMB $MaxFileMB -Rows $rows
+        $libraries = @(Get-SiteDocumentLibraries)
+        if ($libraries.Count -eq 1) { $selected = @(Get-ChannelFolderNames $libraries[0]) }
+        else { $folderLabel = 'Library / Folder'; $selected = @($libraries | ForEach-Object { $_.Title }) }   # every library of the site
+        $listName = $folderLabel + 's'; if ($libraries.Count -gt 1) { $listName = 'Libraries' }
+        Write-Ui ($listName + ' to scan: ') 'Label' -NoNewline
+        Write-Ui ((($selected | ForEach-Object { Protect-PiiName $_ }) -join ', ') + '; also any files at the top of each library') 'Text'
+        $scanned += Invoke-FileScan -Library $libraries -Channels $selected -SiteUrl $SiteUrl -MaxFileMB $MaxFileMB -Rows $rows
         $finished = $true
     }
     catch {
@@ -104,7 +107,8 @@ function Invoke-SiteFiles {
         Add-IncompleteRow -Rows $rows -Finished $finished
         $header = [ordered]@{}
         $header['Site'] = $SiteUrl
-        $header[$folderLabel + 's'] = ($selected | ForEach-Object { Protect-PiiName $_ }) -join ', '
+        if (-not $listName) { $listName = $folderLabel + 's' }
+        $header[$listName] = ($selected | ForEach-Object { Protect-PiiName $_ }) -join ', '
         $header['Run'] = Get-Date -Format 'yyyy-MM-dd HH:mm'
         $header['Time used'] = '{0:00}:{1:00}' -f [int][Math]::Floor($clock.Elapsed.TotalMinutes), $clock.Elapsed.Seconds
         foreach ($pair in (Get-ScanTiming).GetEnumerator()) { $header[$pair.Key] = $pair.Value }

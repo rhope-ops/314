@@ -1,6 +1,6 @@
 # Ion: DoD365 PII Reporter
 
-A read-only PowerShell script that a **member** runs to find files that may hold PII in one Microsoft Teams team or SharePoint site. It uses only your own access: owner rights are not needed, and a private or shared channel is scanned only if you are in it. It scans every folder of the site's Documents library (in a team, one folder per standard channel) and the files at its top, with two progress bars (the whole scan, and the file in work) and live counts. At the end it shows the hits per PII type on screen and saves one Excel workbook: a Summary tab first, then one tab per PII type, worst first. **Every found value is masked** (for example `***-**-1234`), so the results are not a PII spill themselves.
+A read-only PowerShell script that a **member** runs to find files that may hold PII in one Microsoft Teams team or SharePoint site. It uses only your own access: owner rights are not needed, and a private or shared channel is scanned only if you are in it. It scans every visible document library of the one site you give (in a team, the Documents library with one folder per standard channel), every folder and the files at each library's top, with two progress bars (the whole scan, and the file in work) and live counts. At the end it shows the hits per PII type on screen and saves one Excel workbook: a Summary tab first, then one tab per PII type, worst first. **Every found value is masked** (for example `***-**-1234`), so the results are not a PII spill themselves.
 
 > This is a spot check, not a compliance control. The standard tool for PII in Teams is **Microsoft Purview** (DLP policies and Content Search), run by your wing's privacy or cybersecurity office.
 
@@ -8,9 +8,10 @@ A read-only PowerShell script that a **member** runs to find files that may hold
 
 | Content | Scanned? | How |
 |---|---|---|
-| Files in standard channels (Shared tab, formerly Files), or in a SharePoint site's Documents library (every folder and its top) | Yes | Your own CAC sign-in to that one site |
+| Files in standard channels (Shared tab, formerly Files), or in every visible document library of a SharePoint site (every folder and its top; not Style Library, Form Templates, Site Assets or subsites) | Yes | Your own CAC sign-in to that one site |
 | .docx .xlsx .pptx (and macro versions), .txt .csv .md .log .json .xml .html | Yes | Text read in memory; nothing saved to disk |
-| PDF, images, legacy .doc/.xls/.ppt, files over 25 MB | No | Listed as **NOT SCANNED**: check them by hand |
+| PDF: page text and filled-in form fields | Yes | A scanned PDF (no text), an encrypted PDF or an unusual font encoding is listed as **NOT SCANNED** |
+| Images, legacy .doc/.xls/.ppt, files over 25 MB | No | Listed as **NOT SCANNED**: check them by hand |
 | Channel posts and replies | No | One sign-in only (the PAM, 2026-11-20). Reading posts needs a Microsoft Graph permission (ChannelMessage.Read.All) that a tenant admin must approve; ask your privacy or cybersecurity office for a Microsoft Purview content search |
 | Private and shared channels | Run again with that channel's own site URL | Each one has its own SharePoint site |
 | 1:1 chats, group chats, meeting chats | No | Admin / Purview only |
@@ -54,7 +55,7 @@ The results workbook (one per run; a run never overwrites an earlier one):
 | Summary (first) | The site, the folders, the run time; totals (files read, files with possible PII, hits, High / Medium / Low, not scanned); hits per PII type, worst first; files not scanned per reason; how to read the tabs; the breach step |
 | One tab per PII type | High and Medium hits of that type, in this order of tabs: SSN, Date of birth, Passport, Payment card, DoD ID, Home address, Name, Phone, Personal e-mail (the PAM's order, 2026-11-20; AFI 33-332 gives no ranking). Columns: Confidence, Channel (a team) or Folder (a plain site), File, Masked value, Context, Modified, Link (click to open the file), Found in. Header frozen, filter buttons on |
 | Low confidence | Every Low hit (for example 9 bare digits), with its type: kept apart to cut noise |
-| Not scanned | Files not read (PDF, images, too large, empty, damaged, encrypted or labelled with encryption) and a scan that stopped early: check these by hand. An Office file with a password or an encrypting sensitivity label is stored in a form the script cannot read |
+| Not scanned | Files not read (images, PDFs without text, too large, empty, damaged, encrypted or labelled with encryption) and a scan that stopped early: check these by hand. An Office file with a password or an encrypting sensitivity label is stored in a form the script cannot read |
 
 **Fewer false positives** (the PAM, 2026-11-20): Word field codes (a table of contents' `_Toc123456789` bookmarks) are not read; a number glued to letters (`ABC123456789`) is no SSN, phone or card; a card number must also have a card network's prefix and length; an e-mail at a personal provider (Gmail, Yahoo, Outlook ...) is Medium, at any other non-government domain Low. **Excel files:** each cell is read on its own, so values in neighbouring cells never join into one number. Formula text, decimals (a time such as `45231.4166…`) and exponents are skipped: they made false positives.
 
