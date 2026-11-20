@@ -4,7 +4,7 @@ This file is the source of truth for every Claude agent on this repo, subagents 
 
 - Repo: rhope-ops/33-332.Z
 - Purpose: Privacy Act Management: small, read-only tools that help a DAF unit find and protect PII in Microsoft 365 (DAFI 33-332).
-- Owner: the owner
+- Owner: the PAM
 - Time zone: America/Chicago
 - Tier: full
 - Short name: 33-332.Z
