@@ -288,7 +288,12 @@ function Select-ReportFormat {
       [string] Both, Text or Csv.
     #>
     param([string]$Requested)
-    if ($Requested) { return $Requested }
+    if ($Requested) {
+        # A typo in the paste bundle's Settings (for example 'Txt') must stop before the scan, not after it.
+        $match = @($script:ReportFormats | Where-Object { $_ -ieq $Requested })
+        if ($match.Count -eq 0) { throw "Not a valid report choice: '$Requested'. Use Both, Text or Csv." }
+        return $match[0]
+    }
     Write-Host 'Save the results as:'
     Write-Host '  1. Both - readable text report (.txt) and spreadsheet (.csv)   [Enter]'
     Write-Host '  2. Text - readable text report (.txt) only'

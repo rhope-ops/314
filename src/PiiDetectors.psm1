@@ -293,9 +293,14 @@ function Find-PersonalEmailHits {
     # taken for an address whose 'domain' is the second address's local part. Any other trailing character
     # (? ! quotes ... and so on) still ends the address normally. The top-level label is atomic ((?>...)): without it,
     # a very long run of letters with no space makes the end check retry at every letter (seconds per 100,000 letters).
+    # The domain uses the internet's own limits (RFC 1035: a label is at most 63 characters; at most 10 labels here;
+    # a top-level label of 2 to 24 letters), so a long dotted run without spaces is tried a fixed number of ways,
+    # not once per label: the time grows with the text, not with its square. The address ends where its domain ends:
+    # no letter or digit right after the top-level label, and no further label after a final period.
     $notInAddress = '\s@<>()\[\],;:"/\\'
-    $endsAddress = '(?![^\s<>()\[\],;:"/\\]*@)'
-    $pattern = '(?<=^|[' + $notInAddress + '])[^' + $notInAddress + ']+@((?:[^' + $notInAddress + '.]+\.)+((?>\p{L}{2,})))' + $endsAddress
+    $domain = '((?:[^' + $notInAddress + '.]{1,63}\.){1,10}((?>\p{L}{2,24})))'
+    $endsAddress = '(?![\p{L}\p{N}])(?!\.[^' + $notInAddress + '.])(?![^\s<>()\[\],;:"/\\]*@)'
+    $pattern = '(?<=^|[' + $notInAddress + '])[^' + $notInAddress + ']+@' + $domain + $endsAddress
     foreach ($m in [regex]::Matches($Text, $pattern)) {
         if ($script:GovernmentMailLabels -contains $m.Groups[2].Value.ToLower()) { continue }
         New-PiiHit 'Personal e-mail' 'Medium' $m.Index $m.Value

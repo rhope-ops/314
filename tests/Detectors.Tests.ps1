@@ -63,6 +63,14 @@ $null = Find-PiiInText $longRun
 $timer.Stop()
 Assert-Equal $true ($timer.Elapsed.TotalSeconds -lt 2) "Long glued run scanned in under 2 s (took $([int]$timer.Elapsed.TotalMilliseconds) ms)"
 
+# ---- Speed: a long dotted run glued with '@' must not stall either detection or masking (bounded domain) ----
+$dottedRun = 'x' + '@' + ('ab.' * 40000) + 'cc' + '@'
+$timer = [System.Diagnostics.Stopwatch]::StartNew()
+$null = Find-PiiInText $dottedRun
+$null = Protect-PiiText $dottedRun
+$timer.Stop()
+Assert-Equal $true ($timer.Elapsed.TotalSeconds -lt 2) "Long dotted run found and masked in under 2 s (took $([int]$timer.Elapsed.TotalMilliseconds) ms)"
+
 # ---- Masking: snippets never show digits, e-mail names or found names ----
 $hits = @(Find-PiiInText "SSN $($Sample.Ssn) then contact person: $($Sample.Email) later")
 Assert-Equal $false ($hits[0].Context -match '\d') 'Snippet has no digits'

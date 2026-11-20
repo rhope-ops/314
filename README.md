@@ -39,8 +39,8 @@ Needs: Windows PowerShell 5.1 and PnP.PowerShell 1.12.0. No other modules, no ad
 1. Open the paste text: [paste/33332Z-pii-spot-check.ps1](https://raw.githubusercontent.com/rhope-ops/33-332.Z/main/paste/33332Z-pii-spot-check.ps1). Select all (Ctrl+A) and copy (Ctrl+C).
 2. Open **Windows PowerShell ISE**, choose **File > New**, and paste into the script pane (Ctrl+V).
 3. Optional: fill in the **Settings** lines at the top (site address, channel, posts, report). Anything left empty is asked for when it runs.
-4. Press **F5** and sign in with your CAC in the window that opens.
-5. Answer the questions it asks: the team's site address (in Teams: the channel's **Files** tab > **Open in SharePoint**, then copy the address up to the site name, `https://usaf.dps.mil/sites/<team-site>`), the channels (a number, several numbers such as `1,3`, or `A` for all), and what to save (**1** Both, press Enter; **2** Text; **3** CSV).
+4. Press **F5**. It first asks for anything you left empty in the Settings: the team's site address (in Teams: the channel's **Files** tab > **Open in SharePoint**, then copy the address up to the site name, `https://usaf.dps.mil/sites/<team-site>`) and what to save (**1** Both, press Enter; **2** Text; **3** CSV).
+5. Sign in with your CAC in the window that opens, then pick the channels: a number, several numbers such as `1,3`, or `A` for all.
 6. Read the summary on screen. The saved file paths are printed at the end (default folder: `Documents\PII-Scan`).
 
 What each report holds:

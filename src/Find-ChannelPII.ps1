@@ -105,7 +105,7 @@ catch {
 finally {
     # ---- Step 6: the report (also after an error or a cancel), then sign out ----
     Add-IncompleteRow -Rows $rows -Finished $finished
-    $postsLine = 'not scanned (-IncludePosts not used)'
+    $postsLine = 'not scanned (posts not chosen)'
     if ($IncludePosts) { $postsLine = 'tried (see BLOCKED rows if refused)' }
     $header = @(
         ('Site:     ' + $SiteUrl),
