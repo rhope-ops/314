@@ -1,6 +1,6 @@
 # Teams channel PII spot check
 
-A read-only PowerShell script that a **team owner** runs to find files and posts in one Microsoft Teams team that may hold PII. It scans every standard channel, shows a progress bar and live counts while it works, then shows a readable summary on screen and saves both a readable text report and a CSV. **Every found value is masked** (for example `***-**-1234`), so the report is not a PII spill itself.
+A read-only PowerShell script that a **team member** runs to find files and posts in one Microsoft Teams team that may hold PII. It uses only your own access: owner rights are not needed, and a private or shared channel is scanned only if you are in it. It scans every standard channel, shows a progress bar and live counts while it works, then shows a readable summary on screen and saves both a readable text report and a CSV. **Every found value is masked** (for example `***-**-1234`), so the report is not a PII spill itself.
 
 > This is a spot check, not a compliance control. The standard tool for PII in Teams is **Microsoft Purview** (DLP policies and Content Search), run by your wing's privacy or cybersecurity office.
 

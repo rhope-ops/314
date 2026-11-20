@@ -8,7 +8,7 @@
   it goes. Shows a readable summary on screen and saves a readable text report and a CSV. Every value
   found is MASKED on screen and in the files.
 
-  Purpose:     Help a team owner find files and posts that may hold PII, so they can review them.
+  Purpose:     Help a team member (owner rights are not needed) find files and posts that may hold PII, so they can review them.
                A spot check, not a replacement for Microsoft Purview DLP or Content Search.
   Inputs:      the team's Teams link or site address (asked when not given).
   Outputs:     progress and the summary on screen; PIIScan-<time>.txt and PIIScan-<time>.csv in -OutputFolder.

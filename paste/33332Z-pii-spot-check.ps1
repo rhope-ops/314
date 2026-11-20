@@ -21,7 +21,7 @@
     src/Report.psm1, sha256 5458cc87fecc
     src/ScanMeter.psm1, sha256 1c7bdc31edca
     src/ChannelScan.psm1, sha256 1542e679bb2c
-    src/Find-ChannelPII.ps1, sha256 8928466a7d4d
+    src/Find-ChannelPII.ps1, sha256 935d1a7b0d13
 
   Read-only: it never changes, moves or deletes anything in Teams or SharePoint. Every value found is masked.
   Run target: Windows PowerShell 5.1 with PnP.PowerShell 1.12.0; no admin rights, no file to unblock.
