@@ -22,3 +22,7 @@ sharepoint-mil.us
 usaf.dps.mil
 # A tool's scan report holds masked PII locations: never commit one (the PAM, 2026-11-20).
 block: PIIScan-*
+# The published rule source (publicly releasable, the PAM, 2026-11-20): its office mailboxes, .mil links and markings are
+# the publication's own text, not project data. The copies are pinned in ref/SHA256SUMS.
+skip: ref/afi33-332.txt
+skip: ref/*.pdf
