@@ -46,7 +46,7 @@ Needs: Windows PowerShell 5.1 and PnP.PowerShell 1.12.0. No other modules, no ad
 The team to scan, one of:
 
 - **Teams link:** in Teams, open the team or one of its channels, click the **...** next to its name, then **Copy link** (`https://<teams-host>/l/team/...?groupId=...`). The script asks SharePoint at `https://usaf.dps.mil` for the site of that one team (by the link's group ID), then checks that the site belongs to that team before it reads anything. If the lookup does not work, it asks for the site address.
-- **SharePoint address:** in the team's **Shared** tab, click **...** > **Open in SharePoint** and copy the address (`https://usaf.dps.mil/teams/<team-site>`; some sites use `/sites/`). A file's **Copy link** from the **Shared** tab works too. Anything after the site name is cut off.
+- **SharePoint address:** in the team's **Shared** tab, click **...** > **Open in SharePoint** and copy the address (`https://usaf.dps.mil/teams/<team-site>`; some sites use `/sites/`). A file's **Copy link** from the **Shared** tab works too. Anything after the site name is cut off. `https://` may be left out.
 
 What each report holds:
 

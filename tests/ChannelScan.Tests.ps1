@@ -19,6 +19,8 @@ try { Test-TeamSiteUrl 'http://example.com/x' | Out-Null } catch { $refused = $t
 Assert-Equal $true $refused 'Address that is not a site refused'
 Assert-Equal 'https://tenant.example.com/teams/TeamA' (Test-TeamSiteUrl 'https://tenant.example.com/:w:/r/teams/TeamA/Shared%20Documents/a.docx?d=w1') `
     'A file Copy link is cut to the site'
+Assert-Equal 'https://tenant.example.com/teams/TeamA' (Test-TeamSiteUrl ' tenant.example.com/teams/TeamA/Shared%20Documents') `
+    'Address without https:// gets it'
 $refused = $false
 try { Test-TeamSiteUrl 'https://tenant.example.com/:w:/s/TeamA/EAbc' | Out-Null } catch { $refused = $true }  # expected refusal
 Assert-Equal $true $refused 'A sharing link that does not name the site is refused'
@@ -29,6 +31,7 @@ $teamLink = 'https://teams.example.com/l/team/19%3aabc%40thread.tacv2/conversati
 $channelLink = 'https://teams.example.com/l/channel/19%3aabc%40thread.tacv2/General?groupId=' + $groupId + '&tenantId=x'
 Assert-Equal $groupId (Get-ScanTarget $teamLink).GroupId 'Team link gives the group ID'
 Assert-Equal $groupId (Get-ScanTarget $channelLink).GroupId 'Channel link gives the group ID'
+Assert-Equal $groupId (Get-ScanTarget ($channelLink -replace '^https://', '')).GroupId 'Teams link without https:// read'
 Assert-Equal $null (Get-ScanTarget $Sample.Site).GroupId 'Site address has no group ID'
 Assert-Equal $groupId (Get-ScanTarget ('https://teams.example.com/l/channel/link?groupId=' + $groupId)).GroupId 'The page form of a link is read'
 $refused = $false

@@ -343,6 +343,8 @@ SharePoint address: the team's Shared tab, then "..." and Open in SharePoint (ht
     siteInput.removeAttribute('aria-invalid');
     hint.className = 'hint';
     if (!typed) { hint.textContent = hintDefault; return ''; }
+    // An address typed without a scheme (usaf.dps.mil/teams/<team-site>) gets https://, as in the script's Add-UrlScheme.
+    if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(typed)) typed = 'https://' + typed;
     var link = typed.match(TEAMS_RULE);
     if (link) {
       hint.textContent = 'Teams link: only this team will be scanned; the script finds its site and checks it belongs to the team.' +

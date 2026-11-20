@@ -6,7 +6,7 @@
     src/PiiMasking.psm1, sha256 dda7cdacfaf9
     src/TextExtract.psm1, sha256 1741328077ee
     src/Report.psm1, sha256 7ef040624291
-    src/ChannelScan.psm1, sha256 997620e26980
+    src/ChannelScan.psm1, sha256 50af959ac394
     src/Find-ChannelPII.ps1, sha256 8a260c5f554e
 
   How to run: open Windows PowerShell ISE, File > New, paste ALL of this text into the script pane, set the
@@ -24,8 +24,8 @@
     line   685  Module TextExtract.psm1
     line   848  Module Report.psm1
     line  1188  Module ChannelScan.psm1
-    line  1731  Body of Find-ChannelPII.ps1
-    line  1788  Clean-up
+    line  1746  Body of Find-ChannelPII.ps1
+    line  1803  Clean-up
 #>
 
 # ==== Settings ==== (edit the values between the quotes, or let the site page fill them in)
@@ -1247,17 +1247,32 @@ $script:PostsBlockedAdvice = 'Needs admin consent for the Graph permission Chann
 # Site, library and channels
 # =====================================================================================
 
+function Add-UrlScheme {
+    <#
+    .SYNOPSIS
+      Adds https:// to an address typed without a scheme (usaf.dps.mil/teams/<team-site>); other text stays as it is.
+    .PARAMETER Url
+      The address the person gave.
+    .OUTPUTS
+      [string] the trimmed address, with https:// when it had no scheme.
+    #>
+    param([string]$Url)
+    $Url = $Url.Trim()
+    if ($Url -and $Url -notmatch '^[A-Za-z][A-Za-z0-9+.-]*://') { return 'https://' + $Url }
+    return $Url
+}
+
 function Test-TeamSiteUrl {
     <#
     .SYNOPSIS
       Checks that the address is one SharePoint site and returns it cut to the site name.
     .PARAMETER Url
-      The address the person gave (it may go on to a library or a file, or be a file's "Copy link").
+      The address the person gave (it may go on to a library or a file, or be a file's "Copy link"; https:// may be left out).
     .OUTPUTS
       [string] https://<host>/sites/<name> or https://<host>/teams/<name>
     #>
     param([string]$Url)
-    $match = [regex]::Match($Url.Trim(), $script:SiteUrlPattern, 'IgnoreCase')
+    $match = [regex]::Match((Add-UrlScheme $Url), $script:SiteUrlPattern, 'IgnoreCase')
     if (-not $match.Success) {
         throw "Not a team site address: '$Url'. Expected https://usaf.dps.mil/teams/<team-site> or /sites/<team-site>."
     }
@@ -1276,7 +1291,7 @@ function Get-ScanTarget {
       IsChannel (true for a channel's link).
     #>
     param([string]$Address)
-    $link = [regex]::Match($Address.Trim(), $script:TeamsLinkPattern, 'IgnoreCase')
+    $link = [regex]::Match((Add-UrlScheme $Address), $script:TeamsLinkPattern, 'IgnoreCase')
     if ($link.Success) {
         return [pscustomobject]@{ GroupId = [guid]$link.Groups['id'].Value; SiteUrl = ''; IsChannel = ($link.Groups['kind'].Value -ieq 'channel') }
     }

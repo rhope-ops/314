@@ -60,17 +60,32 @@ $script:PostsBlockedAdvice = 'Needs admin consent for the Graph permission Chann
 # Site, library and channels
 # =====================================================================================
 
+function Add-UrlScheme {
+    <#
+    .SYNOPSIS
+      Adds https:// to an address typed without a scheme (usaf.dps.mil/teams/<team-site>); other text stays as it is.
+    .PARAMETER Url
+      The address the person gave.
+    .OUTPUTS
+      [string] the trimmed address, with https:// when it had no scheme.
+    #>
+    param([string]$Url)
+    $Url = $Url.Trim()
+    if ($Url -and $Url -notmatch '^[A-Za-z][A-Za-z0-9+.-]*://') { return 'https://' + $Url }
+    return $Url
+}
+
 function Test-TeamSiteUrl {
     <#
     .SYNOPSIS
       Checks that the address is one SharePoint site and returns it cut to the site name.
     .PARAMETER Url
-      The address the person gave (it may go on to a library or a file, or be a file's "Copy link").
+      The address the person gave (it may go on to a library or a file, or be a file's "Copy link"; https:// may be left out).
     .OUTPUTS
       [string] https://<host>/sites/<name> or https://<host>/teams/<name>
     #>
     param([string]$Url)
-    $match = [regex]::Match($Url.Trim(), $script:SiteUrlPattern, 'IgnoreCase')
+    $match = [regex]::Match((Add-UrlScheme $Url), $script:SiteUrlPattern, 'IgnoreCase')
     if (-not $match.Success) {
         throw "Not a team site address: '$Url'. Expected https://usaf.dps.mil/teams/<team-site> or /sites/<team-site>."
     }
@@ -89,7 +104,7 @@ function Get-ScanTarget {
       IsChannel (true for a channel's link).
     #>
     param([string]$Address)
-    $link = [regex]::Match($Address.Trim(), $script:TeamsLinkPattern, 'IgnoreCase')
+    $link = [regex]::Match((Add-UrlScheme $Address), $script:TeamsLinkPattern, 'IgnoreCase')
     if ($link.Success) {
         return [pscustomobject]@{ GroupId = [guid]$link.Groups['id'].Value; SiteUrl = ''; IsChannel = ($link.Groups['kind'].Value -ieq 'channel') }
     }
