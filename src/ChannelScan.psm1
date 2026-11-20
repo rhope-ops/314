@@ -29,8 +29,9 @@ $script:LibraryNames = @('Shared Documents', 'Documents')
 # A document library is list template 101 (SharePoint ListTemplateType.DocumentLibrary).
 $script:DocumentLibraryTemplate = 101
 
-# Visible libraries that hold SharePoint's own files or copies, not people's files: not scanned.
-$script:NotScannedLibraries = @('Style Library', 'Form Templates', 'Site Assets', 'Preservation Hold Library', 'Site Collection Documents')
+# Visible libraries that hold SharePoint's own files, not people's files: not scanned (the PAM, 2026-11-20: Site Assets,
+# Preservation Hold Library and Site Collection Documents are scanned).
+$script:NotScannedLibraries = @('Style Library', 'Form Templates')
 
 # Teams makes one top-level folder per standard channel. "Forms" is SharePoint's own folder, not a channel.
 $script:NotChannelFolders = @('Forms')
@@ -528,10 +529,12 @@ function Invoke-FileScan {
     $script:Timing = @{ Download = [TimeSpan]::Zero; Check = [TimeSpan]::Zero }
     $libraries = @($Library)
     $groups = @(foreach ($one in $libraries) {
-        $folders = $Channels
-        $label = ''
-        if ($libraries.Count -gt 1) { $folders = @(Get-ChannelFolderNames $one); $label = $one.Title + ' / ' }   # "Library / Folder"
-        Get-ScanGroups $one $folders $label
+        if ($libraries.Count -eq 1) { Get-ScanGroups $one $Channels ''; continue }
+        # Several libraries: one you cannot open (Preservation Hold Library often) is one BLOCKED row; the rest go on.
+        try { Get-ScanGroups $one @(Get-ChannelFolderNames $one) ($one.Title + ' / ') }   # groups named "Library / Folder"
+        catch {
+            $Rows.Add((New-ReportRow 'Scan' (Protect-PiiName $one.Title) '(library)' '' '' 'BLOCKED' '' '' ('Could not read this library: ' + (Protect-PiiText $_.Exception.Message))))
+        }
     })
     $total = 0
     foreach ($group in $groups) { $total += $group.Files.Count }

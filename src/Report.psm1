@@ -52,7 +52,7 @@ $script:NotScannedGroups = [ordered]@{
     '^No text in this PDF' = 'PDF without text (scanned image?)'
     'web page' = 'Download gave a web page'
     '^Download failed' = 'Download failed'
-    '^Not a valid Office file|^Could not read' = 'Damaged or not readable'
+    '^Not a valid (Office file|PDF)|^Could not read|too large or damaged to read in time' = 'Damaged or not readable'
 }
 
 

@@ -90,6 +90,37 @@ Assert-Equal $true ((Get-TextFromBytes -Bytes (New-PdfBytes 'BT (x) Tj ET' -Trai
 Assert-Equal $true ((Get-TextFromBytes -Bytes $Txt -FileName 'scan.pdf').Reason -match '^Not a valid PDF') 'PDF: not a PDF named'
 $a85 = & (Get-Module PdfText) { ConvertFrom-Ascii85 '9jqo^BlbD-BleB1DJ+*+F(f,q~>' }
 Assert-Equal 'Man is distinguished' $a85 'PDF: ASCII85 filter decoded (a published test vector)'
+$hexData = & (Get-Module PdfText) { Read-PdfStream '/Filter /ASCIIHexDecode' '48 49>' }
+Assert-Equal 'HI' $hexData 'PDF: ASCIIHex filter decoded'
+# Object stream (PDF 1.5): a form field packed inside one is still read.
+$packed = "9 0 << /T (SSN) /V ($($Sample.Ssn)) >>"
+$objStm = New-PdfBytes 'q Q' -Extra @("<< /Type /ObjStm /N 1 /First 4 /Length $($packed.Length) >> stream`n$packed`nendstream")
+Assert-Equal 'SSN' (@(Find-PiiInText (Get-TextFromBytes -Bytes $objStm -FileName 'p.pdf').Text) | Select-Object -First 1).Detector 'PDF: object stream unpacked'
+# A stream whose first line ends in CR only.
+$latin = [System.Text.Encoding]::GetEncoding(28591)
+$crPdf = $latin.GetBytes(($latin.GetString((New-PdfBytes "BT /F1 12 Tf (SSN: $($Sample.Ssn)) Tj ET" -Plain)) -replace "stream`n", "stream`r"))
+Assert-Equal 'SSN' (@(Find-PiiInText (Get-TextFromBytes -Bytes $crPdf -FileName 'cr.pdf').Text) | Select-Object -First 1).Detector 'PDF: stream line ending in CR read'
+# An inline image and a Tj on a number: no error, the text after it still read.
+$inline = Get-TextFromBytes -Bytes (New-PdfBytes "BI /W 1 /H 1 ID 7 Tj EI BT 7 Tj (SSN: $($Sample.Ssn)) Tj ET" -Plain) -FileName 'i.pdf'
+Assert-Equal 'OK|SSN' ($inline.Status + '|' + (@(Find-PiiInText $inline.Text) | Select-Object -First 1).Detector) 'PDF: inline image and Tj on a number skipped'
+# Hostile input stays inside the time limit (lowered to 2 s here): unbalanced brackets, and headers without endobj.
+& (Get-Module PdfText) { $script:PdfSecondsLimit = 2 }
+$clock = [Diagnostics.Stopwatch]::StartNew()
+$slow = Get-TextFromBytes -Bytes (New-PdfBytes ('BT ' + ('(a' * 20000) + ' Tj ET') -Plain) -FileName 'h.pdf'
+$noEnd = Get-TextFromBytes -Bytes ([System.Text.Encoding]::ASCII.GetBytes('%PDF-1.4 ' + ('1 0 obj << >> ' * 50000))) -FileName 'n.pdf'
+Assert-Equal $true ($clock.Elapsed.TotalSeconds -lt 15) 'PDF: hostile input ends inside the time limit'
+Assert-Equal 'NOT SCANNED|NOT SCANNED' ($slow.Status + '|' + $noEnd.Status) 'PDF: hostile input reported, not read'
+& (Get-Module PdfText) { $script:PdfSecondsLimit = 30 }
+# A stream that inflates far past the cap is cut, not held whole in memory.
+$bomb = & (Get-Module PdfText) {
+    $memory = New-Object System.IO.MemoryStream
+    $deflate = New-Object System.IO.Compression.DeflateStream($memory, [System.IO.Compression.CompressionMode]::Compress, $true)
+    $zeros = New-Object byte[] (1MB); for ($i = 0; $i -lt 40; $i++) { $deflate.Write($zeros, 0, $zeros.Length) }
+    $deflate.Dispose()
+    $script:PdfBudget = @{ Clock = $null; Inflated = 0L }
+    (Expand-PdfStream ($script:Latin1.GetString($memory.ToArray()))).Length
+}
+Assert-Equal $true ($bomb -le 16MB + 65536) 'PDF: one stream inflates to at most 16 MB'
 Assert-Equal 'NOT SCANNED' (Get-TextFromBytes -Bytes $Txt -FileName 'setup.ps1').Status 'script not read'
 Assert-Equal 'NOT SCANNED' (Get-TextFromBytes -Bytes $Txt -FileName 'broken.docx').Status 'damaged docx not scanned'
 # Bytes that are not a zip get a reason a person can act on, not .NET's "End of central directory not found".

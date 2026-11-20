@@ -8,7 +8,7 @@ A read-only PowerShell script that a **member** runs to find files that may hold
 
 | Content | Scanned? | How |
 |---|---|---|
-| Files in standard channels (Shared tab, formerly Files), or in every visible document library of a SharePoint site (every folder and its top; not Style Library, Form Templates, Site Assets or subsites) | Yes | Your own CAC sign-in to that one site |
+| Files in standard channels (Shared tab, formerly Files), or in every visible document library of a SharePoint site (every folder and its top; Site Assets and Preservation Hold Library included; not Style Library, Form Templates or subsites; a library you cannot open is one BLOCKED row) | Yes | Your own CAC sign-in to that one site |
 | .docx .xlsx .pptx (and macro versions), .txt .csv .md .log .json .xml .html | Yes | Text read in memory; nothing saved to disk |
 | PDF: page text and filled-in form fields | Yes | A scanned PDF (no text), an encrypted PDF or an unusual font encoding is listed as **NOT SCANNED** |
 | Images, legacy .doc/.xls/.ppt, files over 25 MB | No | Listed as **NOT SCANNED**: check them by hand |

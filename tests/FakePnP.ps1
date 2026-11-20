@@ -145,6 +145,7 @@ function global:Get-PnPListItem {
     #>
     [CmdletBinding()] param($List, $PageSize, $Fields)
     if ($global:FakePnP.ListFails) { throw 'FAKE: list read refused' }
+    if ($List.Title -eq 'Preservation Hold Library') { throw 'Access denied.' }   # members often cannot open it
     @{ FileLeafRef = 'General'; FileRef = '/sites/TeamA/Shared Documents/General'; FSObjType = 1 }
     foreach ($path in $global:FakePnP.Files.Keys) {
         @{ FileLeafRef = ($path -split '/')[-1]; FileRef = $path; FSObjType = 0

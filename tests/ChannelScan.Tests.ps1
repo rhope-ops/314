@@ -154,6 +154,11 @@ Assert-Equal 'Documents|Plans' (@($libs | ForEach-Object { $_.Title }) -join '|'
 $multiRows = New-Object System.Collections.Generic.List[object]
 Assert-Equal 2 (Invoke-FileScan -Library $libs -Channels @() -SiteUrl $Sample.Site -MaxFileMB 25 -Rows $multiRows 6>$null) 'Libraries: files of both scanned'
 Assert-Equal 'Documents / General|Plans / (top of the library)' (@($multiRows | Select-Object -ExpandProperty Channel -Unique | Sort-Object) -join '|') 'Libraries: groups named Library / Folder'
+Set-FakeLibraries @('Shared Documents', 'Plans', 'Preservation Hold Library')
+$blockedRows = New-Object System.Collections.Generic.List[object]
+$readCount = Invoke-FileScan -Library @(Get-SiteDocumentLibraries) -Channels @() -SiteUrl $Sample.Site -MaxFileMB 25 -Rows $blockedRows 6>$null
+Assert-Equal 2 $readCount 'Libraries: a library you cannot open does not stop the scan'
+Assert-Equal 'Preservation Hold Library' (@($blockedRows | Where-Object { $_.Detector -eq 'BLOCKED' }).Channel -join '|') 'Libraries: it is one BLOCKED row'
 
 # A label in a parent folder or in the channel name, the number in the file name: masked, reported, not in the link.
 Reset-FakePnP @{ "$library/General/CAC/$($Sample.DodId).docx" = $Txt; "$library/CAC/$($Sample.DodId).txt" = $Txt }
