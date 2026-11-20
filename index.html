@@ -14,26 +14,30 @@
   --bg:#F6F2EA; --card:#FFFDF8; --fg:#15171D; --mut:#555963; --line:#DED6C8;
   --link:#A63A16; --link-hover:#7E2A0E;
   --btn:#15171D; --btn-fg:#F3EEE4; --btn-hover:#2A2D36;
-  --hl:#FBEADF; --code:#EFE9DD; --ok:#1F6B3A; --err:#A3241A; --focus:#E4572E;
+  --hl:#FBEADF; --code:#EFE9DD; --err:#A3241A; --focus:#E4572E;
+  --field:#7E796D;   /* input borders: 3.9:1 on the page (WCAG 1.4.11 asks 3:1) */
   --band:#15171D; --band-fg:#F3EEE4; --band-sub:#D4AF37; --band-mist:#C9C3B8;
   --display:"Bahnschrift","Segoe UI Semibold","Segoe UI",system-ui,sans-serif;
   --text:"Segoe UI",system-ui,-apple-system,"Helvetica Neue",Arial,sans-serif;
   --mono:"Cascadia Mono","Consolas","SFMono-Regular",Menlo,monospace;
 }
+/* Dark theme: the same tokens with dark values; set by the system setting, or by data-theme="dark" (next block). */
 @media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
   --bg:#111318; --card:#1A1D24; --fg:#F3EEE4; --mut:#B5B0A6; --line:#30343D;
   --link:#F2916F; --link-hover:#F7B39A;
   --btn:#E4572E; --btn-fg:#15171D; --btn-hover:#F07A55;
-  --hl:#2E211C; --code:#22252D; --ok:#7FCB95; --err:#F49B91; --focus:#F2916F;
+  --hl:#2E211C; --code:#22252D; --err:#F49B91; --focus:#F2916F; --field:#8A8578;
   --band:#0C0D11; --band-mist:#B5B0A6; color-scheme:dark}}
 :root[data-theme="dark"]{
   --bg:#111318; --card:#1A1D24; --fg:#F3EEE4; --mut:#B5B0A6; --line:#30343D;
   --link:#F2916F; --link-hover:#F7B39A;
   --btn:#E4572E; --btn-fg:#15171D; --btn-hover:#F07A55;
-  --hl:#2E211C; --code:#22252D; --ok:#7FCB95; --err:#F49B91; --focus:#F2916F;
+  --hl:#2E211C; --code:#22252D; --err:#F49B91; --focus:#F2916F; --field:#8A8578;
   --band:#0C0D11; --band-mist:#B5B0A6; color-scheme:dark}
+/* More contrast (a Windows or browser setting): darker grey text and lines. */
 @media (prefers-contrast:more){:root{--mut:#33363D;--line:#7A7466}}
 
+/* Base: page, links, focus ring, type, the centred column with its safe side gutter. */
 *{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.55 var(--text)}
 a{color:var(--link);text-underline-offset:2px}
@@ -54,6 +58,7 @@ code,pre{font-family:var(--mono);font-size:.9em}
 .ttl .sub{color:var(--band-sub);font-size:.875rem;margin-top:2px;font-weight:600;letter-spacing:.02em}
 .ttl .line{color:var(--band-mist);font-size:.875rem;margin-top:2px}
 
+/* The tool card and its sections. */
 main{padding-block:32px 48px}
 .tool{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:26px;display:flex;flex-direction:column;gap:26px}
 .tool > header{display:flex;flex-direction:column;gap:8px}
@@ -64,12 +69,12 @@ main{padding-block:32px 48px}
 .small{font-size:.875rem}
 ul.plain{margin:0;padding-left:1.15em;display:flex;flex-direction:column;gap:4px}
 
-/* Builder */
+/* Configuration: the form, the site field, the choice buttons, the action buttons and the status line. */
 .builder{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px 18px}
 .field{display:flex;flex-direction:column;gap:6px;min-width:0;border:0;margin:0;padding:0}
 .field.wide{grid-column:1 / -1}
 .field label,.field legend{font-weight:600;font-size:.9rem;padding:0}
-input[type=text]{width:100%;min-height:42px;padding:8px 10px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--fg);font:15px var(--mono)}
+input[type=text]{width:100%;min-height:42px;padding:8px 10px;border:1px solid var(--field);border-radius:6px;background:var(--bg);color:var(--fg);font:15px var(--mono)}
 input[aria-invalid=true]{border-color:var(--err)}
 .hint{font-size:.85rem;color:var(--mut)}
 .hint.err{color:var(--err)}
@@ -84,9 +89,13 @@ input[aria-invalid=true]{border-color:var(--err)}
 .btn:hover{background:var(--btn-hover)}
 .btn[disabled]{opacity:.55;cursor:not-allowed}
 .btn svg{width:18px;height:18px}
+/* The second button: outlined, so "Copy the script" stays the main action. */
+.btn.ghost{background:transparent;color:var(--fg);border:1px solid var(--field)}
+.btn.ghost:hover{background:var(--hl)}
 .status{font-size:.9rem}
-.status.ok{color:var(--ok)}
+.status.ok{color:var(--fg);font-weight:600}
 .status.err{color:var(--err)}
+/* The run steps, the fold-out boxes (settings, what it looks for) and their table. */
 ol.steps{margin:0;padding-left:1.3em;display:flex;flex-direction:column;gap:4px}
 details{border:1px solid var(--line);border-radius:8px;background:var(--bg)}
 summary{cursor:pointer;padding:10px 12px;font-weight:600;font-size:.92rem;min-height:24px}
@@ -96,18 +105,22 @@ table{border-collapse:collapse;width:100%;font-size:.9rem;min-width:480px}
 th,td{text-align:left;padding:7px 10px;border-bottom:1px solid var(--line);vertical-align:top}
 th{font-family:var(--display);font-weight:600}
 tr:last-child td{border-bottom:0}
+/* How it works: the five steps as chips; Mask is marked. */
 .flow{display:flex;flex-wrap:wrap;gap:6px;align-items:center;font-size:.92rem}
 .flow span{padding:4px 10px;border:1px solid var(--line);border-radius:999px;background:var(--bg)}
 .flow span.key{border-color:var(--ember);background:var(--hl);font-weight:600}
 .flow i{color:var(--mut);font-style:normal}
+/* If it finds PII: the breach note. Footer. */
 .note{padding:12px 14px;border-left:3px solid var(--ember);background:var(--hl);border-radius:0 6px 6px 0;font-size:.95rem}
 footer{padding-block:0 36px;color:var(--mut);font-size:.85rem}
 
+/* Phones: one column of choices, a smaller card padding and logos. */
 @media (max-width:640px){
   .builder{grid-template-columns:minmax(0,1fr)}
   .tool{padding:18px}
   .logo{width:48px;height:48px}
 }
+/* Motion only when the person has not asked for less; Windows contrast themes keep the logo colours. */
 @media (prefers-reduced-motion:no-preference){.btn,.seg label{transition:background-color .15s,border-color .15s}}
 @media (forced-colors:active){.logo{forced-color-adjust:none}.band{border-bottom-color:CanvasText}}
 </style>
@@ -177,9 +190,11 @@ footer{padding-block:0 36px;color:var(--mut);font-size:.85rem}
         </form>
         <div class="go">
           <button type="button" class="btn" id="copy" disabled><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M4 16V6a2 2 0 0 1 2-2h10"/></svg>Copy the script</button>
+          <button type="button" class="btn ghost" id="open" disabled><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><path d="M14 3v6h6"/><path d="M8 13h8M8 17h6"/></svg>Open the script</button>
           <span class="status" id="status" role="status">Loading the script...</span>
         </div>
         <ol class="steps">
+          <li>Optional: <strong>Open the script</strong> saves it as a .txt file; read it in Notepad first.</li>
           <li>Open <strong>Windows PowerShell ISE</strong> and choose <strong>File &gt; New</strong>.</li>
           <li>Paste (Ctrl+V) and press <strong>F5</strong>.</li>
           <li>Sign in with your CAC and answer any question it asks.</li>
@@ -212,7 +227,7 @@ footer{padding-block:0 36px;color:var(--mut);font-size:.85rem}
               <tr><td>Name</td><td>After "Name:", "Spouse:", "NOK:" and similar</td><td>Initials</td></tr>
             </tbody>
           </table></div>
-          <p class="small mut" style="padding:0 12px 12px">Not read: PDFs, images, old Office files and chats. Each is listed in the report so you can check it by hand.</p>
+          <p class="small mut" style="padding:0 12px 12px">Not read: PDFs, images, old Office files and files over 25 MB (each is listed in the report, to check by hand), and chats (not checked at all).</p>
         </details>
       </section>
 
@@ -231,95 +246,227 @@ footer{padding-block:0 36px;color:var(--mut);font-size:.85rem}
 </footer>
 
 <script>
-/* Builder: loads the paste script from this site, fills in its Settings lines from the choices, copies it in one
-   click, and remembers the choices in this browser. */
-(function () {
-  var SCRIPT = 'paste/33332Z-pii-spot-check.ps1';
-  var RAW = 'https://raw.githubusercontent.com/rhope-ops/33-332.Z/main/' + SCRIPT;
-  var KEY = '33-332Z.builder.v2';
-  var SITE = /^https:\/\/[A-Za-z0-9.-]+\/(sites|teams)\/[^\/?#\s]+/i;   // the script's own Test-TeamSiteUrl rule
-  var form = document.getElementById('builder'), site = document.getElementById('site');
-  var hint = document.getElementById('site-hint'), hintText = hint.textContent;
-  var copyBtn = document.getElementById('copy'), status = document.getElementById('status');
-  var settingsBox = document.getElementById('settings').firstChild;
-  var original = null;
+/*
+  The script builder of this page.
 
-  function setStatus(text, kind) { status.textContent = text; status.className = 'status' + (kind ? ' ' + kind : ''); }
-  function psQuote(s) { return "'" + s.replace(/'/g, "''") + "'"; }   // a PowerShell single-quoted string
-  function load() { try { return JSON.parse(localStorage.getItem(KEY) || '{}'); } catch (e) { return {}; } }
-  function save(s) { try { localStorage.setItem(KEY, JSON.stringify(s)); } catch (e) { /* storage blocked: choices are just not remembered */ } }
-  function choices() {
+  What it does: loads the PII Scan paste script from this site (paste/33332Z-pii-spot-check.ps1), fills in its four
+  Settings lines from the choices on the page, and then either copies the whole script ("Copy the script") or saves it
+  as a .txt file to read first ("Open the script"). The choices are remembered in this browser only.
+
+  Safety notes:
+  - Every value goes into the script inside a PowerShell single-quoted string ('...'), with any ' doubled, so no
+    value can end the string or add code.
+  - The four lines are replaced as literal text (split and join), the same way tests/Bundle.Tests.ps1 does it.
+    String.replace is not used: it reads $' $` $& in a value as special patterns.
+  - Text is only ever shown with textContent, never as HTML.
+*/
+(function () {
+  'use strict';
+
+  // ---- Settings ----------------------------------------------------------------------------------------------
+  var SCRIPT_PATH = 'paste/33332Z-pii-spot-check.ps1';                     // served next to this page
+  var RAW_URL = 'https://raw.githubusercontent.com/rhope-ops/33-332.Z/main/' + SCRIPT_PATH;   // the fallback link
+  var TXT_NAME = '33332Z-pii-spot-check.txt';                              // the name of the saved .txt file
+  var STORAGE_KEY = '33-332Z.builder.v2';                                  // where this browser keeps the choices
+  // The site address rule of the script itself (src/ChannelScan.psm1, Test-TeamSiteUrl): https://<host>/sites/<name>
+  // or /teams/<name>; anything after the site name is cut off.
+  var SITE_RULE = /^https:\/\/[A-Za-z0-9.-]+\/(sites|teams)\/[^\/?#\s]+/i;
+  // The allowed values of the two choice groups; anything else read back from storage is ignored.
+  var CHANNEL_VALUES = ['', 'All'];
+  var REPORT_VALUES = ['Both', 'Text', 'Csv'];
+  // The four Settings lines of the script, exactly as the build writes them (scripts/build_paste.py SETTINGS).
+  var LINE_SITE = "$SiteUrl = ''";
+  var LINE_CHANNEL = "$Channel = ''";
+  var LINE_POSTS = '$IncludePosts = $false';
+  var LINE_REPORT = "$Report = ''";
+
+  // ---- The page elements -------------------------------------------------------------------------------------
+  var form = document.getElementById('builder');
+  var siteInput = document.getElementById('site');
+  var postsBox = document.getElementById('posts');
+  var hint = document.getElementById('site-hint');
+  var copyButton = document.getElementById('copy');
+  var openButton = document.getElementById('open');
+  var statusLine = document.getElementById('status');
+  var settingsView = document.getElementById('settings').firstChild;
+  var hintDefault = hint.textContent;
+  var scriptText = null;   // the script as loaded, before any setting is filled in
+
+  // ---- Small helpers -----------------------------------------------------------------------------------------
+
+  // Shows a short message next to the buttons; kind is '' (neutral), 'ok' or 'err'.
+  function showStatus(text, kind) {
+    statusLine.textContent = text;
+    statusLine.className = 'status' + (kind ? ' ' + kind : '');
+  }
+
+  // Returns a value as a PowerShell single-quoted string: inside '...' only a ' is special, and '' stands for it.
+  function powerShellString(value) {
+    return "'" + String(value).split("'").join("''") + "'";
+  }
+
+  // Replaces one exact piece of text with another, with no special patterns (unlike String.replace).
+  function replaceLiteral(text, find, put) {
+    return text.split(find).join(put);
+  }
+
+  // Reads the remembered choices; returns {} when there are none or storage is blocked.
+  function loadChoices() {
+    try { return JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}') || {}; } catch (e) { return {}; }
+  }
+
+  // Remembers the choices in this browser; does nothing when storage is blocked (they are then not remembered).
+  function saveChoices(choices) {
+    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(choices)); } catch (e) { /* storage blocked: not kept */ }
+  }
+
+  // ---- Reading the choices -----------------------------------------------------------------------------------
+
+  // Returns the choices as they stand on the page.
+  function currentChoices() {
     return {
-      site: site.value.trim(),
+      site: siteInput.value.trim(),
       chan: form.querySelector('input[name=chan]:checked').value,
       rep: form.querySelector('input[name=rep]:checked').value,
-      posts: document.getElementById('posts').checked
+      posts: postsBox.checked
     };
   }
-  function siteValue(raw) {
-    if (!raw) { hint.textContent = hintText; hint.className = 'hint'; site.removeAttribute('aria-invalid'); return ''; }
-    var m = raw.match(SITE);
-    if (m) { hint.textContent = 'Only this site will be scanned: ' + m[0]; hint.className = 'hint'; site.removeAttribute('aria-invalid'); return m[0]; }
-    hint.textContent = 'Not a team site address. It must look like https://usaf.dps.mil/sites/<team-site>. Fix it, or leave it empty and the script asks.';
-    hint.className = 'hint err'; site.setAttribute('aria-invalid', 'true'); return null;
+
+  // Checks the typed site address and shows a hint. Returns '' (empty: the script will ask), the address cut to
+  // the site name, or null when it is not a team site address (the buttons then stay off).
+  function checkedSite(typed) {
+    siteInput.removeAttribute('aria-invalid');
+    hint.className = 'hint';
+    if (!typed) { hint.textContent = hintDefault; return ''; }
+    var match = typed.match(SITE_RULE);
+    if (match) { hint.textContent = 'Only this site will be scanned: ' + match[0]; return match[0]; }
+    hint.textContent = 'Not a team site address. It must look like https://usaf.dps.mil/sites/<team-site>. ' +
+                       'Fix it, or leave it empty and the script asks.';
+    hint.className = 'hint err';
+    siteInput.setAttribute('aria-invalid', 'true');
+    return null;
   }
-  /* The same four replacements the repo's test makes (tests/Bundle.Tests.ps1). */
-  function filled(text, c, siteUrl) {
-    return text.replace("$SiteUrl = ''", '$SiteUrl = ' + psQuote(siteUrl))
-               .replace("$Channel = ''", '$Channel = ' + psQuote(c.chan))
-               .replace('$IncludePosts = $false', '$IncludePosts = ' + (c.posts ? '$true' : '$false'))
-               .replace("$Report = ''", '$Report = ' + psQuote(c.rep));
+
+  // Puts remembered choices back on the page, using only allowed values.
+  function restoreChoices() {
+    var saved = loadChoices();
+    if (typeof saved.site === 'string') siteInput.value = saved.site;
+    if (CHANNEL_VALUES.indexOf(saved.chan) >= 0) document.getElementById(saved.chan === 'All' ? 'chan-all' : 'chan-ask').checked = true;
+    if (REPORT_VALUES.indexOf(saved.rep) >= 0) document.getElementById('rep-' + saved.rep.toLowerCase()).checked = true;
+    postsBox.checked = saved.posts === true;
   }
-  function render() {
-    var c = choices(), siteUrl = siteValue(c.site);
-    save(c);
-    if (original === null) return;
-    var ok = siteUrl !== null;
-    copyBtn.disabled = !ok;
-    var text = filled(original, c, ok ? siteUrl : '');
-    var s = text.indexOf('# ==== Settings ===='), e = text.indexOf('Set-StrictMode', s);
-    settingsBox.textContent = s >= 0 && e > s ? text.slice(s, e).trim() : 'Settings block not found.';
-    if (ok) setStatus('Ready: 1,600+ lines with your settings.', '');
-    else setStatus('Fix the site address to copy.', 'err');
+
+  // ---- Building the script -----------------------------------------------------------------------------------
+
+  // Returns the script with its four Settings lines filled in from the choices.
+  function filledScript(choices, site) {
+    var text = scriptText;
+    text = replaceLiteral(text, LINE_SITE, '$SiteUrl = ' + powerShellString(site));
+    text = replaceLiteral(text, LINE_CHANNEL, '$Channel = ' + powerShellString(choices.chan));
+    text = replaceLiteral(text, LINE_POSTS, '$IncludePosts = ' + (choices.posts ? '$true' : '$false'));
+    text = replaceLiteral(text, LINE_REPORT, '$Report = ' + powerShellString(choices.rep));
+    return text;
   }
-  function copy() {
-    var c = choices(), siteUrl = siteValue(c.site);
-    if (original === null || siteUrl === null) return;
-    var text = filled(original, c, siteUrl);
-    function done() { setStatus('Copied. Now paste it into ISE (File > New, Ctrl+V) and press F5.', 'ok'); }
-    function fallback() {
-      var ta = document.createElement('textarea'); ta.value = text; ta.setAttribute('readonly', '');
-      ta.style.position = 'fixed'; ta.style.opacity = '0'; document.body.appendChild(ta); ta.select();
-      var ok = false; try { ok = document.execCommand('copy'); } catch (e) { ok = false; }   // older browsers only
-      document.body.removeChild(ta);
-      if (ok) done(); else setStatus('Copy was blocked here. Open the script, select all and copy: ' + RAW, 'err');
-    }
+
+  // Returns the Settings block of a script, for the "See the settings" box.
+  function settingsBlock(text) {
+    var start = text.indexOf('# ==== Settings ====');
+    var end = text.indexOf('Set-StrictMode', start);
+    return start >= 0 && end > start ? text.slice(start, end).trim() : 'Settings block not found.';
+  }
+
+  // Brings the page up to date after any change: hint, remembered choices, buttons, settings box, status.
+  function refresh() {
+    var choices = currentChoices();
+    var site = checkedSite(choices.site);
+    saveChoices(choices);
+    if (scriptText === null) return;              // still loading, or the load failed
+    var ready = site !== null;
+    copyButton.disabled = !ready;
+    openButton.disabled = !ready;
+    settingsView.textContent = settingsBlock(filledScript(choices, ready ? site : ''));
+    if (ready) showStatus('Ready: 1,600+ lines with your settings.', '');
+    else showStatus('Fix the site address to copy or open the script.', 'err');
+  }
+
+  // Returns the filled script for the buttons, or null when the page is not ready.
+  function scriptForButtons() {
+    var choices = currentChoices();
+    var site = checkedSite(choices.site);
+    if (scriptText === null || site === null) return null;
+    return filledScript(choices, site);
+  }
+
+  // ---- The two buttons ---------------------------------------------------------------------------------------
+
+  // Copies the filled script to the clipboard; falls back to a hidden text box when the clipboard is refused.
+  function copyScript() {
+    var text = scriptForButtons();
+    if (text === null) return;
+    var done = function () { showStatus('Copied. Now paste it into ISE (File > New, Ctrl+V) and press F5.', 'ok'); };
+    var fallback = function () {
+      var box = document.createElement('textarea');
+      box.value = text;
+      box.setAttribute('readonly', '');
+      box.style.position = 'fixed';
+      box.style.opacity = '0';
+      document.body.appendChild(box);
+      box.select();
+      var copied = false;
+      try { copied = document.execCommand('copy'); } catch (e) { copied = false; }   // older browsers only
+      document.body.removeChild(box);
+      if (copied) done();
+      else showStatus('Copy was blocked here. Use "Open the script", or copy it from ' + RAW_URL, 'err');
+    };
     if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(text).then(done, fallback);
     else fallback();
   }
 
-  var saved = load();
-  if (saved.site) site.value = saved.site;
-  if (typeof saved.chan === 'string') { var ch = form.querySelector('input[name=chan][value="' + saved.chan + '"]'); if (ch) ch.checked = true; }
-  if (saved.rep) { var rp = form.querySelector('input[name=rep][value="' + saved.rep + '"]'); if (rp) rp.checked = true; }
-  if (saved.posts) document.getElementById('posts').checked = true;
-  form.addEventListener('input', render);
-  form.addEventListener('change', render);
-  form.addEventListener('submit', function (e) { e.preventDefault(); copy(); });
-  copyBtn.addEventListener('click', copy);
-  try { site.focus({ preventScroll: true }); } catch (e) { site.focus(); }   // keyboard users start in the first field
-  render();
+  // Saves the filled script as a .txt file, so it can be read in Notepad before it is run.
+  function openScript() {
+    var text = scriptForButtons();
+    if (text === null) return;
+    var file = new Blob([text], { type: 'text/plain;charset=utf-8' });
+    var link = document.createElement('a');
+    link.href = URL.createObjectURL(file);
+    link.download = TXT_NAME;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    setTimeout(function () { URL.revokeObjectURL(link.href); }, 10000);   // free the file once the save has started
+    showStatus('Saved as ' + TXT_NAME + ' (in your Downloads). Open it to read the script.', 'ok');
+  }
 
-  fetch(SCRIPT, { cache: 'no-cache' }).then(function (r) {
-    if (!r.ok) throw new Error('HTTP ' + r.status);
-    return r.text();
-  }).then(function (text) {
-    if (text.indexOf("$SiteUrl = ''") < 0) throw new Error('unexpected script');
-    original = text; render();
-  }).catch(function (err) {
-    setStatus('Could not load the script (' + err.message + '). Open it here and copy it by hand: ' + RAW, 'err');
-    settingsBox.textContent = 'Not loaded.';
-  });
+  // ---- Loading the script ------------------------------------------------------------------------------------
+
+  // Loads the script from this site; on failure, shows the link to open it by hand.
+  function loadScript() {
+    fetch(SCRIPT_PATH, { cache: 'no-cache' })
+      .then(function (response) {
+        if (!response.ok) throw new Error('HTTP ' + response.status);
+        return response.text();
+      })
+      .then(function (text) {
+        if (text.indexOf(LINE_SITE) < 0 || text.indexOf(LINE_REPORT) < 0) throw new Error('unexpected script');
+        scriptText = text;
+        refresh();
+      })
+      .catch(function (error) {
+        showStatus('Could not load the script (' + error.message + '). Open it here and copy it by hand: ' + RAW_URL, 'err');
+        settingsView.textContent = 'Not loaded.';
+      });
+  }
+
+  // ---- Start -------------------------------------------------------------------------------------------------
+  restoreChoices();
+  form.addEventListener('input', refresh);
+  form.addEventListener('change', refresh);
+  form.addEventListener('submit', function (event) { event.preventDefault(); copyScript(); });
+  copyButton.addEventListener('click', copyScript);
+  openButton.addEventListener('click', openScript);
+  try { siteInput.focus({ preventScroll: true }); } catch (e) { siteInput.focus(); }   // keyboard users start here
+  refresh();
+  loadScript();
 })();
 </script>
 </body>
