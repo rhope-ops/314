@@ -41,7 +41,7 @@ $script:SiteUrlPattern = '^(?<host>https://[A-Za-z0-9.-]+)/(?::[a-z]:/r/)?(?<sit
 
 # Accepted Teams link: a team's or a channel's "Copy link" (https://<teams-host>/l/team/... or /l/channel/...).
 # Only its groupId (the team's Microsoft 365 group) is used; the host is not, so any Teams cloud's link works.
-$script:TeamsLinkPattern = '^https://[A-Za-z0-9.-]+/l/(?<kind>team|channel)/[^?#\s]+\?(?:[^#\s]*&)?groupId=' +
+$script:TeamsLinkPattern = '^https://[A-Za-z0-9.-]+/l/(?<kind>team|channel)/[^?#]+\?(?:[^#\s]*&)?groupId=' +
                            '(?<id>[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12})(?![0-9A-Fa-f-])'
 
 # Where a Teams link's site is looked up: the tenant's root address. Only one call is made there, for the
@@ -143,7 +143,7 @@ function Connect-TeamSite {
     .SYNOPSIS
       Signs in (own CAC, PnP web login) to the team's site and returns its address. For a Teams link it first
       looks up that one group's site; if the lookup gives nothing, it asks for the site address, and in both
-      cases it checks that the site belongs to the team in the link. On any error it signs out and throws.
+      cases it checks that the site belongs to the team in the link. On any error or cancel it signs out.
     .PARAMETER Target
       Output of Get-ScanTarget.
     .OUTPUTS
@@ -151,6 +151,7 @@ function Connect-TeamSite {
     #>
     param($Target)
     $site = $Target.SiteUrl
+    $ok = $false   # set only at the end: a cancel (Ctrl+C, Cancel on a prompt) skips 'catch' but not 'finally'
     try {
         if ($null -ne $Target.GroupId) {
             if ($Target.IsChannel) {
@@ -173,12 +174,14 @@ function Connect-TeamSite {
         Write-Host "Signing in to $site ..."
         Connect-PnPOnline -Url $site -UseWebLogin
         if ($null -ne $Target.GroupId) { Assert-SiteGroup $Target.GroupId }
+        $ok = $true
         return $site
     }
-    catch {
-        # No scan starts after an error here: sign out, so no connection stays open in the ISE session.
-        try { Disconnect-PnPOnline } catch { Write-Verbose 'Already signed out.' }  # nothing to sign out of: not an error
-        throw
+    finally {
+        # No scan starts after an error or a cancel here: sign out, so no connection stays open in the ISE session.
+        if (-not $ok) {
+            try { Disconnect-PnPOnline } catch { Write-Verbose 'Already signed out.' }  # nothing to sign out of: not an error
+        }
     }
 }
 

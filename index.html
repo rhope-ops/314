@@ -269,16 +269,16 @@ footer{padding-block:0 36px;color:var(--mut);font-size:.85rem}
   var RAW_URL = 'https://raw.githubusercontent.com/rhope-ops/33-332.Z/main/' + SCRIPT_PATH;   // the fallback link
   var TXT_NAME = '33332Z-pii-spot-check.txt';                              // the name of the saved .txt file
   var STORAGE_KEY = '33-332Z.builder.v2';                                  // where this browser keeps the choices
-  // The two ways to give the team; the page tells them apart (as the script's Get-ScanTarget does). Each rule is stricter than the script on
-  // purpose: only plain URL characters (letters, digits, - _ . % ~ and the few a link needs), so no kind of quote
-  // can reach the copied script.
+  // The two ways to give the team; the page tells them apart (as the script's Get-ScanTarget does). No kind of quote
+  // can reach the copied script: the SharePoint rule takes only plain URL characters, and a Teams link is passed on
+  // only as its host, kind and groupId in a fixed form.
   // SharePoint: https://<host>/sites/<name> or /teams/<name>, also as a file's Copy link (/:w:/r/teams/<name>/...);
   // anything after the site name is cut off (as the script's Test-TeamSiteUrl does).
   var SITE_RULE = /^(https:\/\/[A-Za-z0-9.-]+)\/(?::[a-z]:\/r\/)?((?:sites|teams)\/[A-Za-z0-9._~%-]+)(?=$|[\/?#])/i;
   // Teams: a team's or channel's Copy link. The page passes on only its kind and groupId, in a fixed form
   // (https://<host>/l/team/link?groupId=<id>; the script uses nothing else), so a channel name with any character
   // is accepted and no part of it reaches the script.
-  var TEAMS_RULE = /^https:\/\/([A-Za-z0-9.-]+)\/l\/(team|channel)\/[^?#\s]+\?(?:[^#\s]*&)?groupId=([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(?![0-9a-f-])/i;
+  var TEAMS_RULE = /^https:\/\/([A-Za-z0-9.-]+)\/l\/(team|channel)\/[^?#]+\?(?:[^#\s]*&)?groupId=([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(?![0-9a-f-])/i;
   // The allowed values of the two choice groups; anything else read back from storage is ignored.
   var CHANNEL_VALUES = ['', 'All'];
   var REPORT_VALUES = ['Both', 'Text', 'Csv'];
@@ -344,7 +344,7 @@ footer{padding-block:0 36px;color:var(--mut);font-size:.85rem}
   }
 
   // Checks the typed text and shows a hint. Returns '' (empty: the script will ask), the value for the script (a
-  // Teams link up to its groupId, or a site address cut to the site name), or null when it is neither (the buttons
+  // Teams link in its fixed form https://<host>/l/<kind>/link?groupId=<id>, or a site address cut to the site name), or null when it is neither (the buttons
   // then stay off).
   function checkedSite(typed) {
     siteInput.removeAttribute('aria-invalid');

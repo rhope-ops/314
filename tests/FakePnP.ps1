@@ -38,7 +38,7 @@ function Reset-FakePnP {
         LookupSite  = 'https://tenant.example.com/teams/TeamA'   # the group lookup's answer; '' = none, 'throw' = refused
         TypedSite   = ''                                          # what the fake Read-Host returns
         LookupForm  = 'd'                                         # the answer's form: 'd' (verbose), 'plain' or 'json'
-        LookupStatus = 0                                          # the answer's SiteStatus; 0 = 2 (ready)
+        LookupStatus = 2                                          # the answer's SiteStatus; 2 = ready
         SiteGroupId = [guid]'11111111-2222-3333-4444-555555555555'
         Calls       = New-Object System.Collections.Generic.List[string]
         Progress    = New-Object System.Collections.Generic.List[string]
@@ -64,12 +64,12 @@ function Set-FakeLookup {
     .PARAMETER Form
       The answer's form: 'd' (verbose JSON), 'plain' (nometadata JSON) or 'json' (a raw JSON string).
     .PARAMETER Status
-      The answer's SiteStatus; 0 = 2 (ready).
+      The answer's SiteStatus; 2 = ready (the default).
     .OUTPUTS
       None (changes $global:FakePnP).
     #>
     param([string]$LookupSite, [string]$TypedSite = '', [guid]$SiteGroupId = '11111111-2222-3333-4444-555555555555',
-          [string]$Form = 'd', [int]$Status = 0)
+          [string]$Form = 'd', [int]$Status = 2)
     $global:FakePnP.LookupSite = $LookupSite
     $global:FakePnP.LookupForm = $Form
     $global:FakePnP.LookupStatus = $Status
@@ -203,9 +203,7 @@ function global:Invoke-PnPSPRestMethod {
     [CmdletBinding()] param($Method, $Url, $Content)
     $global:FakePnP.Calls.Add('Invoke-PnPSPRestMethod ' + $Url + ' ' + $Content.groupId)
     if ($global:FakePnP.LookupSite -eq 'throw') { throw 'FAKE: lookup refused' }
-    $status = 2
-    if ($global:FakePnP.LookupStatus) { $status = $global:FakePnP.LookupStatus }
-    $answer = [pscustomobject]@{ SiteStatus = $status; SiteUrl = $global:FakePnP.LookupSite }
+    $answer = [pscustomobject]@{ SiteStatus = $global:FakePnP.LookupStatus; SiteUrl = $global:FakePnP.LookupSite }
     switch ($global:FakePnP.LookupForm) {
         'plain' { return $answer }                                       # nometadata JSON, read as an object
         'json'  { return ($answer | ConvertTo-Json -Compress) }          # a raw JSON string

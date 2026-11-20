@@ -61,7 +61,8 @@ foreach ($form in @('plain', 'json')) {
     Set-FakeLookup -LookupSite 'https://tenant.example.com/teams/TeamA' -Form $form
     Assert-Equal 'https://tenant.example.com/teams/TeamA' (Connect-TeamSite (Get-ScanTarget $teamLink) 6>$null) "Lookup answer read in $form form"
 }
-foreach ($case in @(@{ Site = ''; Status = 0; Name = 'empty SiteUrl' }, @{ Site = 'https://tenant.example.com/teams/TeamA'; Status = 1; Name = 'site not ready' })) {
+foreach ($case in @(@{ Site = ''; Status = 2; Name = 'empty SiteUrl' }, @{ Site = 'https://tenant.example.com/teams/TeamA'; Status = 1; Name = 'site not ready' },
+                  @{ Site = 'https://tenant.example.com/teams/TeamA'; Status = 0; Name = 'no site' })) {
     Reset-FakePnP @{}
     Set-FakeLookup -LookupSite $case.Site -Status $case.Status -TypedSite 'https://tenant.example.com/teams/TeamA'
     $null = Connect-TeamSite (Get-ScanTarget $teamLink) 6>$null
@@ -73,6 +74,11 @@ $refused = $false
 try { Connect-TeamSite (Get-ScanTarget $teamLink) 6>$null | Out-Null } catch { $refused = $true }  # expected: bad typed address
 Assert-Equal $true ($refused -and (Test-FakePnPCall 'Disconnect-PnPOnline')) 'Bad typed address: signed out of the root'
 Assert-Equal $true (Get-ScanTarget $channelLink).IsChannel 'Channel link marked as a channel'
+Assert-Equal $groupId (Get-ScanTarget ('https://teams.example.com/l/channel/19%3aabc/My Channel?groupId=' + $groupId)).GroupId `
+    'Channel link with a raw space read'
+Reset-FakePnP @{}
+$printed = (Connect-TeamSite (Get-ScanTarget $channelLink) 6>&1 | Where-Object { $_ -is [System.Management.Automation.InformationRecord] }) -join ' '
+Assert-Equal $true ($printed -match 'private or shared channel has its own site') 'Channel link prints the private-channel note'
 Reset-FakePnP @{}
 Assert-Equal $Sample.Site (Connect-TeamSite (Get-ScanTarget $Sample.Site) 6>$null) 'Site address: no lookup'
 Assert-Equal $Sample.Site ((Get-FakePnPConnection) -join ' ') 'Site address: one sign-in, to that site'
