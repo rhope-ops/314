@@ -1,15 +1,17 @@
 <#
-Report.psm1 - the scan results for a person: on screen, as a readable text file and as a CSV.
+Report.psm1 - the scan results for a person: a summary on screen and one Excel workbook with tabs.
 
-  Purpose:     Holds the report rows, builds the readable summary, asks which files to save
-               (the PAM, 2026-11-20: offer a readable report and a CSV), and saves them.
+  Purpose:     Holds the report rows, sorts them worst PII type first, shows the summary (totals and hits per type)
+               and saves the workbook: Summary tab first, one tab per type, Low confidence, Not scanned
+               (the PAM, 2026-11-20: tabs to cut noise; no .txt or .csv).
   Inputs:      report rows (New-ReportRow) from ChannelScan.psm1; values in them are already masked.
-  Outputs:     the summary on screen; PIIScan-<time>.txt and/or PIIScan-<time>.csv.
+  Outputs:     the summary on screen; <OutputFolder>\<site>\<yyyy-MM-dd>\Ion Results <HH-mm-ss>.xlsx.
+  Depends on:  PiiMasking.psm1 (Protect-PiiText), XlsxWriter.psm1, imported first by Find-ChannelPII.ps1.
   How to run:  imported by Find-ChannelPII.ps1; not run on its own.
   Run target:  Windows PowerShell 5.1 (also PowerShell 7).
   Network:     none.
-  Writes:      the .txt and/or .csv report in the output folder the caller gives (default Documents\PII-Scan).
-               A new file each run; an existing report is never overwritten.
+  Writes:      the workbook and its site and day folders under the output folder (default Documents\Ion).
+               A new file each run; an existing result is never overwritten.
   Credentials: none.
 #>
 
@@ -23,8 +25,16 @@ Set-StrictMode -Version 2.0
 # (NOT SCANNED, BLOCKED, INCOMPLETE).
 $script:Rank = @{ 'High' = 3; 'Medium' = 2; 'Low' = 1 }
 
-# CSV columns, in order.
-$script:CsvColumns = @('Source', 'Channel', 'Item', 'Detector', 'Confidence', 'MaskedValue', 'Context', 'Modified', 'Link')
+# The tool's name on screen and in the workbook (the PAM, 2026-11-20).
+$script:ToolTitle = 'Ion - DoD365 PII Reporter'
+
+# PII types from most to least damaging, for sorting and for the order of the tabs. AFI 33-332 gives no ranking
+# (A3.1 lists only the factors for judging harm), so this is the PAM's order (2026-11-20): SSN and date of birth
+# first, then identity documents and accounts, then contact details.
+$script:SeverityOrder = @('SSN', 'Date of birth', 'Passport', 'Payment card', 'DoD ID', 'Home address', 'Name', 'Phone', 'Personal e-mail')
+
+# How many files the screen summary lists (the workbook lists all).
+$script:TopItems = 10
 
 # Line width for the text tables. Without a console window, Out-String has no width and prints
 # empty tables, so a width is always given. 220 fits the widest table on a landscape printout.
@@ -94,26 +104,36 @@ function Add-IncompleteRow {
     $Rows.Add((New-ReportRow 'Scan' '(all)' '(scan)' '' '' 'INCOMPLETE' '' '' 'Stopped before the end (cancelled?)'))
 }
 
+function Get-SeverityIndex {
+    # Where a PII type stands in $SeverityOrder (0 = worst); a type not in the list comes last.
+    param([string]$Type)
+    $index = [Array]::IndexOf($script:SeverityOrder, $Type)
+    if ($index -lt 0) { return $script:SeverityOrder.Count }
+    return $index
+}
+
 function Get-ReportSummary {
     <#
     .SYNOPSIS
-      One line per item with possible PII: highest confidence, number of hits, types found.
+      One line per item with possible PII: its worst type, highest confidence, number of hits and types found.
     .PARAMETER Rows
       All report rows.
     .OUTPUTS
-      [pscustomobject] Highest, Hits, Channel, Source, Item, Detectors; highest confidence and most hits first.
+      [pscustomobject] Worst, Highest, Hits, Channel, Source, Item, Detectors; worst type first, then highest confidence.
     #>
     param([object[]]$Rows)
     $hits = @($Rows | Where-Object { $script:Rank.ContainsKey($_.Confidence) })
-    $summary = foreach ($group in ($hits | Group-Object Source, Channel, Item)) {
+    $summary = foreach ($group in ($hits | Group-Object Channel, Item)) {
         $first = $group.Group[0]
+        $worst = ($group.Group | Sort-Object { Get-SeverityIndex $_.Detector }, { -$script:Rank[$_.Confidence] } | Select-Object -First 1)
         $best = ($group.Group | Sort-Object { $script:Rank[$_.Confidence] } -Descending | Select-Object -First 1).Confidence
         [pscustomobject]@{
-            Highest = $best; Hits = $group.Count; Channel = $first.Channel; Source = $first.Source; Item = $first.Item
-            Detectors = (($group.Group | Select-Object -ExpandProperty Detector -Unique) -join ', ')
+            Worst = $worst.Detector; Highest = $best; Hits = $group.Count; Channel = $first.Channel; Source = $first.Source; Item = $first.Item
+            Detectors = ((@($group.Group | Select-Object -ExpandProperty Detector -Unique) | Sort-Object { Get-SeverityIndex $_ }) -join ', ')
         }
     }
-    return @($summary | Sort-Object @{ Expression = { $script:Rank[$_.Highest] }; Descending = $true }, @{ Expression = 'Hits'; Descending = $true })
+    return @($summary | Sort-Object @{ Expression = { Get-SeverityIndex $_.Worst } }, @{ Expression = { $script:Rank[$_.Highest] }; Descending = $true },
+        @{ Expression = 'Hits'; Descending = $true })
 }
 
 function ConvertTo-TableText {
@@ -131,179 +151,217 @@ function ConvertTo-TableText {
     return ($InputRows | Format-Table -Property $Columns -AutoSize -Wrap | Out-String -Width $script:TableWidth).TrimEnd()
 }
 
-function Get-HitsPerType {
+function Get-TypeCounts {
     <#
     .SYNOPSIS
-      Counts the hits per PII type and confidence. Builds plain objects: Select-Object on a
-      GroupInfo keeps its built-in display, which prints an empty table here.
+      The hits per PII type, worst type first, split by confidence.
     .PARAMETER Hits
       The hit rows.
     .OUTPUTS
-      [pscustomobject] Type, Confidence, Hits.
+      [pscustomobject] Type, High, Medium, Low, Total.
     #>
     param([object[]]$Hits)
-    $Hits | Group-Object Detector, Confidence | Sort-Object Name | ForEach-Object {
-        [pscustomobject]@{ Type = $_.Group[0].Detector; Confidence = $_.Group[0].Confidence; Hits = $_.Count }
+    foreach ($group in ($Hits | Group-Object Detector | Sort-Object { Get-SeverityIndex $_.Name })) {
+        $count = @{ High = 0; Medium = 0; Low = 0 }
+        foreach ($hit in $group.Group) { $count[$hit.Confidence]++ }
+        [pscustomobject]@{ Type = $group.Name; High = $count.High; Medium = $count.Medium; Low = $count.Low; Total = $group.Count }
     }
+}
+
+function Get-ScanMetrics {
+    <#
+    .SYNOPSIS
+      The scan's totals, as label and value pairs (the screen summary and the Summary tab show the same).
+    .PARAMETER Rows
+      All report rows.
+    .PARAMETER ItemsScanned
+      How many files were read.
+    .OUTPUTS
+      [System.Collections.Specialized.OrderedDictionary]
+    #>
+    param([object[]]$Rows, [int]$ItemsScanned)
+    $hits = @($Rows | Where-Object { $script:Rank.ContainsKey($_.Confidence) })
+    $metrics = [ordered]@{}
+    $metrics['Files read'] = $ItemsScanned
+    $metrics['Files with possible PII'] = @(Get-ReportSummary $Rows).Count
+    $metrics['Possible PII hits'] = $hits.Count
+    $metrics['High / Medium / Low'] = '{0} / {1} / {2}' -f @($hits | Where-Object { $_.Confidence -eq 'High' }).Count,
+        @($hits | Where-Object { $_.Confidence -eq 'Medium' }).Count, @($hits | Where-Object { $_.Confidence -eq 'Low' }).Count
+    $metrics['Not scanned / incomplete'] = @($Rows | Where-Object { -not $script:Rank.ContainsKey($_.Confidence) }).Count
+    return $metrics
 }
 
 function Get-ScanSummaryText {
     <#
     .SYNOPSIS
-      The readable report as text lines: totals, items with possible PII, hits per type, each hit,
-      and the items not scanned. The same lines are shown on screen and saved as the .txt report.
+      The summary for the screen: the scan's details and totals, possible PII per type (worst first), and the
+      files with the most serious hits. Every hit is listed in the workbook, not here.
     .PARAMETER Rows
       All report rows.
     .PARAMETER ItemsScanned
-      How many files and posts were read.
+      How many files were read.
     .PARAMETER Header
-      Lines to put at the top (site, channels, time).
+      Label and value pairs for the top (site, folders, time).
+    .PARAMETER FolderLabel
+      'Channel' (a team) or 'Folder' (a plain site).
     .OUTPUTS
       [string[]]
     #>
-    param([object[]]$Rows, [int]$ItemsScanned, [string[]]$Header)
-    $hits = @($Rows | Where-Object { $script:Rank.ContainsKey($_.Confidence) })
-    $notes = @($Rows | Where-Object { -not $script:Rank.ContainsKey($_.Confidence) })
-    $items = @(Get-ReportSummary $Rows)
+    param([object[]]$Rows, [int]$ItemsScanned, [System.Collections.IDictionary]$Header, [string]$FolderLabel)
     $lines = New-Object System.Collections.Generic.List[string]
-    $lines.Add('==== DoD365 PII Scan ====')
-    foreach ($line in $Header) { $lines.Add($line) }
-    $lines.Add(('Items scanned: {0}   Items with possible PII: {1}   Possible PII hits: {2}   Not scanned / blocked: {3}' -f
-            $ItemsScanned, $items.Count, $hits.Count, $notes.Count))
+    $lines.Add(''); $lines.Add('==== ' + $script:ToolTitle + ' ====')
+    foreach ($pair in @($Header.GetEnumerator()) + @((Get-ScanMetrics $Rows $ItemsScanned).GetEnumerator())) {
+        $lines.Add(('{0,-26} {1}' -f ($pair.Key + ':'), $pair.Value))
+    }
+    $hits = @($Rows | Where-Object { $script:Rank.ContainsKey($_.Confidence) })
     if ($hits.Count -gt 0) {
-        $lines.Add(''); $lines.Add('ITEMS WITH POSSIBLE PII (highest confidence first):')
-        $lines.Add((ConvertTo-TableText $items @('Highest', 'Hits', 'Channel', 'Source', 'Item', 'Detectors')))
-        $lines.Add(''); $lines.Add('HITS PER TYPE:')
-        $lines.Add((ConvertTo-TableText @(Get-HitsPerType $hits) @('Type', 'Confidence', 'Hits')))
-        $lines.Add(''); $lines.Add('EACH HIT (values masked):')
-        $lines.Add((ConvertTo-TableText @($hits | Sort-Object Channel, Item) @('Confidence', 'Detector', 'Item', 'MaskedValue', 'Context')))
+        $lines.Add(''); $lines.Add('POSSIBLE PII BY TYPE (worst first):')
+        $lines.Add((ConvertTo-TableText @(Get-TypeCounts $hits) @('Type', 'High', 'Medium', 'Low', 'Total')))
+        $top = @(Get-ReportSummary $Rows | Select-Object -First $script:TopItems |
+            Select-Object Worst, Highest, Hits, @{ Name = $FolderLabel; Expression = { $_.Channel } }, Item)
+        $lines.Add(''); $lines.Add(('FILES WITH THE MOST SERIOUS HITS (first {0}; all are in the workbook):' -f $script:TopItems))
+        $lines.Add((ConvertTo-TableText $top @('Worst', 'Highest', 'Hits', $FolderLabel, 'Item')))
     }
-    else {
-        $lines.Add(''); $lines.Add('No possible PII found in the items that were scanned.')
-    }
-    if ($notes.Count -gt 0) {
-        $lines.Add(''); $lines.Add('NOT SCANNED, BLOCKED OR INCOMPLETE (check these by hand):')
-        $lines.Add((ConvertTo-TableText $notes @('Detector', 'Channel', 'Item', 'Context')))
-    }
+    else { $lines.Add(''); $lines.Add('No possible PII found in the files that were read.') }
     $lines.Add('')
     $lines.Add('Confidence is a pattern guess, not proof: open each item and check it before you act.')
-    $lines.Add('Not detected: names without a label (Name:, Spouse: ...), and text inside PDFs and images.')
     $lines.Add($script:BreachAdvice)
     return $lines.ToArray()
 }
 
 # =====================================================================================
-# Saving the files
+# The workbook
 # =====================================================================================
 
-function New-ReportPath {
+function Get-ResultPath {
     <#
     .SYNOPSIS
-      A new report file path: PIIScan-<time><extension>, with -2, -3 ... added if that name exists,
-      so a report is never overwritten. Creates the folder if needed.
+      A new workbook path: <OutputFolder>\<site>\<yyyy-MM-dd>\Ion Results <HH-mm-ss>.xlsx, with (2), (3) ... added
+      if the name exists, so a result is never overwritten. Creates the folders. The site name is masked like any
+      name the tool shows (digits become #), and characters Windows refuses in a folder name are replaced.
     .PARAMETER OutputFolder
-      The folder for the reports.
-    .PARAMETER Stamp
-      The time stamp (yyyyMMdd-HHmmss).
-    .PARAMETER Extension
-      '.txt' or '.csv'.
+      The base folder.
+    .PARAMETER SiteUrl
+      The site address; its last part (teams/<name>) names the site folder.
     .OUTPUTS
       [string] the path.
     #>
-    param([string]$OutputFolder, [string]$Stamp, [string]$Extension)
-    if (-not (Test-Path -LiteralPath $OutputFolder)) { New-Item -ItemType Directory -Path $OutputFolder -Force -ErrorAction Stop | Out-Null }
-    $path = Join-Path $OutputFolder ('PIIScan-{0}{1}' -f $Stamp, $Extension)
+    param([string]$OutputFolder, [string]$SiteUrl)
+    $siteName = [uri]::UnescapeDataString(($SiteUrl.TrimEnd('/') -split '/')[-1])
+    $siteName = ((Protect-PiiText $siteName) -replace '[\\/:*?"<>|]', '-').Trim(' .')
+    if (-not $siteName) { $siteName = 'site' }
+    $now = Get-Date
+    $folder = Join-Path (Join-Path $OutputFolder $siteName) ($now.ToString('yyyy-MM-dd'))
+    if (-not (Test-Path -LiteralPath $folder)) { New-Item -ItemType Directory -Path $folder -Force -ErrorAction Stop | Out-Null }
+    $base = 'Ion Results ' + $now.ToString('HH-mm-ss')
+    $path = Join-Path $folder ($base + '.xlsx')
     $copy = 2
-    while (Test-Path -LiteralPath $path) {
-        $path = Join-Path $OutputFolder ('PIIScan-{0}-{1}{2}' -f $Stamp, $copy, $Extension)
-        $copy++
-    }
+    while (Test-Path -LiteralPath $path) { $path = Join-Path $folder ('{0} ({1}).xlsx' -f $base, $copy); $copy++ }
     return $path
 }
 
-function ConvertTo-SafeCell {
-    # Excel reads a cell that starts with = + - @, a tab or a carriage return as a formula. A leading
-    # apostrophe makes it plain text, so text from a scanned file cannot plant a formula in the CSV.
-    param([AllowEmptyString()][string]$Value)
-    if ($Value -match '^[=+\-@\t\r]') { return "'" + $Value }
-    return $Value
+function Get-HitCells {
+    # One row of a hit tab: the hit's cells in the order of $HitColumns.
+    param($Hit)
+    @($Hit.Confidence, $Hit.Channel, $Hit.Item, $Hit.MaskedValue, $Hit.Context, $Hit.Modified, $Hit.Link, $Hit.Source)
 }
 
-function Export-ScanCsv {
+function Get-WorkbookSheets {
     <#
     .SYNOPSIS
-      Saves all rows to a new CSV (one row per hit or note). An empty result still gets the header row.
+      The tabs of the workbook: Summary first, then one tab per PII type with High or Medium hits (worst type
+      first), then Low confidence and Not scanned when they have rows (the PAM, 2026-11-20).
     .PARAMETER Rows
       All report rows.
-    .PARAMETER OutputFolder
-      The folder for the report.
-    .PARAMETER Stamp
-      The time stamp shared with the .txt report of the same run.
+    .PARAMETER ItemsScanned
+      How many files were read.
+    .PARAMETER Header
+      Label and value pairs for the top of the Summary tab.
+    .PARAMETER FolderLabel
+      'Channel' (a team) or 'Folder' (a plain site): the name of the folder column.
     .OUTPUTS
-      [string] the CSV path.
+      [object[]] New-XlsxSheet objects.
     #>
-    param([object[]]$Rows, [string]$OutputFolder, [string]$Stamp)
-    $path = New-ReportPath $OutputFolder $Stamp '.csv'
-    if (@($Rows).Count -eq 0) {
-        ($script:CsvColumns | ForEach-Object { '"' + $_ + '"' }) -join ',' | Set-Content -LiteralPath $path -Encoding UTF8 -ErrorAction Stop
-        return $path
+    param([object[]]$Rows, [int]$ItemsScanned, [System.Collections.IDictionary]$Header, [string]$FolderLabel)
+    $hits = @($Rows | Where-Object { $script:Rank.ContainsKey($_.Confidence) })
+    $columns = @('Confidence', $FolderLabel, 'Item', 'Masked value', 'Context', 'Modified', 'Link', 'Found in')
+    $widths = @(11, 22, 45, 18, 60, 17, 50, 10)
+    $byRank = @{ Expression = { $script:Rank[$_.Confidence] }; Descending = $true }
+    $sheets = New-Object System.Collections.Generic.List[object]
+    $sheets.Add((New-XlsxSheet 'Summary' @($script:ToolTitle, '', '', '', '') (Get-SummaryRows $Rows $ItemsScanned $Header) @(28, 70, 9, 9, 9)))
+    foreach ($type in @(Get-TypeCounts $hits | Where-Object { $_.High + $_.Medium -gt 0 } | ForEach-Object { $_.Type })) {
+        $typeHits = @($hits | Where-Object { $_.Detector -eq $type -and $_.Confidence -ne 'Low' } | Sort-Object $byRank, Channel, Item)
+        $sheets.Add((New-XlsxSheet $type $columns @($typeHits | ForEach-Object { , (Get-HitCells $_) }) $widths -List))
     }
-    $safeRows = foreach ($row in $Rows) {
-        $cells = [ordered]@{}
-        foreach ($column in $script:CsvColumns) { $cells[$column] = ConvertTo-SafeCell ([string]$row.$column) }
-        [pscustomobject]$cells
+    $low = @($hits | Where-Object { $_.Confidence -eq 'Low' } | Sort-Object { Get-SeverityIndex $_.Detector }, Channel, Item)
+    if ($low.Count -gt 0) {
+        $sheets.Add((New-XlsxSheet 'Low confidence' (@('Type') + $columns) @($low | ForEach-Object { , (@($_.Detector) + (Get-HitCells $_)) }) (@(16) + $widths) -List))
     }
-    $safeRows | Export-Csv -LiteralPath $path -NoTypeInformation -Encoding UTF8 -ErrorAction Stop
-    return $path
+    $notes = @($Rows | Where-Object { -not $script:Rank.ContainsKey($_.Confidence) })
+    if ($notes.Count -gt 0) {
+        $sheets.Add((New-XlsxSheet 'Not scanned' @('Status', $FolderLabel, 'Item', 'Reason', 'Link') `
+            @($notes | ForEach-Object { , @($_.Detector, $_.Channel, $_.Item, $_.Context, $_.Link) }) @(14, 22, 45, 70, 50) -List))
+    }
+    return $sheets.ToArray()
 }
 
-function Export-ScanText {
+function Get-SummaryRows {
     <#
     .SYNOPSIS
-      Saves the readable summary lines to a new .txt file.
-    .PARAMETER Lines
-      Output of Get-ScanSummaryText.
-    .PARAMETER OutputFolder
-      The folder for the report.
-    .PARAMETER Stamp
-      The time stamp shared with the .csv report of the same run.
+      The rows of the Summary tab: the scan's details and totals, the hits per type (worst first), then how to read
+      the tabs, the breach step and the handling note.
+    .PARAMETER Rows
+      All report rows.
+    .PARAMETER ItemsScanned
+      How many files were read.
+    .PARAMETER Header
+      Label and value pairs for the top (site, folders, time).
     .OUTPUTS
-      [string] the .txt path.
+      [object[]] rows, each an array of cells.
     #>
-    param([string[]]$Lines, [string]$OutputFolder, [string]$Stamp)
-    $path = New-ReportPath $OutputFolder $Stamp '.txt'
-    $Lines | Set-Content -LiteralPath $path -Encoding UTF8 -ErrorAction Stop
-    return $path
+    param([object[]]$Rows, [int]$ItemsScanned, [System.Collections.IDictionary]$Header)
+    $hits = @($Rows | Where-Object { $script:Rank.ContainsKey($_.Confidence) })
+    foreach ($pair in @($Header.GetEnumerator()) + @((Get-ScanMetrics $Rows $ItemsScanned).GetEnumerator())) { , @($pair.Key, $pair.Value) }
+    , @('')
+    , @('Possible PII by type (worst first)', 'Total', 'High', 'Medium', 'Low')
+    foreach ($type in @(Get-TypeCounts $hits)) { , @($type.Type, $type.Total, $type.High, $type.Medium, $type.Low) }
+    if ($hits.Count -eq 0) { , @('None found in the files that were read.') }
+    , @('')
+    , @('Tabs', 'One tab per type with High or Medium hits, worst type first; then Low confidence; then Not scanned.')
+    , @('Confidence', 'A pattern guess, not proof: open each item and check it before you act.')
+    , @('If you find PII', $script:BreachAdvice)
+    , @('Handling', 'Handle this file as CUI: it shows where PII is. Every value in it is masked.')
 }
 
 function Publish-ScanReport {
     <#
     .SYNOPSIS
-      Shows the summary on screen and saves both files: the readable report (.txt) and the spreadsheet (.csv).
+      Shows the summary on screen and saves the workbook (Summary tab first). Returns its path.
     .PARAMETER Rows
       All report rows.
     .PARAMETER ItemsScanned
-      How many files and posts were read.
+      How many files were read.
     .PARAMETER Header
-      Lines for the top of the report.
+      Label and value pairs for the top of the summary.
     .PARAMETER OutputFolder
-      The folder for the reports.
+      The base folder; the workbook goes in <site>\<day> under it.
+    .PARAMETER SiteUrl
+      The site address (names the site folder).
+    .PARAMETER FolderLabel
+      'Channel' (a team) or 'Folder' (a plain site).
     .OUTPUTS
-      [string[]] the paths of the saved files.
+      [string] the workbook path.
     #>
-    param([object[]]$Rows, [int]$ItemsScanned, [string[]]$Header, [string]$OutputFolder)
-    $lines = Get-ScanSummaryText -Rows $Rows -ItemsScanned $ItemsScanned -Header $Header
-    $lines | ForEach-Object { Write-Host $_ }
-    $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
-    $saved = @(
-        (Export-ScanText -Lines $lines -OutputFolder $OutputFolder -Stamp $stamp),
-        (Export-ScanCsv -Rows $Rows -OutputFolder $OutputFolder -Stamp $stamp)
-    )
+    param([object[]]$Rows, [int]$ItemsScanned, [System.Collections.IDictionary]$Header, [string]$OutputFolder, [string]$SiteUrl,
+          [string]$FolderLabel = 'Folder')
+    Get-ScanSummaryText -Rows $Rows -ItemsScanned $ItemsScanned -Header $Header -FolderLabel $FolderLabel | ForEach-Object { Write-Host $_ }
+    $path = Get-ResultPath $OutputFolder $SiteUrl
+    Export-Xlsx -Path $path -Sheets (Get-WorkbookSheets $Rows $ItemsScanned $Header $FolderLabel)
     Write-Host ''
-    foreach ($path in $saved) { Write-Host "Saved (values masked): $path" -ForegroundColor Cyan }
-    Write-Host 'Handle these files as CUI: they show where PII is.' -ForegroundColor Yellow
-    return $saved
+    Write-Host "Saved (values masked): $path" -ForegroundColor Cyan
+    Write-Host 'Handle this file as CUI: it shows where PII is.' -ForegroundColor Yellow
+    return $path
 }
 
-Export-ModuleMember -Function New-ReportRow, Add-IncompleteRow, Get-ReportSummary, Get-ScanSummaryText, Export-ScanCsv, Export-ScanText,
-Publish-ScanReport
+Export-ModuleMember -Function New-ReportRow, Add-IncompleteRow, Get-ReportSummary, Get-TypeCounts, Get-ScanSummaryText, Get-WorkbookSheets,
+Get-ResultPath, Publish-ScanReport

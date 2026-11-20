@@ -62,6 +62,7 @@ main{padding-block:32px 48px}
 .tool{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:26px;display:flex;flex-direction:column;gap:26px}
 .tool > header{display:flex;flex-direction:column;gap:8px}
 .tool h2{font-size:1.5rem}
+.tool h2 .sub2{display:block;font-size:.95rem;font-weight:600;color:var(--mut);margin-top:4px}   /* the subtitle under the name */
 .tool h3{font-size:1.05rem}
 .tool section{display:flex;flex-direction:column;gap:12px;min-width:0}
 .mut{color:var(--mut)}
@@ -125,8 +126,8 @@ tr:last-child td{border-bottom:0}
   <div class="wrap">
     <article class="tool" aria-labelledby="t1">
       <header>
-        <h2 id="t1">DoD365 PII Scan</h2>
-        <p>Checks the files in one Teams team or SharePoint site you can open (and a team's posts) for personal data (SSNs, DoD IDs, dates of birth and more) and gives you a short report. It only reads, and every value it finds is masked.</p>
+        <h2 id="t1">Ion <span class="sub2">DoD365 PII Reporter</span></h2>
+        <p>Checks the files in one Teams team or SharePoint site you can open for personal data (SSNs, DoD IDs, dates of birth and more) and gives you a comprehensive report: one Excel workbook with a summary first, then one tab per type of PII, worst first. It only reads, and every value it finds is masked.</p>
       </header>
 
       <section aria-labelledby="h-ok">
@@ -134,7 +135,7 @@ tr:last-child td{border-bottom:0}
         <ul class="plain">
           <li>Read-only: it changes nothing in Teams or SharePoint.</li>
           <li>Your own CAC sign-in and your own access; nothing is stored.</li>
-          <li>Data stays within DoD365; the only export is the report saved on your machine.</li>
+          <li>Data stays within DoD365; the only export is the results workbook saved on your machine.</li>
           <li>Pasted into PowerShell ISE: no download, no admin rights, no policy change.</li>
           <li>Inspect the output code yourself within a .txt before execution.</li>
         </ul>
@@ -171,7 +172,7 @@ tr:last-child td{border-bottom:0}
               <tr><td>Name</td><td>After "Name:", "Spouse:", "NOK:" and similar</td><td>Initials</td></tr>
             </tbody>
           </table></div>
-          <p class="small mut" style="padding:0 12px 12px">Not read: PDFs, images, old Office files and files over 25 MB (each is listed in the report, to check by hand), and chats (not checked at all).</p>
+          <p class="small mut" style="padding:0 12px 12px">Not read: PDFs, images, old Office files and files over 25 MB (each is listed in the workbook, to check by hand), and channel posts and chats (not checked at all).</p>
         </details>
       </section>
 
@@ -188,7 +189,7 @@ tr:last-child td{border-bottom:0}
 /*
   The two buttons of this page.
 
-  What it does: loads the DoD365 PII Scan paste script from this site (paste/33332Z-pii-spot-check.ps1) as it is, and then
+  What it does: loads the Ion paste script from this site (paste/33332Z-pii-spot-check.ps1) as it is, and then
   either copies the whole script ("Copy the script") or saves it as a .txt file to read first ("Open the script").
   The page adds nothing to the script: the script asks for the Teams link or site address when it runs.
   Text is only ever shown with textContent, never as HTML.
@@ -199,7 +200,7 @@ tr:last-child td{border-bottom:0}
   // ---- Settings ----------------------------------------------------------------------------------------------
   var SCRIPT_PATH = 'paste/33332Z-pii-spot-check.ps1';                     // served next to this page
   var RAW_URL = 'https://raw.githubusercontent.com/rhope-ops/33-332.Z/main/' + SCRIPT_PATH;   // the fallback link
-  var TXT_NAME = '33332Z-pii-spot-check.txt';                              // the name of the saved .txt file
+  var TXT_NAME = 'Ion-script.txt';                                         // the name of the saved .txt file
 
   // ---- The page elements -------------------------------------------------------------------------------------
   var copyButton = document.getElementById('copy');

@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
-"""Build the paste bundle of the DoD365 PII Scan: one PowerShell text that a person pastes into Windows
+"""Build the paste bundle of Ion (DoD365 PII Reporter): one PowerShell text that a person pastes into Windows
 PowerShell ISE and runs with F5 (AGENTS.md "Platform": paste and run, never an execution-policy change).
 
 Why: a gov computer runs pasted text in ISE, not downloaded files (ISSM ruling 2026-11-13). A pasted text loads no
 module file and runs no script file, so the execution policy does not apply to it.
 What it writes: paste/33332Z-pii-spot-check.ps1, in this order:
   1. a header (how to run first, then GENERATED, the sources with their SHA-256, Network/Writes/Credentials, a contents list);
-  2. the Settings block: plain variables a person may set in ISE (site, report folder, file size limit);
-  3. the six modules of src/, inline (no Import-Module), in dependency order;
+  2. the Settings block: plain variables a person may set in ISE (site, results folder, file size limit);
+  3. the seven modules of src/, inline (no Import-Module), in dependency order;
   4. the body of src/Find-ChannelPII.ps1 (from its "# ==== Body ====" line to the end);
   5. a Clean-up block: parts 3 and 4 run inside try/finally, which turns strict mode off and puts the ISE session's
      error setting back when the run ends.
-Inputs:  src/PiiDetectors.psm1, src/PiiMasking.psm1, src/TextExtract.psm1, src/Report.psm1, src/ScanMeter.psm1,
+Inputs:  src/PiiDetectors.psm1, src/PiiMasking.psm1, src/TextExtract.psm1, src/XlsxWriter.psm1, src/Report.psm1, src/ScanMeter.psm1,
          src/ChannelScan.psm1,
          src/Find-ChannelPII.ps1.
 Outputs: the bundle file; with --check, nothing: exit 1 when the committed bundle differs from a fresh build.
@@ -32,7 +32,7 @@ ROOT = Path(__file__).resolve().parent.parent
 BUNDLE = ROOT / 'paste' / '33332Z-pii-spot-check.ps1'
 MAIN = 'src/Find-ChannelPII.ps1'
 # Dependency order: each module uses only those listed before it (their headers say so).
-MODULES = ('src/PiiDetectors.psm1', 'src/PiiMasking.psm1', 'src/TextExtract.psm1', 'src/Report.psm1',
+MODULES = ('src/PiiDetectors.psm1', 'src/PiiMasking.psm1', 'src/TextExtract.psm1', 'src/XlsxWriter.psm1', 'src/Report.psm1',
            'src/ScanMeter.psm1', 'src/ChannelScan.psm1')
 BODY_MARK = '# ==== Body ===='
 # The end of the bundle: strict mode off and the session's error setting back, also after an error or Ctrl+C, so
@@ -50,10 +50,10 @@ EXPORT_START = 'Export-ModuleMember'
 STRICT_LINE = 'Set-StrictMode -Version 2.0'
 
 # The Settings block: a person may edit these values in ISE before F5; empty means the script asks. The scan
-# always covers all channels and their posts and saves both report files (the PAM, 2026-11-20).
+# always covers every folder of the site's library and saves one workbook (the PAM, 2026-11-20).
 SETTINGS = """# ==== Settings ==== (optional: edit the values between the quotes; empty = the script asks)
 $SiteUrl = ''            # the team's Teams link, or its site https://usaf.dps.mil/teams/<team-site>; empty = asked
-$OutputFolder = (Join-Path ([Environment]::GetFolderPath('MyDocuments')) 'PII-Scan')   # where the report is saved
+$OutputFolder = (Join-Path ([Environment]::GetFolderPath('MyDocuments')) 'Ion')   # results: a folder per site, then per day
 $MaxFileMB = 25          # files larger than this are reported as NOT SCANNED
 
 # ISE runs pasted text in your session: keep its error setting so the Clean-up block at the end can put it back.
@@ -132,7 +132,7 @@ def header(sources, contents):
         The header text.
     """
     out = ['<#',
-           '  33-332.Z DoD365 PII Scan (GENERATED from src/ by scripts/build_paste.py: do not edit this text)',
+           '  Ion - DoD365 PII Reporter (33-332.Z; GENERATED from src/ by scripts/build_paste.py: do not edit this text)',
            '',
            '  HOW TO RUN',
            '    1. Optional: read this text first (the Open the script button saves it as a .txt file for Notepad).',
@@ -142,20 +142,20 @@ def header(sources, contents):
            '       site address (in Teams: the Shared tab > ... > Open in SharePoint). Sign in with your CAC.',
            '       If you do not see a sign-in window, press Alt+Tab.',
            '    5. Watch the two progress bars (the whole scan, and the file in work) and the line per folder.',
-           '       At the end, read the summary; both report files (.txt and .csv) are saved in Documents\\PII-Scan.',
-           '       Handle them as CUI: they show where PII is.',
+           '       At the end, read the summary of hits per PII type. The results workbook is saved in',
+           '       Documents\\Ion\\<site>\\<date>: a Summary tab, then one tab per PII type (worst first).',
+           '       Handle it as CUI: it shows where PII is.',
            '',
            '  It scans the site\'s Documents library: every folder (in a team, one per standard channel) and the files at',
-           '  its top. For a team it then tries the posts and replies (a second sign-in; if your tenant refuses it,',
-           '  close that window: the file results are kept).',
+           '  its top. One sign-in only: channel posts are not read.',
            '',
            '  Built from these files; to change it, change them and rebuild with: python3 scripts/build_paste.py']
     out += ['    %s, sha256 %s' % (rel, digest[:12]) for rel, digest in sources]
     out += ['',
             '  Read-only: it never changes, moves or deletes anything in Teams or SharePoint. Every value found is masked.',
             '  Run target: Windows PowerShell 5.1 with PnP.PowerShell 1.12.0; no admin rights, no file to unblock.',
-            '  Network: only the one team\'s site, then Microsoft Graph for that one team (posts).',
-            '  Writes: only the report files in $OutputFolder (default Documents\\PII-Scan).',
+            '  Network: only the one site given.',
+            '  Writes: only the results workbook under $OutputFolder (default Documents\\Ion).',
             '  Credentials: your own CAC sign-in in the PnP sign-in window; nothing is stored.',
             '',
             '  Contents (line numbers of this file):']

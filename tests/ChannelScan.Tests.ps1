@@ -1,8 +1,8 @@
 <#
 ChannelScan.Tests.ps1 - tests of ChannelScan.psm1 against the fake PnP cmdlets (FakePnP.ps1).
 
-  Purpose:     Site address check; the progress meter text; file scan (hits, NOT SCANNED, masked file names, links);
-               the download fallback without -AsMemoryStream; posts refused and posts allowed.
+  Purpose:     Site address check; team or plain site; the progress meter text; file scan (hits, NOT SCANNED, masked file names, links);
+               the download fallback without -AsMemoryStream.
   Inputs:      $Sample, $Docx, $Txt (earlier test files); the fakes.
   Outputs:     passes and failures counted by Assert-Equal.
   How to run:  dot-sourced by tests/Run-Tests.ps1.
@@ -157,36 +157,8 @@ Assert-Equal $true (Test-FakePnPCall 'Get-PnPContext') 'Fallback used the client
 Assert-Equal 1 @($rows | Where-Object { $_.Detector -eq 'SSN' -and $_.Item -eq 'Roster.docx' }).Count 'Fallback finds the SSN'
 . (Join-Path $PSScriptRoot 'FakePnP.ps1')  # put the full fake Get-PnPFile back for the next tests
 
-# ---- A plain SharePoint site (no team): no posts, no second sign-in, no BLOCKED row ----
+# ---- Team or plain site: names the folder column ----
 Reset-FakePnP @{}
+Assert-Equal $true (Test-TeamSite) 'A team site is a team'
 Set-FakeSiteAnswer -TypedSite '' -SiteGroupId ([guid]::Empty)
-$siteRows = New-Object System.Collections.Generic.List[object]
-Assert-Equal 0 (Invoke-PostScan -SiteUrl $Sample.Site -Channels @('General') -Rows $siteRows 6>$null) 'Site without a team: no posts'
-Assert-Equal 'NOT SCANNED' (($siteRows | Select-Object -ExpandProperty Detector) -join ',') 'Site without a team: one NOT SCANNED row'
-Assert-Equal 0 @(Get-FakePnPConnection).Count 'Site without a team: no Graph sign-in'
-Reset-FakePnP @{}
-Set-FakePnPOption SiteFails $true
-$siteRows = New-Object System.Collections.Generic.List[object]
-Assert-Equal 0 (Invoke-PostScan -SiteUrl $Sample.Site -Channels @('General') -Rows $siteRows 6>$null) 'Site group not readable: no posts'
-Assert-Equal 'BLOCKED' (($siteRows | Select-Object -ExpandProperty Detector) -join ',') 'Site group not readable: one BLOCKED row'
-Reset-FakePnP @{}
-
-# ---- Posts refused, then allowed ----
-$rows = New-Object System.Collections.Generic.List[object]
-Assert-Equal 0 (Invoke-PostScan -SiteUrl $Sample.Site -Channels @('General') -Rows $rows 6>$null) 'Refused posts give 0'
-Assert-Equal 1 @($rows | Where-Object { $_.Detector -eq 'BLOCKED' }).Count 'BLOCKED row added'
-Assert-Equal $false ($rows[0].Context -match '\d') 'Error text in a BLOCKED row is masked'
-Set-FakePnPOption PostsAllowed $true
-$rows = New-Object System.Collections.Generic.List[object]
-Assert-Equal 2 (Invoke-PostScan -SiteUrl $Sample.Site -Channels @('General', 'Ops') -Rows $rows 6>$null) 'Post and reply scanned'
-Assert-Equal $true (Test-FakePnPCall ('Quiet sign-in ' + $Sample.Site)) 'Posts sign-in warnings hidden'
-$lines = @(Invoke-PostScan -SiteUrl $Sample.Site -Channels @('General', 'Ops') -Rows (New-Object System.Collections.Generic.List[object]) 6>&1 |
-    Where-Object { $_ -is [System.Management.Automation.InformationRecord] } | ForEach-Object { [string]$_ })
-Assert-Equal $true (($lines -join ' ') -match '\[1/2\] General: 2 posts - read 2') 'Posts channel line counts its posts and replies'
-Assert-Equal $true (($lines -join ' ') -match 'Posts done: 2 posts done \| read 2') 'Posts total counts posts and replies'
-Assert-Equal 'DoD ID Personal e-mail NOT SCANNED' (($rows | ForEach-Object { $_.Detector }) -join ' ') 'Post hits; Ops has no Teams channel'
-$rows = New-Object System.Collections.Generic.List[object]
-$shown = (Invoke-PostScan -SiteUrl $Sample.Site -Channels @("SSN $($Sample.Ssn)") -Rows $rows 6>&1 | ForEach-Object { [string]$_ }) -join ' '
-Assert-Equal $false $shown.Contains($Sample.Ssn) 'Posts channel lines never show the SSN'
-Assert-Equal $false (Get-FakeProgressText).Contains($Sample.Ssn) 'Posts progress bar never shows the SSN'
-Assert-Equal $false (($rows | ForEach-Object { $_.Channel }) -join ' ').Contains($Sample.Ssn) 'Posts rows never show the SSN'
+Assert-Equal $false (Test-TeamSite) 'A plain SharePoint site is not a team'

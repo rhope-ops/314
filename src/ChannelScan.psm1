@@ -1,20 +1,20 @@
 <#
-ChannelScan.psm1 - reads one team's or site's files (and a team's posts) and turns them into report rows.
+ChannelScan.psm1 - reads one team's or site's files and turns them into report rows.
 
   Purpose:     The SharePoint and Teams steps of Find-ChannelPII.ps1, one function per step: read the
                Teams link or site address, sign in to the team's site, find the library, list the channel
-               folders, scan each file with a progress bar and live counts, try the posts.
+               folders, scan each file with a progress bar and live counts. Posts are not read (the PAM,
+               2026-11-20: one sign-in only; reading posts needs an admin-approved Graph permission).
   Inputs:      the Teams link or site address the person gives.
   Outputs:     report rows (Report.psm1 New-ReportRow) added to the list the caller passes in.
   Depends on:  PnP.PowerShell 1.12.0; PiiDetectors.psm1, PiiMasking.psm1, TextExtract.psm1, Report.psm1,
                ScanMeter.psm1 (all imported first by Find-ChannelPII.ps1).
   How to run:  imported by Find-ChannelPII.ps1; not run on its own.
   Run target:  Windows PowerShell 5.1 (also PowerShell 7).
-  Network:     only the one SharePoint site of the team the person gives; for posts, Microsoft Graph for that
-               one team. Nothing lists other sites or teams (no network reconnaissance).
+  Network:     only the one SharePoint site the person gives. Nothing lists other sites or teams (no network
+               reconnaissance).
   Writes:      none in SharePoint or Teams: read calls only. Rows go to an in-memory list.
-  Credentials: the person's own CAC sign-in (PnP web login). Posts open a second, interactive sign-in.
-               Nothing is stored.
+  Credentials: the person's own CAC sign-in (PnP web login). Nothing is stored.
 #>
 
 Set-StrictMode -Version 2.0
@@ -46,13 +46,6 @@ $script:SiteUrlPattern = '^(?<host>https://[A-Za-z0-9.-]+)/(?::[a-z]:/r/)?(?<sit
 # The path may hold spaces (a channel name) but not a second address ('://' or '/l/'), so text pasted after the link is not read.
 $script:TeamsLinkPattern = '^https://[A-Za-z0-9.-]+/l/(?<kind>team|channel)/(?:(?!://|/l/)[^?#\r\n])+\?(?:[^#\s]*&)?groupId=' +
                            '(?<id>[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12})(?![0-9A-Fa-f-])'
-
-# Microsoft cloud for the posts sign-in: DoD365 runs in the US Government DoD cloud.
-$script:GraphCloud = 'USGovernmentDoD'
-
-# What a blocked posts step needs, shown in the report.
-$script:PostsBlockedAdvice = 'Needs admin consent for the Graph permission ChannelMessage.Read.All, ' +
-                             'or ask your privacy or cybersecurity office for a Microsoft Purview content search.'
 
 # =====================================================================================
 # Site, library and channels
@@ -399,144 +392,20 @@ function Invoke-FileScan {
 }
 
 # =====================================================================================
-# Posts (always tried; a refusal is reported and the file results stay)
+# Team or plain site
 # =====================================================================================
 
-function Add-PostRows {
+function Test-TeamSite {
     <#
     .SYNOPSIS
-      Scans one post or reply (subject and body) and adds its report rows. The item names the post by
-      date and id only, never by author (an author's name is PII).
-    .PARAMETER Message
-      The post or reply from PnP.
-    .PARAMETER Channel
-      The channel name.
-    .PARAMETER Kind
-      'Post' or 'Reply'.
-    .PARAMETER Rows
-      The list that receives the rows.
+      True when the connected site belongs to a team (a Microsoft 365 group): its folders are then channels.
+      The report names the folder column "Channel" for a team and "Folder" for a plain site (the PAM, 2026-11-20).
     .OUTPUTS
-      [int] 1 (one item scanned).
+      [bool]
     #>
-    param($Message, [string]$Channel, [string]$Kind, $Rows)
-    $text = ''
-    if ($Message.PSObject.Properties['Subject'] -and $Message.Subject) { $text = [string]$Message.Subject + "`n" }
-    if ($Message.Body) { $text += Convert-HtmlToText ([string]$Message.Body.Content) }
-    $when = ''
-    if ($Message.CreatedDateTime) { $when = ([datetime]$Message.CreatedDateTime).ToString('yyyy-MM-dd HH:mm') }
-    $item = '{0} {1} (id {2})' -f $Kind, $when, $Message.Id
-    foreach ($hit in @(Find-PiiInText $text)) {
-        $Rows.Add((New-ReportRow 'Post' $Channel $item '' $when $hit.Detector $hit.Confidence $hit.MaskedValue $hit.Context))
-    }
-    return 1
-}
-
-function Connect-TeamGraph {
-    <#
-    .SYNOPSIS
-      Opens the second sign-in for Microsoft Graph and returns the team's id and channels.
-      Throws when the tenant refuses the sign-in or the call.
-    .PARAMETER SiteUrl
-      The team's site address.
-    .PARAMETER GroupId
-      The team's group ID (Invoke-PostScan reads it from the site first).
-    .OUTPUTS
-      [pscustomobject] GroupId, Channels.
-    #>
-    param([string]$SiteUrl, [guid]$GroupId)
-    Write-Host 'Posts: a second sign-in window opens for Microsoft Graph (if you do not see it, press Alt+Tab). If your tenant refuses it, close the window: the file results are kept.'
-    Connect-PnPOnline -Url $SiteUrl -Interactive -AzureEnvironment $script:GraphCloud -ErrorAction Stop -WarningAction SilentlyContinue
-    $channels = @(Get-PnPTeamsChannel -Team $GroupId -ErrorAction Stop)
-    [pscustomobject]@{ GroupId = $GroupId; Channels = $channels }
-}
-
-function Invoke-ChannelPostScan {
-    <#
-    .SYNOPSIS
-      Scans the posts and replies of one channel. A refused call becomes a BLOCKED or NOT SCANNED row.
-    .PARAMETER Team
-      Output of Connect-TeamGraph.
-    .PARAMETER Channel
-      The channel folder name (Teams uses the same name for the channel).
-    .PARAMETER Rows
-      The list that receives the rows.
-    .OUTPUTS
-      [int] the number of posts and replies scanned.
-    #>
-    param($Team, [string]$Channel, $Rows)
-    $teamsChannel = @($Team.Channels | Where-Object { $_.DisplayName -ieq $Channel })
-    $Channel = Protect-PiiText $Channel   # from here on, the channel name as the report shows it
-    if ($teamsChannel.Count -eq 0) { $Rows.Add((New-ReportRow 'Posts' $Channel '(posts)' '' '' 'NOT SCANNED' '' '' 'No Teams channel with this folder name')); return 0 }
-    $channelId = $teamsChannel[0].Id
-    try { $messages = @(Get-PnPTeamsChannelMessage -Team $Team.GroupId -Channel $channelId -ErrorAction Stop) }
-    catch {
-        # Posts are optional: a refusal is reported, and the file results stay.
-        $Rows.Add((New-ReportRow 'Posts' $Channel '(posts)' '' '' 'BLOCKED' '' '' ((Protect-PiiText ('Posts could not be read: ' + $_.Exception.Message)) + ' | ' + $script:PostsBlockedAdvice)))
-        return 0
-    }
-    $scanned = 0
-    foreach ($message in $messages) {
-        $scanned += Add-PostRows $message $Channel 'Post' $Rows
-        try {
-            foreach ($reply in @(Get-PnPTeamsChannelMessageReply -Team $Team.GroupId -Channel $channelId -Message $message.Id -ErrorAction Stop)) {
-                $scanned += Add-PostRows $reply $Channel 'Reply' $Rows
-            }
-        }
-        catch {
-            # Replies of one post could not be read: note it and go on with the next post.
-            $Rows.Add((New-ReportRow 'Posts' $Channel ('Replies to post id ' + $message.Id) '' '' 'NOT SCANNED' '' '' (Protect-PiiText ('Replies could not be read: ' + $_.Exception.Message))))
-        }
-    }
-    return $scanned
-}
-
-function Invoke-PostScan {
-    <#
-    .SYNOPSIS
-      Tries to scan the posts and replies of the given channels (all of the team's) through Microsoft Graph. Reading posts
-      needs a permission an admin may not have granted; then one BLOCKED row says so, and the file
-      results stay.
-    .PARAMETER SiteUrl
-      The team's site address.
-    .PARAMETER Channels
-      The channel names to scan.
-    .PARAMETER Rows
-      The list that receives the rows.
-    .OUTPUTS
-      [int] the number of posts and replies scanned.
-    #>
-    param([string]$SiteUrl, [string[]]$Channels, $Rows)
-    try {
-        # A plain SharePoint site has no team, so no posts: say so, with no second sign-in and no BLOCKED row.
-        $groupId = (Get-PnPSite -Includes GroupId -ErrorAction Stop).GroupId
-        if (-not $groupId -or $groupId -eq [guid]::Empty) {
-            Write-Host 'Posts: this site is not a team, so it has no posts to scan.'
-            $Rows.Add((New-ReportRow 'Posts' '(all)' '(posts)' '' '' 'NOT SCANNED' '' '' 'This site is not a team: it has no posts'))
-            return 0
-        }
-        $team = Connect-TeamGraph $SiteUrl $groupId
-    }
-    catch {
-        # Posts are optional: a refused sign-in is reported, and the file results stay.
-        $Rows.Add((New-ReportRow 'Posts' '(all)' '(posts)' '' '' 'BLOCKED' '' '' ((Protect-PiiText ('Posts could not be read: ' + $_.Exception.Message)) + ' | ' + $script:PostsBlockedAdvice)))
-        return 0
-    }
-    $meter = New-ScanMeter 0   # the post count is not known up front: the bar moves by channel
-    for ($c = 0; $c -lt $Channels.Count; $c++) {
-        $channel = $Channels[$c]
-        Write-Progress -Id 1 -Activity ("Scanning posts - channel {0} of {1}: '{2}'" -f ($c + 1), $Channels.Count, (Protect-PiiText $channel)) `
-            -Status (Get-ScanMeterText $meter 'post') -PercentComplete ([int](100 * $c / $Channels.Count))
-        $before = $meter.Clone()
-        $firstRow = $Rows.Count
-        $read = Invoke-ChannelPostScan $team $channel $Rows
-        Update-ScanMeter $meter $Rows $firstRow $read
-        $meter.Done += $read - 1   # Update-ScanMeter counted the channel as one item: count its posts and replies
-        Write-ChannelLine ('{0}/{1}' -f ($c + 1), $Channels.Count) $channel $before $meter 'post'
-    }
-    Write-Progress -Id 1 -Activity 'Scanning posts' -Completed
-    Write-Host ('Posts done: ' + (Get-ScanMeterText $meter 'post')) -ForegroundColor Cyan
-    return $meter.Read
+    $groupId = (Get-PnPSite -Includes GroupId -ErrorAction Stop).GroupId
+    return [bool]($groupId -and $groupId -ne [guid]::Empty)
 }
 
 Export-ModuleMember -Function Test-TeamSiteUrl, Get-ScanTarget, Connect-TeamSite, Get-TeamDocumentLibrary, Get-ChannelFolderNames,
-Invoke-FileScan, Invoke-PostScan
+Invoke-FileScan, Test-TeamSite

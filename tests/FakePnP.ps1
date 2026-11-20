@@ -33,7 +33,6 @@ function Reset-FakePnP {
     $global:FakePnP = @{
         Files       = $Files
         Folders     = @('General', 'Ops', 'Forms')
-        PostsAllowed = $false
         ListFails   = $false
         ConnectFails = $false                                     # the web login to a site fails (an error before the scan)
         SiteFails   = $false                                      # Get-PnPSite fails (the site's group cannot be read)
@@ -45,8 +44,8 @@ function Reset-FakePnP {
 }
 
 function Set-FakePnPOption {
-    # Changes one switch of the fake site: PostsAllowed, ListFails, ConnectFails or SiteFails.
-    param([ValidateSet('PostsAllowed', 'ListFails', 'ConnectFails', 'SiteFails')][string]$Name, [bool]$Value)
+    # Changes one switch of the fake site: ListFails, ConnectFails or SiteFails.
+    param([ValidateSet('ListFails', 'ConnectFails', 'SiteFails')][string]$Name, [bool]$Value)
     $global:FakePnP[$Name] = $Value
 }
 
@@ -171,12 +170,11 @@ function global:Write-Progress {
 
 # Sign-in, sign-out and the team behind the site.
 function global:Connect-PnPOnline {
-    # Fake: the web login always works; the Graph sign-in works only when PostsAllowed is set.
-    [CmdletBinding()] param($Url, [switch]$UseWebLogin, [switch]$Interactive, $AzureEnvironment)
+    # Fake: the web login works unless ConnectFails is set.
+    [CmdletBinding()] param($Url, [switch]$UseWebLogin)
     $global:FakePnP.Calls.Add('Connect ' + $Url)
     if ($PSBoundParameters['WarningAction'] -eq 'SilentlyContinue') { $global:FakePnP.Calls.Add('Quiet sign-in ' + $Url) }
     if ($UseWebLogin -and $global:FakePnP.ConnectFails) { throw 'FAKE: sign-in refused' }
-    if ($Interactive -and -not $global:FakePnP.PostsAllowed) { throw 'AADSTS65001: consent missing (fake)' }
 }
 
 function global:Disconnect-PnPOnline {
@@ -201,22 +199,3 @@ function global:Read-Host {
     return $global:FakePnP.TypedSite
 }
 
-# Posts (Graph).
-function global:Get-PnPTeamsChannel {
-    # Fake: one channel, General.
-    [CmdletBinding()] param($Team)
-    [pscustomobject]@{ DisplayName = 'General'; Id = '19:fake' }
-}
-
-function global:Get-PnPTeamsChannelMessage {
-    # Fake: one post with a subject and a DoD ID in its body.
-    [CmdletBinding()] param($Team, $Channel)
-    [pscustomobject]@{ Id = '1001'; Subject = 'Recall roster'; CreatedDateTime = [datetime]'2026-11-02'
-                       Body = [pscustomobject]@{ Content = "<p>DoD ID $($Sample.DodId)</p>" } }
-}
-
-function global:Get-PnPTeamsChannelMessageReply {
-    # Fake: one reply with a personal e-mail address.
-    [CmdletBinding()] param($Team, $Channel, $Message)
-    [pscustomobject]@{ Id = '1002'; CreatedDateTime = [datetime]'2026-11-03'; Body = [pscustomobject]@{ Content = "reply: $($Sample.Email)" } }
-}
