@@ -34,7 +34,8 @@ $script:TableWidth = 220
 # changed by AFI33-332_DAFGM2026-01 (7 July 2026; edition: docs/DECISIONS.md).
 # The wording is the same on the site page (the PAM, 2026-11-20).
 $script:BreachAdvice = 'PII where it should not be is a potential or actual breach; report it to your servicing Privacy ' +
-                       'Manager/Monitor without delay (AFI 33-332 para 3.1.2, as changed by AFI33-332_DAFGM2026-01).'
+                       'Manager/Monitor without delay (AFI 33-332 para 3.1.2, as changed by AFI33-332_DAFGM2026-01, page 1, ' +
+                       'second paragraph).'
 
 # Report choices (Select-ReportFormat): what is saved besides the on-screen summary.
 $script:ReportFormats = @('Both', 'Text', 'Csv')

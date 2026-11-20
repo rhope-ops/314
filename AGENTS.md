@@ -67,7 +67,7 @@ These are defaults: how work normally goes here. The method is yours unless the 
 
 - Data boundary (2026-11-20; cannot be changed): government data stays in DoD365: no real files, posts, names, e-mails, IDs, office symbols or site paths in this repo, a chat or a test; no tool writes data across the boundary; use invented data, with PII-shaped samples built from parts at run time.
 - No reconnaissance (2026-11-20; cannot be changed): a tool touches only the one site or team the person gives; nothing lists other sites, teams or users; any doubt: ask the PAM first.
-- Public repo (2026-11-20): never commit a wing's name or location, a real site path (only `https://usaf.dps.mil/sites/<team-site>`), DODIDs or gov-network details.
+- Public repo (2026-11-20): never commit a wing's name or location, a real site path (only the placeholders `https://usaf.dps.mil/sites/<team-site>` and `https://usaf.dps.mil/teams/<team-site>`), DODIDs or gov-network details.
 - Source authority (2026-11-20): AFI 33-332 with its guidance memorandum (edition: docs/DECISIONS.md) is the only rule source for each privacy step a tool or doc names; cite its paragraph; the memorandum wins where they differ.
 - Masked output (2026-11-20): every found PII value is masked wherever a tool shows or saves it.
 - Platform (2026-11-20): Windows PowerShell 5.1 and PnP.PowerShell 1.12.0 only; own CAC sign-in, read-only, no admin, no service account, no stored credentials; a tool reaches the gov device as one generated text pasted into PowerShell ISE (ISSM ruling 2026-11-13), never with an execution-policy change or unblocked files.
