@@ -20,10 +20,10 @@
     src/PiiDetectors.psm1, sha256 5758bbd9b581
     src/PiiMasking.psm1, sha256 dda7cdacfaf9
     src/TextExtract.psm1, sha256 1741328077ee
-    src/Report.psm1, sha256 5458cc87fecc
-    src/ScanMeter.psm1, sha256 eedce0f7dc4c
-    src/ChannelScan.psm1, sha256 32330b18d44e
-    src/Find-ChannelPII.ps1, sha256 924e0daeb29f
+    src/Report.psm1, sha256 7eca78909f79
+    src/ScanMeter.psm1, sha256 a97c4956cb1c
+    src/ChannelScan.psm1, sha256 56b4a1373fe5
+    src/Find-ChannelPII.ps1, sha256 ea10bd9e03a4
 
   Read-only: it never changes, moves or deletes anything in Teams or SharePoint. Every value found is masked.
   Run target: Windows PowerShell 5.1 with PnP.PowerShell 1.12.0; no admin rights, no file to unblock.
@@ -39,8 +39,8 @@
     line   870  Module Report.psm1
     line  1177  Module ScanMeter.psm1
     line  1315  Module ChannelScan.psm1
-    line  1846  Body of Find-ChannelPII.ps1
-    line  1902  Clean-up
+    line  1855  Body of Find-ChannelPII.ps1
+    line  1911  Clean-up
 #>
 
 # ==== Settings ==== (optional: edit the values between the quotes; empty = the script asks)
@@ -1035,7 +1035,7 @@ function Get-ScanSummaryText {
     $notes = @($Rows | Where-Object { -not $script:Rank.ContainsKey($_.Confidence) })
     $items = @(Get-ReportSummary $Rows)
     $lines = New-Object System.Collections.Generic.List[string]
-    $lines.Add('==== Teams channel PII spot check ====')
+    $lines.Add('==== DoD365 PII Scan ====')
     foreach ($line in $Header) { $lines.Add($line) }
     $lines.Add(('Items scanned: {0}   Items with possible PII: {1}   Possible PII hits: {2}   Not scanned / blocked: {3}' -f
             $ItemsScanned, $items.Count, $hits.Count, $notes.Count))
@@ -1293,7 +1293,7 @@ function Write-ChannelLine {
     .SYNOPSIS
       Prints one line when a folder (a channel) is done: its counts, yellow when it has possible PII.
     .PARAMETER Number
-      Which channel this is (1-based) and the channel count, as "2/5".
+      Which folder this is (1-based) and the folder count, as "2/5".
     .PARAMETER Channel
       The channel name (masked here).
     .PARAMETER Before
@@ -1749,19 +1749,19 @@ function Connect-TeamGraph {
     <#
     .SYNOPSIS
       Opens the second sign-in for Microsoft Graph and returns the team's id and channels.
-      Throws when the site has no team or the tenant refuses the sign-in or the call.
+      Throws when the tenant refuses the sign-in or the call.
     .PARAMETER SiteUrl
       The team's site address.
+    .PARAMETER GroupId
+      The team's group ID (Invoke-PostScan reads it from the site first).
     .OUTPUTS
       [pscustomobject] GroupId, Channels.
     #>
-    param([string]$SiteUrl)
-    $groupId = (Get-PnPSite -Includes GroupId -ErrorAction Stop).GroupId
-    if (-not $groupId -or $groupId -eq [guid]::Empty) { throw 'This site is not connected to a team.' }
+    param([string]$SiteUrl, [guid]$GroupId)
     Write-Host 'Posts: a second sign-in window opens for Microsoft Graph (if you do not see it, press Alt+Tab). If your tenant refuses it, close the window: the file results are kept.'
     Connect-PnPOnline -Url $SiteUrl -Interactive -AzureEnvironment $script:GraphCloud -ErrorAction Stop -WarningAction SilentlyContinue
-    $channels = @(Get-PnPTeamsChannel -Team $groupId -ErrorAction Stop)
-    [pscustomobject]@{ GroupId = $groupId; Channels = $channels }
+    $channels = @(Get-PnPTeamsChannel -Team $GroupId -ErrorAction Stop)
+    [pscustomobject]@{ GroupId = $GroupId; Channels = $channels }
 }
 
 function Invoke-ChannelPostScan {
@@ -1820,7 +1820,16 @@ function Invoke-PostScan {
       [int] the number of posts and replies scanned.
     #>
     param([string]$SiteUrl, [string[]]$Channels, $Rows)
-    try { $team = Connect-TeamGraph $SiteUrl }
+    try {
+        # A plain SharePoint site has no team, so no posts: say so, with no second sign-in and no BLOCKED row.
+        $groupId = (Get-PnPSite -Includes GroupId -ErrorAction Stop).GroupId
+        if (-not $groupId -or $groupId -eq [guid]::Empty) {
+            Write-Host 'Posts: this site is not a team, so it has no posts to scan.'
+            $Rows.Add((New-ReportRow 'Posts' '(all)' '(posts)' '' '' 'NOT SCANNED' '' '' 'This site is not a team: it has no posts'))
+            return 0
+        }
+        $team = Connect-TeamGraph $SiteUrl $groupId
+    }
     catch {
         # Posts are optional: a refused sign-in is reported, and the file results stay.
         $Rows.Add((New-ReportRow 'Posts' '(all)' '(posts)' '' '' 'BLOCKED' '' '' ((Protect-PiiText ('Posts could not be read: ' + $_.Exception.Message)) + ' | ' + $script:PostsBlockedAdvice)))
@@ -1885,7 +1894,7 @@ finally {
     $postsLine = 'tried (see BLOCKED rows if refused)'
     $header = @(
         ('Site:     ' + $SiteUrl),
-        ('Channels: ' + (($selected | ForEach-Object { Protect-PiiText $_ }) -join ', ')),
+        ('Folders:  ' + (($selected | ForEach-Object { Protect-PiiText $_ }) -join ', ')),
         ('Posts:    ' + $postsLine),
         ('Run:      ' + (Get-Date -Format 'yyyy-MM-dd HH:mm'))
     )

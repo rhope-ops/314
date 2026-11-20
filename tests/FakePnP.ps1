@@ -81,6 +81,12 @@ function Get-FakeProgressText {
     return ($global:FakePnP.Progress -join ' | ')
 }
 
+function Get-FakeCallCount {
+    # How many times the named fake call was made since the last Reset-FakePnP.
+    param([string]$Name)
+    return @($global:FakePnP.Calls | Where-Object { $_ -eq $Name }).Count
+}
+
 function Test-FakePnPCall {
     # True when the named fake cmdlet was called since the last Reset-FakePnP.
     param([string]$Name)
@@ -158,6 +164,8 @@ function global:Write-Progress {
     # Fake: records the activity and status text instead of drawing a bar.
     [CmdletBinding()] param($Activity, $Status, $PercentComplete, [switch]$Completed, $Id, $ParentId)
     $global:FakePnP.Progress.Add(('{0} {1}' -f $Activity, $Status))
+    if ($Completed) { $global:FakePnP.Calls.Add('Progress done ' + $Id) }
+    elseif ($null -ne $ParentId) { $global:FakePnP.Calls.Add('Progress ' + $Id + ' under ' + $ParentId) }
 }
 
 # Sign-in, sign-out and the team behind the site.
@@ -165,6 +173,7 @@ function global:Connect-PnPOnline {
     # Fake: the web login always works; the Graph sign-in works only when PostsAllowed is set.
     [CmdletBinding()] param($Url, [switch]$UseWebLogin, [switch]$Interactive, $AzureEnvironment)
     $global:FakePnP.Calls.Add('Connect ' + $Url)
+    if ($PSBoundParameters['WarningAction'] -eq 'SilentlyContinue') { $global:FakePnP.Calls.Add('Quiet sign-in ' + $Url) }
     if ($UseWebLogin -and $global:FakePnP.ConnectFails) { throw 'FAKE: sign-in refused' }
     if ($Interactive -and -not $global:FakePnP.PostsAllowed) { throw 'AADSTS65001: consent missing (fake)' }
 }

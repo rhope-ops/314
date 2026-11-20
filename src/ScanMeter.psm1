@@ -117,7 +117,7 @@ function Write-ChannelLine {
     .SYNOPSIS
       Prints one line when a folder (a channel) is done: its counts, yellow when it has possible PII.
     .PARAMETER Number
-      Which channel this is (1-based) and the channel count, as "2/5".
+      Which folder this is (1-based) and the folder count, as "2/5".
     .PARAMETER Channel
       The channel name (masked here).
     .PARAMETER Before

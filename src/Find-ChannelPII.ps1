@@ -100,7 +100,7 @@ finally {
     $postsLine = 'tried (see BLOCKED rows if refused)'
     $header = @(
         ('Site:     ' + $SiteUrl),
-        ('Channels: ' + (($selected | ForEach-Object { Protect-PiiText $_ }) -join ', ')),
+        ('Folders:  ' + (($selected | ForEach-Object { Protect-PiiText $_ }) -join ', ')),
         ('Posts:    ' + $postsLine),
         ('Run:      ' + (Get-Date -Format 'yyyy-MM-dd HH:mm'))
     )

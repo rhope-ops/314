@@ -166,7 +166,7 @@ function Get-ScanSummaryText {
     $notes = @($Rows | Where-Object { -not $script:Rank.ContainsKey($_.Confidence) })
     $items = @(Get-ReportSummary $Rows)
     $lines = New-Object System.Collections.Generic.List[string]
-    $lines.Add('==== Teams channel PII spot check ====')
+    $lines.Add('==== DoD365 PII Scan ====')
     foreach ($line in $Header) { $lines.Add($line) }
     $lines.Add(('Items scanned: {0}   Items with possible PII: {1}   Possible PII hits: {2}   Not scanned / blocked: {3}' -f
             $ItemsScanned, $items.Count, $hits.Count, $notes.Count))

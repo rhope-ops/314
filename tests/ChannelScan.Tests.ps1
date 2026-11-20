@@ -42,6 +42,7 @@ Set-FakeSiteAnswer -TypedSite 'https://tenant.example.com/teams/TeamA/Shared%20D
 Assert-Equal 'https://tenant.example.com/teams/TeamA' (Connect-TeamSite (Get-ScanTarget $teamLink) 6>$null) 'Teams link: the typed address, cut to the site'
 Assert-Equal $true (Test-FakePnPCall 'Read-Host') 'Teams link: the site address is asked for'
 Assert-Equal 'https://tenant.example.com/teams/TeamA' ((Get-FakePnPConnection) -join ' ') 'Teams link: one sign-in, to the team site only (no tenant root)'
+Assert-Equal $true (Test-FakePnPCall 'Quiet sign-in https://tenant.example.com/teams/TeamA') 'Sign-in warnings hidden'
 Reset-FakePnP @{}
 Set-FakeSiteAnswer -TypedSite 'https://tenant.example.com/teams/TeamB' -SiteGroupId '99999999-2222-3333-4444-555555555555'
 $refused = $false
@@ -102,6 +103,8 @@ $lib = Get-TeamDocumentLibrary
 Assert-Equal 'General Ops' (Get-ChannelFolderNames $lib) 'Channel folders without Forms'
 $rows = New-Object System.Collections.Generic.List[object]
 Assert-Equal 3 (Invoke-FileScan -Library $lib -Channels @('General', 'Ops') -SiteUrl $Sample.Site -MaxFileMB 25 -Rows $rows 6>$null) 'Files scanned'
+Assert-Equal 4 (Get-FakeCallCount 'Progress done 2') 'Per-file bar closed after each file, also a skipped one'
+Assert-Equal $true (Test-FakePnPCall 'Progress 2 under 1') 'Per-file bar sits under the main bar'
 Assert-Equal 1 @($rows | Where-Object { $_.Detector -eq 'SSN' -and $_.Item -eq 'Roster.docx' }).Count 'SSN found in docx'
 Assert-Equal 1 @($rows | Where-Object { $_.Detector -eq 'Phone' -and $_.Item -eq 'notes.txt' }).Count 'Phone found in txt'
 Assert-Equal 1 @($rows | Where-Object { $_.Detector -eq 'NOT SCANNED' -and $_.Item -eq 'scan #A.pdf' }).Count 'pdf listed'
@@ -111,7 +114,7 @@ Assert-Equal 'https://tenant.example.com/sites/TeamA/Shared%20Documents/Ops/scan
     ($rows | Where-Object { $_.Item -eq 'scan #A.pdf' }).Link 'Link escapes #'
 
 # A plain SharePoint site: files at the top of the library are scanned too, also when there is no folder.
-Reset-FakePnP @{ "$library/top.txt" = $Txt; "$library/General/notes.txt" = $Txt }
+Reset-FakePnP @{ "$library/top.txt" = $Txt; "$library/General/notes.txt" = $Txt; "$library/Forms/AllItems.txt" = $Txt }
 Set-FakeFolders @('Forms')
 Assert-Equal 0 @(Get-ChannelFolderNames $lib).Count 'A site with no folders is not an error'
 $rootRows = New-Object System.Collections.Generic.List[object]
@@ -153,6 +156,15 @@ Assert-Equal 3 (Invoke-FileScan -Library $lib -Channels @('General', 'Ops') -Sit
 Assert-Equal $true (Test-FakePnPCall 'Get-PnPContext') 'Fallback used the client context'
 Assert-Equal 1 @($rows | Where-Object { $_.Detector -eq 'SSN' -and $_.Item -eq 'Roster.docx' }).Count 'Fallback finds the SSN'
 . (Join-Path $PSScriptRoot 'FakePnP.ps1')  # put the full fake Get-PnPFile back for the next tests
+
+# ---- A plain SharePoint site (no team): no posts, no second sign-in, no BLOCKED row ----
+Reset-FakePnP @{}
+Set-FakeSiteAnswer -TypedSite '' -SiteGroupId ([guid]::Empty)
+$siteRows = New-Object System.Collections.Generic.List[object]
+Assert-Equal 0 (Invoke-PostScan -SiteUrl $Sample.Site -Channels @('General') -Rows $siteRows 6>$null) 'Site without a team: no posts'
+Assert-Equal 'NOT SCANNED' (($siteRows | Select-Object -ExpandProperty Detector) -join ',') 'Site without a team: one NOT SCANNED row'
+Assert-Equal 0 @(Get-FakePnPConnection).Count 'Site without a team: no Graph sign-in'
+Reset-FakePnP @{}
 
 # ---- Posts refused, then allowed ----
 $rows = New-Object System.Collections.Generic.List[object]

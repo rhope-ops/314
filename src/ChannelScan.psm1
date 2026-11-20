@@ -435,19 +435,19 @@ function Connect-TeamGraph {
     <#
     .SYNOPSIS
       Opens the second sign-in for Microsoft Graph and returns the team's id and channels.
-      Throws when the site has no team or the tenant refuses the sign-in or the call.
+      Throws when the tenant refuses the sign-in or the call.
     .PARAMETER SiteUrl
       The team's site address.
+    .PARAMETER GroupId
+      The team's group ID (Invoke-PostScan reads it from the site first).
     .OUTPUTS
       [pscustomobject] GroupId, Channels.
     #>
-    param([string]$SiteUrl)
-    $groupId = (Get-PnPSite -Includes GroupId -ErrorAction Stop).GroupId
-    if (-not $groupId -or $groupId -eq [guid]::Empty) { throw 'This site is not connected to a team.' }
+    param([string]$SiteUrl, [guid]$GroupId)
     Write-Host 'Posts: a second sign-in window opens for Microsoft Graph (if you do not see it, press Alt+Tab). If your tenant refuses it, close the window: the file results are kept.'
     Connect-PnPOnline -Url $SiteUrl -Interactive -AzureEnvironment $script:GraphCloud -ErrorAction Stop -WarningAction SilentlyContinue
-    $channels = @(Get-PnPTeamsChannel -Team $groupId -ErrorAction Stop)
-    [pscustomobject]@{ GroupId = $groupId; Channels = $channels }
+    $channels = @(Get-PnPTeamsChannel -Team $GroupId -ErrorAction Stop)
+    [pscustomobject]@{ GroupId = $GroupId; Channels = $channels }
 }
 
 function Invoke-ChannelPostScan {
@@ -506,7 +506,16 @@ function Invoke-PostScan {
       [int] the number of posts and replies scanned.
     #>
     param([string]$SiteUrl, [string[]]$Channels, $Rows)
-    try { $team = Connect-TeamGraph $SiteUrl }
+    try {
+        # A plain SharePoint site has no team, so no posts: say so, with no second sign-in and no BLOCKED row.
+        $groupId = (Get-PnPSite -Includes GroupId -ErrorAction Stop).GroupId
+        if (-not $groupId -or $groupId -eq [guid]::Empty) {
+            Write-Host 'Posts: this site is not a team, so it has no posts to scan.'
+            $Rows.Add((New-ReportRow 'Posts' '(all)' '(posts)' '' '' 'NOT SCANNED' '' '' 'This site is not a team: it has no posts'))
+            return 0
+        }
+        $team = Connect-TeamGraph $SiteUrl $groupId
+    }
     catch {
         # Posts are optional: a refused sign-in is reported, and the file results stay.
         $Rows.Add((New-ReportRow 'Posts' '(all)' '(posts)' '' '' 'BLOCKED' '' '' ((Protect-PiiText ('Posts could not be read: ' + $_.Exception.Message)) + ' | ' + $script:PostsBlockedAdvice)))
