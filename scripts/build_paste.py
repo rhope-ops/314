@@ -50,7 +50,7 @@ STRICT_LINE = 'Set-StrictMode -Version 2.0'
 
 # The Settings block. The site page fills these values in; a person may edit them in ISE before F5.
 SETTINGS = """# ==== Settings ==== (edit the values between the quotes, or let the site page fill them in)
-$SiteUrl = ''            # the team's site, https://usaf.dps.mil/sites/<team-site>; empty = asked
+$SiteUrl = ''            # the team's Teams link, or its site https://usaf.dps.mil/teams/<team-site>; empty = asked
 $Channel = ''            # 'All' or one channel name; empty = pick from a list
 $IncludePosts = $false   # $true = also try posts and replies (a second sign-in; may be BLOCKED)
 $Report = ''             # 'Both', 'Text' or 'Csv'; empty = asked

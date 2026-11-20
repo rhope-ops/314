@@ -35,6 +35,9 @@ function Reset-FakePnP {
         Folders     = @('General', 'Ops', 'Forms')
         PostsAllowed = $false
         ListFails   = $false
+        LookupSite  = 'https://tenant.example.com/teams/TeamA'   # the group lookup's answer; '' = none, 'throw' = refused
+        TypedSite   = ''                                          # what the fake Read-Host returns
+        SiteGroupId = [guid]'11111111-2222-3333-4444-555555555555'
         Calls       = New-Object System.Collections.Generic.List[string]
         Progress    = New-Object System.Collections.Generic.List[string]
     }
@@ -44,6 +47,20 @@ function Set-FakePnPOption {
     # Changes one switch of the fake site: PostsAllowed or ListFails.
     param([ValidateSet('PostsAllowed', 'ListFails')][string]$Name, [bool]$Value)
     $global:FakePnP[$Name] = $Value
+}
+
+function Set-FakeLookup {
+    # Sets the group lookup's answer (LookupSite: a site, '' or 'throw'), what Read-Host returns, and the
+    # group ID of the connected site.
+    param([string]$LookupSite, [string]$TypedSite = '', [guid]$SiteGroupId = '11111111-2222-3333-4444-555555555555')
+    $global:FakePnP.LookupSite = $LookupSite
+    $global:FakePnP.TypedSite = $TypedSite
+    $global:FakePnP.SiteGroupId = $SiteGroupId
+}
+
+function Get-FakePnPConnection {
+    # Every site the fake Connect-PnPOnline was called with since the last Reset-FakePnP, in order.
+    return @($global:FakePnP.Calls | Where-Object { $_ -like 'Connect *' } | ForEach-Object { $_.Substring(8) })
 }
 
 function Get-FakeProgressText {
@@ -134,6 +151,7 @@ function global:Write-Progress {
 function global:Connect-PnPOnline {
     # Fake: the web login always works; the Graph sign-in works only when PostsAllowed is set.
     [CmdletBinding()] param($Url, [switch]$UseWebLogin, [switch]$Interactive, $AzureEnvironment)
+    $global:FakePnP.Calls.Add('Connect ' + $Url)
     if ($Interactive -and -not $global:FakePnP.PostsAllowed) { throw 'AADSTS65001: consent missing (fake)' }
 }
 
@@ -146,7 +164,22 @@ function global:Disconnect-PnPOnline {
 function global:Get-PnPSite {
     # Fake: the site belongs to a team (a Microsoft 365 group).
     [CmdletBinding()] param($Includes)
-    [pscustomobject]@{ GroupId = [guid]'11111111-2222-3333-4444-555555555555' }
+    [pscustomobject]@{ GroupId = $global:FakePnP.SiteGroupId }
+}
+
+function global:Invoke-PnPSPRestMethod {
+    # Fake: GroupSiteManager GetSiteStatus for one group, in the verbose JSON form ({ d: { SiteUrl } }).
+    [CmdletBinding()] param($Method, $Url, $Content)
+    $global:FakePnP.Calls.Add('Invoke-PnPSPRestMethod ' + $Url + ' ' + $Content.groupId)
+    if ($global:FakePnP.LookupSite -eq 'throw') { throw 'FAKE: lookup refused' }
+    [pscustomobject]@{ d = [pscustomobject]@{ SiteStatus = 2; SiteUrl = $global:FakePnP.LookupSite } }
+}
+
+function global:Read-Host {
+    # Fake: the address the person would type.
+    [CmdletBinding()] param($Prompt)
+    $global:FakePnP.Calls.Add('Read-Host')
+    return $global:FakePnP.TypedSite
 }
 
 # Posts (Graph).

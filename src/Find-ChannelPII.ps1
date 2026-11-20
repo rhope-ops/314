@@ -9,23 +9,27 @@
 
   Purpose:     Help a team owner find files and posts that may hold PII, so they can review them.
                A spot check, not a replacement for Microsoft Purview DLP or Content Search.
-  Inputs:      the team's site address, the channels, the report choice (asked when not given).
+  Inputs:      the team's Teams link or site address, the channels, the report choice (asked when not given).
   Outputs:     the summary on screen; PIIScan-<time>.txt and/or PIIScan-<time>.csv in -OutputFolder.
   How to run:  .\Find-ChannelPII.ps1   (README.md "Run it" gives every step)
   Run target:  Windows PowerShell 5.1 (also PowerShell 7) with PnP.PowerShell 1.12.0. No other modules.
-  Network:     only the one SharePoint site address given, and with -IncludePosts Microsoft Graph for that one team.
+  Network:     only the one team's SharePoint site; for a Teams link, first one lookup of that one group's site at
+               https://usaf.dps.mil; with -IncludePosts, Microsoft Graph for that one team.
   Writes:      only the report files in -OutputFolder (default Documents\PII-Scan); nothing in Teams or SharePoint.
   Credentials: the person's own CAC sign-in in the PnP sign-in window; nothing is stored or saved.
 
-  Policy:      Read-only; one site only (no network reconnaissance); file content stays in memory; values
+  Policy:      Read-only; one team only (no network reconnaissance); file content stays in memory; values
                masked (the PAM, 2026-11-20). No script file is collected or sent: script types are not
                read and only their (masked) names appear in the report.
   Not scanned: PDF, images, legacy .doc/.xls/.ppt (reported as NOT SCANNED); private and shared channels
                (each has its own site: run again with that site's address); 1:1, group and meeting chats.
 
 .PARAMETER SiteUrl
-  The team's SharePoint site, for example https://usaf.dps.mil/sites/<team-site>.
-  In Teams: open the channel's Files tab > "Open in SharePoint" and copy the address up to the site name.
+  The team's Teams link or its SharePoint site address.
+  Teams link: in Teams, open the team or one of its channels, click the ... next to its name > Copy link
+  (https://<teams-host>/l/team/...?groupId=...). The script looks up the team's site and checks it belongs to the team.
+  Site address: the team's Shared tab > ... > Open in SharePoint (https://usaf.dps.mil/teams/<team-site>);
+  a file's Copy link from the Shared tab works too. Anything after the site name is cut off.
 .PARAMETER Channel
   A channel folder name, or 'All'. Leave it out to pick from a list.
 .PARAMETER IncludePosts
@@ -41,9 +45,9 @@
 
 .EXAMPLE
   .\Find-ChannelPII.ps1
-  Asks for the site address, the channels and the report choice, then scans the files.
+  Asks for the Teams link or site address, the channels and the report choice, then scans the files.
 .EXAMPLE
-  .\Find-ChannelPII.ps1 -SiteUrl https://usaf.dps.mil/sites/<team-site> -Channel All -IncludePosts -Report Both
+  .\Find-ChannelPII.ps1 -SiteUrl https://usaf.dps.mil/teams/<team-site> -Channel All -IncludePosts -Report Both
 #>
 [CmdletBinding()]
 param(
@@ -70,14 +74,13 @@ foreach ($module in @('PiiDetectors.psm1', 'PiiMasking.psm1', 'TextExtract.psm1'
 
 Write-Host 'Teams channel PII spot check (read-only). Values in the report are masked.' -ForegroundColor Cyan
 
-# ---- Step 1: the site address (only this one site is touched) and the report choice ----
-if (-not $SiteUrl) { $SiteUrl = Read-Host 'Team site address (https://usaf.dps.mil/sites/<team-site>)' }
-$SiteUrl = Test-TeamSiteUrl $SiteUrl
+# ---- Step 1: the Teams link or site address (only this one team is touched) and the report choice ----
+if (-not $SiteUrl) { $SiteUrl = Read-Host 'Teams link of the team or channel, or its site address (https://usaf.dps.mil/teams/<team-site>)' }
+$target = Get-ScanTarget $SiteUrl
 $format = Select-ReportFormat $Report
 
-# ---- Step 2: sign in with the person's own CAC ----
-Write-Host "Signing in to $SiteUrl ..."
-Connect-PnPOnline -Url $SiteUrl -UseWebLogin
+# ---- Step 2: sign in with the person's own CAC (a Teams link first finds the team's site) ----
+$SiteUrl = Connect-TeamSite $target
 
 $rows = New-Object System.Collections.Generic.List[object]
 $scanned = 0

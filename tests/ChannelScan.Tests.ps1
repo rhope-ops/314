@@ -17,6 +17,48 @@ Assert-Equal $Sample.Site (Test-TeamSiteUrl "$($Sample.Site)/Shared%20Documents/
 $refused = $false
 try { Test-TeamSiteUrl 'http://example.com/x' | Out-Null } catch { $refused = $true }  # the refusal is the expected result
 Assert-Equal $true $refused 'Address that is not a site refused'
+Assert-Equal 'https://tenant.example.com/teams/TeamA' (Test-TeamSiteUrl 'https://tenant.example.com/:w:/r/teams/TeamA/Shared%20Documents/a.docx?d=w1') `
+    'A file Copy link is cut to the site'
+$refused = $false
+try { Test-TeamSiteUrl 'https://tenant.example.com/:w:/s/TeamA/EAbc' | Out-Null } catch { $refused = $true }  # expected refusal
+Assert-Equal $true $refused 'A sharing link that does not name the site is refused'
+
+# ---- Teams link: the group ID is read; the site is looked up, checked, and only then scanned ----
+$groupId = '11111111-2222-3333-4444-555555555555'
+$teamLink = 'https://teams.example.com/l/team/19%3aabc%40thread.tacv2/conversations?groupId=' + $groupId + '&tenantId=x'
+$channelLink = 'https://teams.example.com/l/channel/19%3aabc%40thread.tacv2/General?groupId=' + $groupId + '&tenantId=x'
+Assert-Equal $groupId (Get-ScanTarget $teamLink).GroupId 'Team link gives the group ID'
+Assert-Equal $groupId (Get-ScanTarget $channelLink).GroupId 'Channel link gives the group ID'
+Assert-Equal $null (Get-ScanTarget $Sample.Site).GroupId 'Site address has no group ID'
+$refused = $false
+try { Get-ScanTarget 'https://teams.example.com/l/team/19%3aabc/conversations?tenantId=x' | Out-Null } catch { $refused = $true }  # expected
+Assert-Equal $true $refused 'Teams link without groupId refused'
+$realRoot = & (Get-Module ChannelScan) { $script:SharePointRoot }
+& (Get-Module ChannelScan) { $script:SharePointRoot = 'https://tenant.example.com' }   # the test tenant's root
+Reset-FakePnP @{}
+Assert-Equal 'https://tenant.example.com/teams/TeamA' (Connect-TeamSite (Get-ScanTarget $teamLink) 6>$null) 'Lookup gives the team site'
+Assert-Equal 'https://tenant.example.com https://tenant.example.com/teams/TeamA' ((Get-FakePnPConnection) -join ' ') 'Root once, then the team site'
+Assert-Equal $true (Test-FakePnPCall ('Invoke-PnPSPRestMethod /_api/GroupSiteManager/GetSiteStatus ' + $groupId)) 'Lookup asks for that one group'
+Reset-FakePnP @{}
+Set-FakeLookup -LookupSite 'throw' -TypedSite 'https://tenant.example.com/teams/TeamA/Shared%20Documents'
+Assert-Equal 'https://tenant.example.com/teams/TeamA' (Connect-TeamSite (Get-ScanTarget $teamLink) 6>$null) 'Failed lookup asks for the address'
+Assert-Equal $true (Test-FakePnPCall 'Read-Host') 'Address asked after a failed lookup'
+Reset-FakePnP @{}
+Set-FakeLookup -LookupSite 'https://other.example.com/teams/TeamA'
+$refused = $false
+try { Connect-TeamSite (Get-ScanTarget $teamLink) 6>$null | Out-Null } catch { $refused = $true }  # expected: asks, gets nothing
+Assert-Equal $true $refused 'Lookup on another host not used'
+Assert-Equal 'https://tenant.example.com' ((Get-FakePnPConnection) -join ' ') 'No sign-in to a site on another host'
+Reset-FakePnP @{}
+Set-FakeLookup -LookupSite 'https://tenant.example.com/teams/TeamB' -SiteGroupId '99999999-2222-3333-4444-555555555555'
+$refused = $false
+try { Connect-TeamSite (Get-ScanTarget $teamLink) 6>$null | Out-Null } catch { $refused = $true }  # expected: another team's site
+Assert-Equal $true $refused 'Site of another team refused'
+Assert-Equal $true (Test-FakePnPCall 'Disconnect-PnPOnline') 'Signed out of the other team site'
+Reset-FakePnP @{}
+Assert-Equal $Sample.Site (Connect-TeamSite (Get-ScanTarget $Sample.Site) 6>$null) 'Site address: no lookup'
+Assert-Equal $Sample.Site ((Get-FakePnPConnection) -join ' ') 'Site address: one sign-in, to that site'
+& (Get-Module ChannelScan) { param($root) $script:SharePointRoot = $root } $realRoot   # back to the real root
 Assert-Equal 'General' (Select-ChannelFolders -Available @('General', 'Ops') -Requested 'general') 'Channel by name, any case'
 Assert-Equal 'General Ops' (Select-ChannelFolders -Available @('General', 'Ops') -Requested 'All') 'All channels'
 

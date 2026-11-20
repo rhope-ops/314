@@ -165,9 +165,9 @@ footer{padding-block:0 36px;color:var(--mut);font-size:.85rem}
         <h3 id="h-use">Configuration</h3>
         <form class="builder" id="builder" autocomplete="off">
           <div class="field wide">
-            <label for="site">Site address <span class="mut small">(optional; leave empty and it asks)</span></label>
-            <input type="text" id="site" inputmode="url" spellcheck="false" placeholder="https://usaf.dps.mil/sites/<team-site>" aria-describedby="site-hint">
-            <span class="hint" id="site-hint">In Teams: the channel's Files tab, then Open in SharePoint; copy up to the site name.</span>
+            <label for="site">Teams link or SharePoint address <span class="mut small">(optional; leave empty and it asks)</span></label>
+            <input type="text" id="site" inputmode="url" spellcheck="false" placeholder="Paste the team's Teams link or its SharePoint address" aria-describedby="site-hint">
+            <span class="hint" id="site-hint">Teams link: open the team or a channel, click the ... next to its name, then Copy link. SharePoint address: the team's Shared tab, then ... and Open in SharePoint (https://usaf.dps.mil/teams/&lt;team-site&gt;); a file's Copy link works too.</span>
           </div>
           <fieldset class="field">
             <legend>Channels</legend>
@@ -256,7 +256,7 @@ footer{padding-block:0 36px;color:var(--mut);font-size:.85rem}
   Safety notes:
   - Every value goes into the script inside a PowerShell single-quoted string ('...'). PowerShell treats the
     straight quote ' and the curly quotes U+2018 to U+201B alike, so every one of them is doubled, and the site
-    address itself may hold only plain URL characters (no quote of any kind): no value can end the string or add code.
+    link or address itself may hold only plain URL characters (no quote of any kind): no value can end the string or add code.
   - The four lines are replaced as literal text (split and join), the same way tests/Bundle.Tests.ps1 does it.
     String.replace is not used: it reads $' $` $& in a value as special patterns.
   - Text is only ever shown with textContent, never as HTML.
@@ -269,10 +269,16 @@ footer{padding-block:0 36px;color:var(--mut);font-size:.85rem}
   var RAW_URL = 'https://raw.githubusercontent.com/rhope-ops/33-332.Z/main/' + SCRIPT_PATH;   // the fallback link
   var TXT_NAME = '33332Z-pii-spot-check.txt';                              // the name of the saved .txt file
   var STORAGE_KEY = '33-332Z.builder.v2';                                  // where this browser keeps the choices
-  // The site address: https://<host>/sites/<name> or /teams/<name>; anything after the site name is cut off (as the
-  // script's own Test-TeamSiteUrl does). Stricter than the script on purpose: the site name may hold only plain URL
-  // characters (letters, digits, - _ . % ~), so no kind of quote can reach the copied script.
-  var SITE_RULE = /^https:\/\/[A-Za-z0-9.-]+\/(sites|teams)\/[A-Za-z0-9._~%-]+(?=$|[\/?#])/i;
+  // The two ways to give the team; the page tells them apart (as the script's Get-ScanTarget does). Each rule is stricter than the script on
+  // purpose: only plain URL characters (letters, digits, - _ . % ~ and the few a link needs), so no kind of quote
+  // can reach the copied script.
+  // SharePoint: https://<host>/sites/<name> or /teams/<name>, also as a file's Copy link (/:w:/r/teams/<name>/...);
+  // anything after the site name is cut off (as the script's Test-TeamSiteUrl does).
+  var SITE_RULE = /^(https:\/\/[A-Za-z0-9.-]+)\/(?::[a-z]:\/r\/)?((?:sites|teams)\/[A-Za-z0-9._~%-]+)(?=$|[\/?#])/i;
+  // Teams: a team's or channel's Copy link, kept up to its groupId (the script uses only that ID).
+  var TEAMS_RULE = new RegExp('^https://[A-Za-z0-9.-]+/l/(?:team|channel)(?:/[A-Za-z0-9._~%:@-]+)+\\?' +
+                              '(?:[A-Za-z0-9._~%=&-]*&)?groupId=[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' +
+                              '(?![0-9a-f-])', 'i');
   // The allowed values of the two choice groups; anything else read back from storage is ignored.
   var CHANNEL_VALUES = ['', 'All'];
   var REPORT_VALUES = ['Both', 'Text', 'Csv'];
@@ -287,11 +293,11 @@ footer{padding-block:0 36px;color:var(--mut);font-size:.85rem}
   var siteInput = document.getElementById('site');
   var postsBox = document.getElementById('posts');
   var hint = document.getElementById('site-hint');
+  var hintDefault = hint.textContent;
   var copyButton = document.getElementById('copy');
   var openButton = document.getElementById('open');
   var statusLine = document.getElementById('status');
   var settingsView = document.getElementById('settings').firstChild;
-  var hintDefault = hint.textContent;
   var scriptText = null;   // the script as loaded, before any setting is filled in
 
   // ---- Small helpers -----------------------------------------------------------------------------------------
@@ -337,15 +343,21 @@ footer{padding-block:0 36px;color:var(--mut);font-size:.85rem}
     };
   }
 
-  // Checks the typed site address and shows a hint. Returns '' (empty: the script will ask), the address cut to
-  // the site name, or null when it is not a team site address (the buttons then stay off).
+  // Checks the typed text and shows a hint. Returns '' (empty: the script will ask), the value for the script (a
+  // Teams link up to its groupId, or a site address cut to the site name), or null when it is neither (the buttons
+  // then stay off).
   function checkedSite(typed) {
     siteInput.removeAttribute('aria-invalid');
     hint.className = 'hint';
     if (!typed) { hint.textContent = hintDefault; return ''; }
-    var match = typed.match(SITE_RULE);
-    if (match) { hint.textContent = 'Only this site will be scanned: ' + match[0]; return match[0]; }
-    hint.textContent = 'Not a team site address. It must look like https://usaf.dps.mil/sites/<team-site>. ' +
+    var link = typed.match(TEAMS_RULE);
+    if (link) {
+      hint.textContent = 'Teams link: only this team will be scanned; the script finds its site and checks it belongs to the team.';
+      return link[0];
+    }
+    var site = typed.match(SITE_RULE);
+    if (site) { hint.textContent = 'SharePoint address: only this site will be scanned: ' + site[1] + '/' + site[2]; return site[1] + '/' + site[2]; }
+    hint.textContent = 'Not a Teams link with a groupId, and not a team site address (https://usaf.dps.mil/teams/<team-site>). ' +
                        'Fix it, or leave it empty and the script asks.';
     hint.className = 'hint err';
     siteInput.setAttribute('aria-invalid', 'true');
@@ -391,7 +403,7 @@ footer{padding-block:0 36px;color:var(--mut);font-size:.85rem}
     openButton.disabled = !ready;
     settingsView.textContent = settingsBlock(filledScript(choices, ready ? site : ''));
     if (ready) showStatus('Ready: 1,600+ lines with your settings.', '');
-    else showStatus('Fix the site address to copy or open the script.', 'err');
+    else showStatus('Fix the Teams link or site address to copy or open the script.', 'err');
   }
 
   // Returns the filled script for the buttons, or null when the page is not ready.
