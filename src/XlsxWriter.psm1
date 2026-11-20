@@ -2,7 +2,8 @@
 XlsxWriter.psm1 - writes a small Excel workbook (.xlsx) with .NET only: no Excel, no module.
 
   Purpose:     The results file of Ion: one workbook with tabs (the PAM, 2026-11-20: a CSV cannot have tabs).
-               Each tab has a bold header row; a list tab also has the header frozen and filter buttons on.
+               Each tab has a bold header row; a list tab also has the header frozen and filter buttons on, and its
+               link column holds clickable links (the PAM, 2026-11-20).
   Inputs:      the tabs to write (New-XlsxSheet), each with its columns and rows of cells (text or whole numbers).
   Outputs:     one .xlsx file (Office Open XML, ECMA-376: a zip of XML parts).
   Depends on:  .NET System.IO.Compression (loaded here).
@@ -22,20 +23,25 @@ Add-Type -AssemblyName System.IO.Compression
 $script:MaxSheetName = 31
 $script:MaxCellText = 32767
 
+# Excel opens a link of at most 2,079 characters (a longer one stays plain text in its cell).
+$script:MaxLinkChars = 2079
+
 # XML namespaces of the parts.
 $script:MainNs = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main'
 $script:RelNs = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships'
 $script:PackageRelNs = 'http://schemas.openxmlformats.org/package/2006/relationships'
 
-# Two cell styles: 0 = normal, 1 = bold (the header row and the Summary labels).
+# Three cell styles: 0 = normal, 1 = bold (the header row and the Summary labels), 2 = a link (blue, underlined).
 $script:StylesXml = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
     '<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">' +
-    '<fonts count="2"><font><sz val="11"/><name val="Calibri"/></font><font><b/><sz val="11"/><name val="Calibri"/></font></fonts>' +
+    '<fonts count="3"><font><sz val="11"/><name val="Calibri"/></font><font><b/><sz val="11"/><name val="Calibri"/></font>' +
+    '<font><u/><sz val="11"/><color rgb="FF0563C1"/><name val="Calibri"/></font></fonts>' +
     '<fills count="2"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill></fills>' +
     '<borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders>' +
     '<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>' +
-    '<cellXfs count="2"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>' +
-    '<xf numFmtId="0" fontId="1" fillId="0" borderId="0" xfId="0" applyFont="1"/></cellXfs>' +
+    '<cellXfs count="3"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>' +
+    '<xf numFmtId="0" fontId="1" fillId="0" borderId="0" xfId="0" applyFont="1"/>' +
+    '<xf numFmtId="0" fontId="2" fillId="0" borderId="0" xfId="0" applyFont="1"/></cellXfs>' +
     '<cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles>' +
     '</styleSheet>'
 
@@ -53,11 +59,13 @@ function New-XlsxSheet {
       Column widths in characters, one per column.
     .PARAMETER List
       Freeze the header row and turn the filter buttons on (a list of hits); off for the Summary tab.
+    .PARAMETER LinkColumn
+      The column (0-based) whose https:// cells become clickable links; -1 for none.
     .OUTPUTS
       [pscustomobject]
     #>
-    param([string]$Name, [string[]]$Columns, [object[]]$Rows, [int[]]$Widths, [switch]$List)
-    [pscustomobject]@{ Name = $Name; Columns = $Columns; Rows = @($Rows); Widths = $Widths; List = [bool]$List }
+    param([string]$Name, [string[]]$Columns, [object[]]$Rows, [int[]]$Widths, [switch]$List, [int]$LinkColumn = -1)
+    [pscustomobject]@{ Name = $Name; Columns = $Columns; Rows = @($Rows); Widths = $Widths; List = [bool]$List; LinkColumn = $LinkColumn }
 }
 
 function ConvertTo-XmlText {
@@ -85,18 +93,58 @@ function ConvertTo-CellXml {
     return '<c r="{0}"{1} t="inlineStr"><is><t xml:space="preserve">{2}</t></is></c>' -f $Ref, $styleAttr, (ConvertTo-XmlText ([string]$Value))
 }
 
+function Get-SheetLinks {
+    <#
+    .SYNOPSIS
+      The clickable links of one tab: each https:// cell in its link column, with its cell and relationship ID.
+      A link is a relationship of the sheet (ECMA-376 hyperlink), never a HYPERLINK formula (the safety rule above).
+    .PARAMETER Sheet
+      Output of New-XlsxSheet.
+    .OUTPUTS
+      [pscustomobject] Ref (for example G2), Id (rId1, rId2 ...), Target.
+    #>
+    param($Sheet)
+    if ($Sheet.LinkColumn -lt 0) { return }
+    $letter = Get-ColumnLetter ($Sheet.LinkColumn + 1)
+    $rowNumber = 1
+    $n = 0
+    foreach ($row in $Sheet.Rows) {
+        $rowNumber++
+        $cells = @($row)
+        if ($Sheet.LinkColumn -ge $cells.Count) { continue }
+        $target = [string]$cells[$Sheet.LinkColumn]
+        if ($target -notmatch '^https://\S+$' -or $target.Length -gt $script:MaxLinkChars) { continue }
+        $n++
+        [pscustomobject]@{ Ref = $letter + $rowNumber; Id = 'rId' + $n; Target = $target }
+    }
+}
+
+function ConvertTo-SheetRelsXml {
+    # The relationships part of one tab: one external target per link.
+    param([object[]]$Links)
+    $xml = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="' + $script:PackageRelNs + '">'
+    foreach ($link in $Links) {
+        $xml += '<Relationship Id="{0}" Type="{1}/hyperlink" Target="{2}" TargetMode="External"/>' -f $link.Id, $script:RelNs, (ConvertTo-XmlText $link.Target)
+    }
+    return $xml + '</Relationships>'
+}
+
 function ConvertTo-SheetXml {
     <#
     .SYNOPSIS
       The worksheet XML of one tab.
     .PARAMETER Sheet
       Output of New-XlsxSheet.
+    .PARAMETER Links
+      Output of Get-SheetLinks for this tab.
     .OUTPUTS
       [string]
     #>
-    param($Sheet)
+    param($Sheet, [object[]]$Links = @())
+    $linked = @{}
+    foreach ($link in $Links) { $linked[$link.Ref] = $true }
     $xml = New-Object System.Text.StringBuilder
-    [void]$xml.Append('<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="' + $script:MainNs + '">')
+    [void]$xml.Append('<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="' + $script:MainNs + '" xmlns:r="' + $script:RelNs + '">')
     if ($Sheet.List) {
         [void]$xml.Append('<sheetViews><sheetView workbookViewId="0"><pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews>')
     }
@@ -117,14 +165,21 @@ function ConvertTo-SheetXml {
         $cells = @($row)
         for ($i = 0; $i -lt $cells.Count; $i++) {
             $style = 0
+            $ref = (Get-ColumnLetter ($i + 1)) + $rowNumber
             if (-not $Sheet.List -and $i -eq 0) { $style = 1 }   # Summary tab: the label column is bold
-            [void]$xml.Append((ConvertTo-CellXml ((Get-ColumnLetter ($i + 1)) + $rowNumber) $cells[$i] $style))
+            if ($linked.ContainsKey($ref)) { $style = 2 }
+            [void]$xml.Append((ConvertTo-CellXml $ref $cells[$i] $style))
         }
         [void]$xml.Append('</row>')
     }
     [void]$xml.Append('</sheetData>')
     if ($Sheet.List -and $Sheet.Columns.Count -gt 0) {
         [void]$xml.Append(('<autoFilter ref="A1:{0}{1}"/>' -f (Get-ColumnLetter $Sheet.Columns.Count), [Math]::Max(2, $rowNumber)))
+    }
+    if ($Links.Count -gt 0) {
+        [void]$xml.Append('<hyperlinks>')
+        foreach ($link in $Links) { [void]$xml.Append(('<hyperlink ref="{0}" r:id="{1}"/>' -f $link.Ref, $link.Id)) }
+        [void]$xml.Append('</hyperlinks>')
     }
     [void]$xml.Append('</worksheet>')
     return $xml.ToString()
@@ -199,7 +254,11 @@ function Export-Xlsx {
         Add-ZipText $zip 'xl/workbook.xml' ($book + '</sheets></workbook>')
         Add-ZipText $zip 'xl/_rels/workbook.xml.rels' $rels
         Add-ZipText $zip 'xl/styles.xml' $script:StylesXml
-        for ($i = 1; $i -le $Sheets.Count; $i++) { Add-ZipText $zip ('xl/worksheets/sheet' + $i + '.xml') (ConvertTo-SheetXml $Sheets[$i - 1]) }
+        for ($i = 1; $i -le $Sheets.Count; $i++) {
+            $links = @(Get-SheetLinks $Sheets[$i - 1])
+            Add-ZipText $zip ('xl/worksheets/sheet' + $i + '.xml') (ConvertTo-SheetXml $Sheets[$i - 1] $links)
+            if ($links.Count -gt 0) { Add-ZipText $zip ('xl/worksheets/_rels/sheet' + $i + '.xml.rels') (ConvertTo-SheetRelsXml $links) }
+        }
         $written = $true
     }
     finally {

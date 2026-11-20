@@ -39,6 +39,7 @@ function Reset-FakePnP {
         TypedSite   = New-Object System.Collections.Generic.Queue[string]   # the fake Read-Host's answers, in order; none = Enter
         NoAccess    = $false                                      # the site refuses the signed-in person (403)
         SiteGroupId = [guid]'11111111-2222-3333-4444-555555555555'
+        OpenAnswer  = ''                                          # the answer to "Open the workbook now?" ('' = Enter = yes)
         Calls       = New-Object System.Collections.Generic.List[string]
         Progress    = New-Object System.Collections.Generic.List[string]
     }
@@ -116,13 +117,23 @@ function global:Get-PnPFolderItem {
 }
 
 function global:Get-PnPListItem {
-    # Fake: one folder item plus one item per fake file; throws when ListFails is set.
+    <#
+    .SYNOPSIS
+      Fake: one folder item plus one item per fake file; throws when ListFails is set.
+    .PARAMETER List
+      Not used.
+    .PARAMETER PageSize
+      Not used.
+    .PARAMETER Fields
+      Not used (every field is given).
+    #>
     [CmdletBinding()] param($List, $PageSize, $Fields)
     if ($global:FakePnP.ListFails) { throw 'FAKE: list read refused' }
     @{ FileLeafRef = 'General'; FileRef = '/sites/TeamA/Shared Documents/General'; FSObjType = 1 }
     foreach ($path in $global:FakePnP.Files.Keys) {
         @{ FileLeafRef = ($path -split '/')[-1]; FileRef = $path; FSObjType = 0
-           File_x0020_Size = [string]$global:FakePnP.Files[$path].Length; Modified = [datetime]'2026-11-01' }
+           File_x0020_Size = [string]$global:FakePnP.Files[$path].Length; Modified = [datetime]'2026-11-01'
+           UniqueId = [guid]'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee' }
     }
 }
 
@@ -164,8 +175,8 @@ function global:Get-PnPContext {
 # The progress bar is on screen too: the fake records its text so tests can check it is masked.
 function global:Write-Progress {
     # Fake: records the activity and status text instead of drawing a bar.
-    [CmdletBinding()] param($Activity, $Status, $PercentComplete, [switch]$Completed, $Id, $ParentId)
-    $global:FakePnP.Progress.Add(('{0} {1}' -f $Activity, $Status))
+    [CmdletBinding()] param($Activity, $Status, $PercentComplete, [switch]$Completed, $Id, $ParentId, $CurrentOperation)
+    $global:FakePnP.Progress.Add(('{0} {1} {2}' -f $Activity, $Status, $CurrentOperation))
     if ($Completed) { $global:FakePnP.Calls.Add('Progress done ' + $Id) }
     elseif ($null -ne $ParentId) { $global:FakePnP.Calls.Add('Progress ' + $Id + ' under ' + $ParentId) }
 }
@@ -200,8 +211,15 @@ function global:Get-PnPSite {
 }
 
 function global:Read-Host {
-    # Fake: the address the person would type.
+    <#
+    .SYNOPSIS
+      Fake: the address the person would type (queued answers), or the answer to the open-the-workbook question.
+    .PARAMETER Prompt
+      The question.
+    #>
     [CmdletBinding()] param($Prompt)
+    # The open-the-workbook question has its own answer (Enter = open), so the queued addresses stay in order.
+    if ([string]$Prompt -like 'Open the workbook*') { $global:FakePnP.Calls.Add('Open question'); return $global:FakePnP.OpenAnswer }
     $global:FakePnP.Calls.Add('Read-Host')
     # A real cancel stops the whole pipeline (the test run too); an error leaves through the same 'finally'.
     if ($global:FakePnP.TypedSite.Count -eq 0) { return '' }
@@ -210,3 +228,8 @@ function global:Read-Host {
     return $answer
 }
 
+function global:Invoke-Item {
+    # Fake: records that the workbook would open in Excel, instead of opening it.
+    [CmdletBinding()] param($LiteralPath)
+    $global:FakePnP.Calls.Add('Open ' + $LiteralPath)
+}

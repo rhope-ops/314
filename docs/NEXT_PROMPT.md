@@ -20,6 +20,6 @@ Title: 33-332.Z · <task> · <date>. Read AGENTS.md first.
    status codes (429/503 show as ###); which message PnP 1.12 gives when the access-page window is closed; a forced
    live line can repeat the last one. Speed: if "Time reading and checking" dominates a big site, try parallel checks.
 6. GitHub Pages is on (live copy checked 2026-11-20). Denylist secret: added 2026-11-20.
-8. Approved plan 2026-11-20 (in work): Ion CLI polish, docs/reviews/2026-11-20-ion-cli-polish-plan.md.
 7. Known gap (MINOR, safe): pasted text with a second address after a Teams link without a groupId can supply
    that later groupId; the site-group check still holds.
+8. Approved plan 2026-11-20 (in work): Ion CLI polish, docs/reviews/2026-11-20-ion-cli-polish-plan.md.

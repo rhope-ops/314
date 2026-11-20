@@ -31,12 +31,25 @@ Assert-Equal ('TeamA/' + (Get-Date -Format 'yyyy-MM-dd')) ((Split-Path (Split-Pa
 Assert-Equal $true ((Split-Path $path -Leaf) -match '^Ion Results \d\d-\d\d-\d\d\.xlsx$') 'Named Ion Results <time>.xlsx'
 $book = Get-XlsxSheets $path
 Assert-Equal 'Summary|SSN|Date of birth|Low confidence|Not scanned' (@($book.Keys) -join '|') 'Tabs: Summary, types worst first, Low, Not scanned'
-Assert-Equal 'Confidence|Channel|Item|Masked value|Context|Modified|Link|Found in' ($book['SSN'][0] -join '|') 'Hit tab header, folder column named Channel for a team'
+Assert-Equal 'Confidence|Channel|File|Masked value|Context|Modified|Link|Found in' ($book['SSN'][0] -join '|') 'Hit tab header, folder column named Channel for a team'
 Assert-Equal 'High|General|Roster.docx|***-**-6789' (($book['SSN'][1] | Select-Object -First 4) -join '|') 'SSN tab row'
 Assert-Equal 'Phone' $book['Low confidence'][1][0] 'Low hit in the Low confidence tab, with its type'
 Assert-Equal '=HYPERLINK("x")' $book['Low confidence'][1][5] 'Formula-like text kept as plain text (an inline string is never a formula)'
 Assert-Equal 'NOT SCANNED|Ops|scan.pdf' (($book['Not scanned'][1] | Select-Object -First 3) -join '|') 'Not scanned tab row'
 $summary = ($book['Summary'] | ForEach-Object { $_ -join '|' }) -join "`n"
+Assert-Equal $true ($summary -match '(?m)^Type not read: \.pdf\|1$') 'Summary: not-scanned files counted per reason'
+# The link column is a clickable link: a sheet relationship, never a formula.
+$zipStream = [System.IO.File]::OpenRead($path)
+$zipBook = New-Object System.IO.Compression.ZipArchive($zipStream, [System.IO.Compression.ZipArchiveMode]::Read)
+try {
+    $relsEntry = $zipBook.GetEntry('xl/worksheets/_rels/sheet2.xml.rels')
+    $reader = New-Object System.IO.StreamReader($zipBook.GetEntry('xl/worksheets/sheet2.xml').Open()); $sheetXml = $reader.ReadToEnd(); $reader.Dispose()
+    $rels = ''
+    if ($relsEntry) { $reader = New-Object System.IO.StreamReader($relsEntry.Open()); $rels = $reader.ReadToEnd(); $reader.Dispose() }
+}
+finally { $zipBook.Dispose(); $zipStream.Dispose() }
+Assert-Equal $true ($sheetXml -match '<hyperlink ref="G2" r:id="rId1"/>' -and $rels -match 'Target="https://x/y" TargetMode="External"') 'Link cell is a clickable link'
+Assert-Equal $false ($sheetXml -match '<f>') 'No formula in a hit tab'
 Assert-Equal $true ($summary -match 'Possible PII hits\|3') 'Summary: total hits'
 $typeRows = $summary -match '(?m)^SSN\|1\|0\|0\|1$' -and $summary -match '(?m)^Date of birth\|1\|0\|0\|1$' -and $summary -match '(?m)^Phone\|0\|0\|1\|1$'
 Assert-Equal $true $typeRows 'Summary: hits per type (High, Medium, Low, Total), worst first'
@@ -70,7 +83,9 @@ $screenLines = @(Get-ScanSummaryText -Rows $reportRows -ItemsScanned 2 -Header $
 $screen = ($screenLines | ForEach-Object { $_.Text }) -join "`n"
 Assert-Equal $true ($screen -match 'POSSIBLE PII BY TYPE' -and $screen -match '\| SSN\s+\|\s+1 \|\s+0 \|\s+0 \|\s+1 \|') 'Screen: boxed table of hits per type (High, Medium, Low, Total)'
 Assert-Equal 'Alert' ($screenLines | Where-Object { $_.Text -match '^\| SSN ' } | Select-Object -First 1).Kind 'Screen: a type with High hits is red'
-Assert-Equal 'Muted' ($screenLines | Where-Object { $_.Text -match '^\| Phone ' } | Select-Object -First 1).Kind 'Screen: a type with only Low hits is grey'
+Assert-Equal 'Text' ($screenLines | Where-Object { $_.Text -match '^\| Phone ' } | Select-Object -First 1).Kind 'Screen: a type with only Low hits is white'
+Assert-Equal 'Accent' ($screenLines | Where-Object { $_.Text -match '^\| Type not read: \.pdf ' } | Select-Object -First 1).Kind 'Screen: not-scanned reasons in yellow'
+Assert-Equal 'Site:' ($screenLines | Where-Object { $_.Text -like 'Site:*' } | ForEach-Object { $_.Text.Substring(0, $_.LabelLength).Trim() }) 'Screen: header label in the label colour'
 Assert-Equal $true ($screen.IndexOf('SSN ') -lt $screen.IndexOf('Date of birth')) 'Screen: worst type first'
 Assert-Equal $false $screen.Contains($Sample.Ssn) 'Screen: no full SSN'
 $masked = Get-ResultPath $reportFolder ('https://tenant.example.com/teams/' + $Sample.SsnBare)

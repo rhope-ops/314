@@ -27,8 +27,9 @@ Assert-Equal 0 @(Get-ChildItem -LiteralPath $runFolder -Recurse | Where-Object {
 Assert-Equal 'NOT SCANNED Phone SSN' (Get-WorkbookTypes $results[0].FullName) 'Script found every planted type'
 Assert-Equal 'Channel' (Get-XlsxSheets $results[0].FullName)['SSN'][0][1] 'A team: the folder column is named Channel'
 Assert-Equal 1 (Get-FakeCallCount 'Read-Host') 'Only one question when the site is given: another site or exit'
+Assert-Equal $true ((Test-FakePnPCall 'Open question') -and (Test-FakePnPCall ('Open ' + $results[0].FullName))) 'Enter at the open question opens the workbook'
 Assert-Equal 1 @(Get-FakePnPConnection).Count 'One sign-in only: no posts sign-in'
-Assert-Equal $true ((Get-FakeProgressText) -match '2 of 3 files done \| read \d+ \| not scanned 0 \| possible PII \d+ in \d+ files') 'Progress bar shows the file counts'
+Assert-Equal $true ((Get-FakeProgressText) -match '    2/    3 files \| read +\d+ \| not scanned +0 \| possible PII +\d+ in +\d+ files') 'Progress bar shows the file counts'
 Assert-Equal $true ((Get-FakeProgressText) -match "folder 2 of 2: 'Ops'") 'Progress bar names the folder and its number'
 Assert-Equal $false ((Get-FakeProgressText) -match 'This file (Downloading|Reading|Checking)') 'Small files: no per-file bar (it would only slow the scan)'
 

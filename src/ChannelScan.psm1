@@ -35,6 +35,9 @@ $script:Timing = @{ Download = [TimeSpan]::Zero; Check = [TimeSpan]::Zero }
 # How the report and the screen name the files at the top of the library (in no folder).
 $script:RootGroupName = '(top of the library)'
 
+# Office types that SharePoint opens by file ID (Doc.aspx?sourcedoc=): the link for a file whose path holds PII.
+$script:IdLinkExtensions = @('.docx', '.docm', '.doc', '.xlsx', '.xlsm', '.xls', '.pptx', '.pptm', '.ppt')
+
 # Items per request when listing the library. SharePoint refuses views over 5,000 items
 # (list view threshold); 500 keeps each request small.
 $script:ListPageSize = 500
@@ -270,22 +273,33 @@ function Get-FieldValue {
 function Get-SafeLink {
     <#
     .SYNOPSIS
-      A link for the report that holds nothing to mask. It goes to the file when no folder or file name
-      in the path would be changed by Protect-PiiText; else to the deepest folder whose name is clean
-      (at least the library). Each part is escaped, so names with '#', '%' or spaces still work.
+      A link for the report that holds no PII and opens the exact file (the PAM, 2026-11-20). It is the file's own
+      path when no folder or file name in it holds PII (Protect-PiiName changes nothing). Else, for an Office file,
+      a link by the file's ID (<site>/_layouts/15/Doc.aspx?sourcedoc={id}), which names nothing; else the deepest
+      folder whose name is clean (at least the library). Each part is escaped, so names with '#', '%' or spaces work.
     .PARAMETER Origin
       https://<host>
     .PARAMETER ServerRelativeUrl
       /sites/<name>/<library>/<folder>/<file>
+    .PARAMETER UniqueId
+      The file's ID (the list field UniqueId), or empty.
     .OUTPUTS
       [string]
     #>
-    param([string]$Origin, [string]$ServerRelativeUrl)
+    param([string]$Origin, [string]$ServerRelativeUrl, [string]$UniqueId = '')
     $parts = $ServerRelativeUrl.TrimStart('/').Split('/')
+    # Joins path parts into a link path, each part escaped.
+    $escape = { param($names) ($names | ForEach-Object { [uri]::EscapeDataString($_) }) -join '/' }
     # The first three parts are the site and the library, which the person gave or Teams named.
     $keep = [Math]::Min(3, $parts.Count)
-    while ($keep -lt $parts.Count -and (Protect-PiiText $parts[$keep]) -ceq $parts[$keep]) { $keep++ }
-    return $Origin + '/' + (($parts[0..($keep - 1)] | ForEach-Object { [uri]::EscapeDataString($_) }) -join '/')
+    while ($keep -lt $parts.Count -and (Protect-PiiName $parts[$keep]) -ceq $parts[$keep]) { $keep++ }
+    if ($keep -eq $parts.Count) { return $Origin + '/' + (& $escape $parts) }
+    $id = [guid]::Empty
+    $extension = [System.IO.Path]::GetExtension($parts[-1]).ToLower()
+    if ($parts.Count -ge 2 -and $script:IdLinkExtensions -contains $extension -and [guid]::TryParse($UniqueId, [ref]$id)) {
+        return '{0}/{1}/_layouts/15/Doc.aspx?sourcedoc=%7B{2}%7D' -f $Origin, (& $escape $parts[0..1]), $id
+    }
+    return $Origin + '/' + (& $escape $parts[0..($keep - 1)])
 }
 
 function Get-FileBytes {
@@ -392,12 +406,12 @@ function Invoke-OneFileScan {
     param($File, [string]$Channel, [string]$Prefix, [string]$Origin, [int]$MaxFileMB, $Rows)
     $name = Get-FieldValue $File 'FileLeafRef'
     $ref = Get-FieldValue $File 'FileRef'
-    $Channel = Protect-PiiText $Channel   # from here on, the channel name as the report shows it
+    $Channel = Protect-PiiName $Channel   # from here on, the channel name as the report shows it
     $modified = Get-FieldValue $File 'Modified'
     # The path is shown in the report: mask PII in it, and report a name that holds PII as a hit.
     $rawItem = $ref.Substring($Prefix.Length)
-    $item = Protect-PiiText $rawItem
-    $link = Get-SafeLink $Origin $ref
+    $item = Protect-PiiName $rawItem
+    $link = Get-SafeLink $Origin $ref (Get-FieldValue $File 'UniqueId')
     foreach ($hit in @(Find-PiiInText $rawItem)) {
         $Rows.Add((New-ReportRow 'File name' $Channel $item $link $modified $hit.Detector $hit.Confidence $hit.MaskedValue 'In the file or folder name'))
     }
@@ -450,7 +464,7 @@ function Invoke-FileScan {
     param($Library, [string[]]$Channels, [string]$SiteUrl, [int]$MaxFileMB, $Rows)
     $origin = ([uri]$SiteUrl).GetLeftPart([System.UriPartial]::Authority)
     $script:Timing = @{ Download = [TimeSpan]::Zero; Check = [TimeSpan]::Zero }
-    $fields = @('FileLeafRef', 'FileRef', 'FSObjType', 'File_x0020_Size', 'Modified')
+    $fields = @('FileLeafRef', 'FileRef', 'FSObjType', 'File_x0020_Size', 'Modified', 'UniqueId')
     $allItems = @(Get-PnPListItem -List $Library.List -PageSize $script:ListPageSize -Fields $fields -ErrorAction Stop)
     # One group per folder; files at the top of the library (a plain SharePoint site) are one more group.
     $groups = @(foreach ($channel in $Channels) {
@@ -463,26 +477,30 @@ function Invoke-FileScan {
     }
     $total = 0
     foreach ($group in $groups) { $total += $group.Files.Count }
-    Write-Ui ('Found {0} files in {1} folders. Scanning ...' -f $total, $groups.Count) 'Title'
+    Write-Ui ('==== Scanning {0} files in {1} folders ====' -f $total, $groups.Count) 'Title'
     $meter = New-ScanMeter $total
     for ($c = 0; $c -lt $groups.Count; $c++) {
         $group = $groups[$c]
-        $shownChannel = Protect-PiiText $group.Name   # the progress bar is on screen too
+        $shownChannel = Protect-PiiName $group.Name   # the progress bar is on screen too
         $before = $meter.Clone()
         foreach ($file in $group.Files) {
+            # The file in work, with PII masked (the PAM, 2026-11-20: a slow file is then visible).
+            $shownFile = Protect-PiiName ((Get-FieldValue $file 'FileRef').Substring($group.Prefix.Length))
             Write-Progress -Id 1 -Activity ("Scanning files - folder {0} of {1}: '{2}'" -f ($c + 1), $groups.Count, $shownChannel) `
-                -Status (Get-ScanMeterText $meter 'file') -PercentComplete (Get-MeterPercent $meter)
+                -Status (Get-ScanMeterText $meter 'file') -PercentComplete (Get-MeterPercent $meter) -CurrentOperation ('Now: ' + $shownFile)
             $firstRow = $Rows.Count
             $read = Invoke-OneFileScan $file $group.Name $group.Prefix $origin $MaxFileMB $Rows
             Write-Progress -Id 2 -Activity 'This file' -Completed
             Update-ScanMeter $meter $Rows $firstRow $read
             Write-MeterLine $meter 'file'   # live counts, at most every few seconds
         }
-        Write-ChannelLine ('{0}/{1}' -f ($c + 1), $groups.Count) $group.Name $before $meter 'file'
+        Write-ChannelLine ($c + 1) $groups.Count $group.Name $before $meter 'file'
         Write-MeterLine $meter 'file' -Force   # the running totals after each folder
+        Write-RuleLine
     }
     Write-Progress -Id 1 -Activity 'Scanning files' -Completed
-    Write-Ui ('Files done: ' + (Get-ScanMeterText $meter 'file')) 'Title'
+    $kind = 'Good'; if ($meter.Hits -gt 0) { $kind = 'Alert' }   # green only when nothing was found
+    Write-Ui ('Files done: ' + (Get-ScanMeterText $meter 'file')) $kind
     return $meter.Read
 }
 
