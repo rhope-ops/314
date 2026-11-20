@@ -12,9 +12,13 @@ Title: 33-332.Z · <task> · <date>. Read AGENTS.md first.
    link asks for the site address, then checks its group ID); no choices (all channels, posts always tried, both
    reports); progress bar and per-channel counts (src/ScanMeter.psm1); page without Configuration, run steps at
    the top of the script; for a team member, not only an owner. The PAM: test one run on DoD365.
-5. Open 2026-11-20 (PR #11): Ion (DoD365 PII Reporter): Excel read cell by cell (false positives), per-file
-   progress bar, top-of-library files, posts off, one .xlsx workbook (Summary first, a tab per type worst first,
-   Low confidence, Not scanned) in Documents\Ion\<site>\<date>. The PAM: approve the preview, then test a run.
+5. Done 2026-11-20 (PR #11, merged ac76a41): Ion, DoD365 PII Reporter: one .xlsx (Summary first, a tab per type
+   worst first, Low confidence, Not scanned) in Documents\Ion\<site>\<date>; Excel read cell by cell; fewer false
+   positives; posts off; retry on a wrong paste; "No access" message; another site or exit; FULCRUM colours; live
+   counts. The PAM: test one run on DoD365 (not yet tested there: No access text, colours in ISE, Excel opening).
+   Follow-ups (MINOR, review of 4bac730): "results could not be saved" also covers other end-of-scan errors; masked
+   status codes (429/503 show as ###); which message PnP 1.12 gives when the access-page window is closed; a forced
+   live line can repeat the last one. Speed: if "Time reading and checking" dominates a big site, try parallel checks.
 6. GitHub Pages is on (live copy checked 2026-11-20). Denylist secret: added 2026-11-20.
 7. Known gap (MINOR, safe): pasted text with a second address after a Teams link without a groupId can supply
    that later groupId; the site-group check still holds.
