@@ -84,13 +84,14 @@ Assert-Equal $false (Test-FakePnPCall 'Read-Host') 'Site address: no address pro
 Assert-Equal $false (Test-FakePnPCall 'Disconnect-PnPOnline') 'Site address: still signed in after success'
 Assert-Equal $Sample.Site ((Get-FakePnPConnection) -join ' ') 'Site address: one sign-in, to that site'
 $meter = @{ Total = 40; Done = 10; Read = 8; Skipped = 2; Hits = 3; HitItems = 2; Clock = [pscustomobject]@{ Elapsed = [TimeSpan]::FromSeconds(30) } }
-Assert-Equal '10 of 40 files done | read 8 | not scanned 2 | possible PII 3 in 2 files | 00:30 used, about 01:30 left' (Get-ScanMeterText $meter 'file') 'Meter text: counts, time used and left'
+$expected = '   10/   40 files | read     8 | not scanned     2 | possible PII     3 in     2 files | 00:30 used, about 01:30 left'
+Assert-Equal $expected (Get-ScanMeterText $meter 'file') 'Meter text: fixed-width counts, time used and left'
 Assert-Equal 25 (Get-MeterPercent $meter) 'Meter percent'
 $meter.Clock = [pscustomobject]@{ Elapsed = [TimeSpan]::FromMinutes(65) }
 Assert-Equal $true ((Get-ScanMeterText $meter 'file') -match '\| 65:00 used, about 195:00 left$') 'Meter time past an hour does not wrap'
 $meter.Total = 0
 Assert-Equal 0 (Get-MeterPercent $meter) 'Meter percent with no total'
-Assert-Equal '10 posts done | read 8 | not scanned 2 | possible PII 3 in 2 posts | 65:00 used' (Get-ScanMeterText $meter 'post') 'Meter text: no total, no time left'
+Assert-Equal '   10 posts | read     8 | not scanned     2 | possible PII     3 in     2 posts | 65:00 used' (Get-ScanMeterText $meter 'post') 'Meter text: no total, no time left'
 
 # ---- File scan ----
 $library = '/sites/TeamA/Shared Documents'
@@ -107,7 +108,7 @@ $rows = New-Object System.Collections.Generic.List[object]
 Assert-Equal 3 (Invoke-FileScan -Library $lib -Channels @('General', 'Ops') -SiteUrl $Sample.Site -MaxFileMB 25 -Rows $rows 6>$null) 'Files scanned'
 Assert-Equal 4 (Get-FakeCallCount 'Progress done 2') 'Per-file bar closed after each file, also a skipped one'
 Write-FileStep (2MB) 'Downloading' 10
-Assert-Equal $true (Test-FakePnPCall 'Progress 2 under 1') 'Per-file bar sits under the main bar'
+Assert-Equal $false (Test-FakePnPCall 'Progress 2 under 1') 'Per-file bar is not a child bar (ISE would indent it)'
 Assert-Equal 1 @($rows | Where-Object { $_.Detector -eq 'SSN' -and $_.Item -eq 'Roster.docx' }).Count 'SSN found in docx'
 Assert-Equal 1 @($rows | Where-Object { $_.Detector -eq 'Phone' -and $_.Item -eq 'notes.txt' }).Count 'Phone found in txt'
 Assert-Equal 1 @($rows | Where-Object { $_.Detector -eq 'NOT SCANNED' -and $_.Item -eq 'scan #A.pdf' }).Count 'pdf listed'
@@ -115,6 +116,7 @@ Assert-Equal 'https://tenant.example.com/sites/TeamA/Shared%20Documents/General/
     ($rows | Where-Object { $_.Item -eq 'Roster.docx' } | Select-Object -First 1).Link 'Link built'
 Assert-Equal 'https://tenant.example.com/sites/TeamA/Shared%20Documents/Ops/scan%20%23A.pdf' `
     ($rows | Where-Object { $_.Item -eq 'scan #A.pdf' }).Link 'Link escapes #'
+Assert-Equal $true ((Get-FakeProgressText) -match 'Now: Roster\.docx') 'Progress bar names the file in work'
 
 # A plain SharePoint site: files at the top of the library are scanned too, also when there is no folder.
 Reset-FakePnP @{ "$library/top.txt" = $Txt; "$library/General/notes.txt" = $Txt; "$library/Forms/AllItems.txt" = $Txt }
@@ -134,16 +136,32 @@ $allText = ($rows | ForEach-Object { $_.Item + ' ' + $_.Link + ' ' + $_.Context 
 Assert-Equal $false $allText.Contains($Sample.Ssn) 'No full SSN in any item, link or snippet'
 Assert-Equal $false $allText.Contains($Sample.SsnBare) 'No bare SSN in any link'
 Assert-Equal 'https://tenant.example.com/sites/TeamA/Shared%20Documents/General' `
-    ($nameRows[0].Link) 'Link of a file named with PII stops at its folder'
+    ($nameRows[0].Link) 'Link of a non-Office file named with PII stops at its folder'
+$fileId = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
+# Get-SafeLink is not exported: call it in the module's scope.
+$linkOf = { param($ref, $id) & (Get-Module ChannelScan) { param($r, $i) Get-SafeLink 'https://tenant.example.com' $r $i } $ref $id }
+Assert-Equal "https://tenant.example.com/sites/TeamA/_layouts/15/Doc.aspx?sourcedoc=%7B$fileId%7D" `
+    (& $linkOf "$library/General/Roster $($Sample.Ssn).xlsx" $fileId) 'Office file named with PII: link by file ID'
+Assert-Equal 'https://tenant.example.com/sites/TeamA/Shared%20Documents/FY27/Plan%202.docx' `
+    (& $linkOf "$library/FY27/Plan 2.docx" $fileId) 'Digits that are not PII: link to the file itself'
+
+# A label in a parent folder or in the channel name, the number in the file name: masked, reported, not in the link.
+Reset-FakePnP @{ "$library/General/CAC/$($Sample.DodId).docx" = $Txt; "$library/CAC/$($Sample.DodId).txt" = $Txt }
+$rows = New-Object System.Collections.Generic.List[object]
+$null = Invoke-FileScan -Library $lib -Channels @('General', 'CAC') -SiteUrl $Sample.Site -MaxFileMB 25 -Rows $rows 6>$null
+$splitText = (($rows | ForEach-Object { $_.Item + ' ' + $_.Link }) -join ' ') + ' ' + (Get-FakeProgressText)
+Assert-Equal $false $splitText.Contains($Sample.DodId) 'Label in a parent folder or the channel: no full DoD ID in item, link or bar'
+Assert-Equal 2 @($rows | Where-Object { $_.Source -eq 'File name' -and $_.Detector -eq 'DoD ID' }).Count 'Label in a parent folder or the channel: reported as a hit'
+Assert-Equal $true (@($rows | Where-Object { $_.Link -match 'Doc\.aspx\?sourcedoc=' }).Count -gt 0) 'Label in a parent folder: Office file linked by its ID'
 
 # A channel named with PII: masked in every row.
 Reset-FakePnP @{ "$library/SSN $($Sample.Ssn)/a.txt" = $Txt }
 $rows = New-Object System.Collections.Generic.List[object]
 $shown = (Invoke-FileScan -Library $lib -Channels @("SSN $($Sample.Ssn)") -SiteUrl $Sample.Site -MaxFileMB 25 -Rows $rows 6>&1 | ForEach-Object { [string]$_ }) -join ' '
 Assert-Equal $false $shown.Contains($Sample.Ssn) 'Channel lines never show the SSN'
-Assert-Equal 'SSN ***-**-####' (($rows | Select-Object -ExpandProperty Channel -Unique) -join ',') 'Channel name masked'
+Assert-Equal 'SSN ***-**-6789' (($rows | Select-Object -ExpandProperty Channel -Unique) -join ',') 'Channel name: the SSN masked like a found value'
 Assert-Equal $false ((($rows | ForEach-Object { $_.Link }) -join ' ').Contains('6789')) 'Channel link holds no SSN digits'
-Assert-Equal $true ((Get-FakeProgressText) -match 'SSN \*\*\*-\*\*-####') 'Progress bar shows the masked channel name'
+Assert-Equal $true ((Get-FakeProgressText) -match 'SSN \*\*\*-\*\*-6789') 'Progress bar shows the masked channel name'
 Assert-Equal $false (Get-FakeProgressText).Contains($Sample.Ssn) 'Progress bar never shows the SSN'
 Reset-FakePnP @{
     "$library/General/Roster.docx"  = $Docx
@@ -171,7 +189,12 @@ Reset-FakePnP @{}
 $liveMeter = @{ Total = 4; Done = 2; Read = 1; Skipped = 1; Hits = 2; HitItems = 1; Types = @{ 'SSN' = 1; 'Phone' = 1 }; LastLine = [TimeSpan]::Zero
     Clock = [pscustomobject]@{ Elapsed = [TimeSpan]::FromSeconds(20) } }
 $live = (Write-MeterLine $liveMeter 'file' -Force 6>&1 | ForEach-Object { [string]$_ }) -join ''
-Assert-Equal '  > 2/4 files  50% | read 1 | not scanned 1 | possible PII 2 (SSN 1, Phone 1) | 00:20 used, about 00:20 left' $live 'Live line: counts, types worst first, time'
+$expected = '  >     2/    4 files  50% | read     1 | not scanned     1 | possible PII     2 | 00:20 used, about 00:20 left | SSN 1, Phone 1'
+Assert-Equal $expected $live 'Live line: fixed-width counts, time, then types worst first'
+$liveMeter.Done = 1234; $liveMeter.Read = 999; $liveMeter.Skipped = 12; $liveMeter.Hits = 0; $liveMeter.Types = @{}
+$wide = (Write-MeterLine $liveMeter 'file' -Force 6>&1 | ForEach-Object { [string]$_ }) -join ''
+Assert-Equal $live.IndexOf('| read') $wide.IndexOf('| read') 'Live line: columns stay in place when the counts grow'
+Assert-Equal $live.IndexOf('| possible PII') $wide.IndexOf('| possible PII') 'Live line: PII column stays in place'
 $liveMeter.Clock = [pscustomobject]@{ Elapsed = [TimeSpan]::FromSeconds(25) }
 Assert-Equal '' ((Write-MeterLine $liveMeter 'file' 6>&1 | ForEach-Object { [string]$_ }) -join '') 'Live line: not again within 10 seconds'
 Assert-Equal 'Time downloading|Time reading and checking' (@((Get-ScanTiming).Keys) -join '|') 'Timing: download and check times'

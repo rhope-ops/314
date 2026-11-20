@@ -163,12 +163,27 @@ function Find-PiiInText {
 function Protect-PiiText {
     <#
     .SYNOPSIS
-      Masks a short text that the report shows as it is: file, folder and channel names, and error
-      messages. Strict on purpose, because a detector can miss a pattern in a name: each found value
-      becomes its masked value, then EVERY digit becomes '#' and every e-mail name becomes '***'.
+      Masks an error message that the screen or the report shows as it is. Strict on purpose, because a message
+      can quote any text: Protect-PiiName, then EVERY digit becomes '#'.
       Example: "Roster_123-45-6789.docx" -> "Roster_***-**-####.docx"; "FY27 Plan.docx" -> "FY## Plan.docx".
     .PARAMETER Text
-      The name or message.
+      The message.
+    .OUTPUTS
+      [string]
+    #>
+    param([AllowEmptyString()][string]$Text)
+    if ([string]::IsNullOrEmpty($Text)) { return $Text }
+    return ((Protect-PiiName $Text) -replace '\d', '#')
+}
+
+function Protect-PiiName {
+    <#
+    .SYNOPSIS
+      Masks a site, folder or file name the person must find again: each found value becomes its masked value and
+      every e-mail name becomes '***'; other digits stay (the PAM, 2026-11-20: "FY27 Plan.docx" stays as it is, so the
+      file can be found). Example: "Roster_123-45-6789.docx" -> "Roster_***-**-6789.docx".
+    .PARAMETER Text
+      The name or path.
     .OUTPUTS
       [string]
     #>
@@ -180,8 +195,7 @@ function Protect-PiiText {
         $masked = Get-MaskedValue $hit.Detector $hit.Value
         $result = $result.Substring(0, $hit.Index) + $masked + $result.Substring($hit.Index + $hit.Length)
     }
-    $result = [regex]::Replace($result, $script:EmailLocalPartPattern, '***')
-    return ($result -replace '\d', '#')
+    return [regex]::Replace($result, $script:EmailLocalPartPattern, '***')
 }
 
-Export-ModuleMember -Function Find-PiiInText, Protect-PiiText, Get-MaskedValue
+Export-ModuleMember -Function Find-PiiInText, Protect-PiiText, Protect-PiiName, Get-MaskedValue

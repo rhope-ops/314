@@ -6,7 +6,7 @@ Report.psm1 - the scan results for a person: a summary on screen and one Excel w
                (the PAM, 2026-11-20: tabs to cut noise; no .txt or .csv).
   Inputs:      report rows (New-ReportRow) from ChannelScan.psm1; values in them are already masked.
   Outputs:     the summary on screen; <OutputFolder>\<site>\<yyyy-MM-dd>\Ion Results <HH-mm-ss>.xlsx.
-  Depends on:  PiiMasking.psm1 (Protect-PiiText), XlsxWriter.psm1, imported first by Find-ChannelPII.ps1.
+  Depends on:  PiiMasking.psm1 (Protect-PiiName), XlsxWriter.psm1, imported first by Find-ChannelPII.ps1.
   How to run:  imported by Find-ChannelPII.ps1; not run on its own.
   Run target:  Windows PowerShell 5.1 (also PowerShell 7).
   Network:     none.
@@ -36,10 +36,22 @@ $script:SeverityOrder = @('SSN', 'Date of birth', 'Passport', 'Payment card', 'D
 # How many files the screen summary lists (the workbook lists all).
 $script:TopItems = 10
 
-# Screen colours from the FULCRUM palette (the PAM, 2026-11-20). Write-Host has only the 16 console colours, so each
-# palette colour maps to its nearest: cream = White (titles, values), gold = Yellow (accents, Medium), ember = Red
-# (possible PII, High, errors), slate = Gray (muted text, zero counts). Ink is the console background.
-$script:ScreenColors = @{ Title = 'White'; Text = 'White'; Accent = 'Yellow'; Alert = 'Red'; Muted = 'Gray' }
+# Screen colours (the PAM, 2026-11-20: less grey, more format). Write-Host has only the 16 console colours:
+# Cyan = headings and labels, White = values, Green = clean or done, Yellow = check by hand and Medium,
+# Red = possible PII, High and errors, Gray = hints only, DarkGray = rules and table borders.
+$script:ScreenColors = @{ Title = 'Cyan'; Label = 'Cyan'; Text = 'White'; Good = 'Green'; Accent = 'Yellow'; Alert = 'Red'
+    Muted = 'Gray'; Rule = 'DarkGray' }
+
+# Not-scanned reasons in groups for the counts on screen and on the Summary tab: a pattern on the reason, its group.
+# A file type that is not read is counted per extension (Get-NotScannedGroup).
+$script:NotScannedGroups = [ordered]@{
+    '^Encrypted' = 'Encrypted or labelled with encryption'
+    '^Larger than' = 'Too large'
+    '^Empty file' = 'Empty file'
+    'web page' = 'Download gave a web page'
+    '^Download failed' = 'Download failed'
+    '^Not a valid Office file|^Could not read' = 'Damaged or not readable'
+}
 
 
 # What to do with PII found where it should not be: the breach steps of the rule source, AFI 33-332 para 3.1.2 as
@@ -113,11 +125,12 @@ function Write-Ui {
     .PARAMETER Text
       The text (already masked by the caller).
     .PARAMETER Kind
-      Title, Text, Accent, Alert or Muted.
+      Title, Label, Text, Good, Accent, Alert, Muted or Rule.
     .PARAMETER NoNewline
       Keep writing on the same line (for a line with several colours).
     #>
-    param([AllowEmptyString()][string]$Text, [ValidateSet('Title', 'Text', 'Accent', 'Alert', 'Muted')][string]$Kind = 'Text', [switch]$NoNewline)
+    param([AllowEmptyString()][string]$Text, [ValidateSet('Title', 'Label', 'Text', 'Good', 'Accent', 'Alert', 'Muted', 'Rule')][string]$Kind = 'Text',
+          [switch]$NoNewline)
     Write-Host $Text -ForegroundColor $script:ScreenColors[$Kind] -NoNewline:$NoNewline
 }
 
@@ -167,6 +180,42 @@ function Get-TypeCounts {
         $count = @{ High = 0; Medium = 0; Low = 0 }
         foreach ($hit in $group.Group) { $count[$hit.Confidence]++ }
         [pscustomobject]@{ Type = $group.Name; High = $count.High; Medium = $count.Medium; Low = $count.Low; Total = $group.Count }
+    }
+}
+
+function Get-NotScannedGroup {
+    <#
+    .SYNOPSIS
+      The group of one not-scanned row: a type not read by its extension, else by its reason ($NotScannedGroups).
+    .PARAMETER Row
+      A report row that is not a hit (NOT SCANNED, BLOCKED or INCOMPLETE).
+    .OUTPUTS
+      [string] the group name.
+    #>
+    param($Row)
+    if ($Row.Detector -ne 'NOT SCANNED') { return $Row.Detector }   # BLOCKED, INCOMPLETE
+    if ($Row.Context -match '^File type') {
+        $extension = [System.IO.Path]::GetExtension($Row.Item).ToLower()
+        if (-not $extension) { $extension = '(no extension)' }
+        return 'Type not read: ' + $extension
+    }
+    foreach ($pattern in $script:NotScannedGroups.Keys) { if ($Row.Context -match $pattern) { return $script:NotScannedGroups[$pattern] } }
+    return 'Other'
+}
+
+function Get-NotScannedCounts {
+    <#
+    .SYNOPSIS
+      How many files were not scanned, per reason, most first (the PAM, 2026-11-20: see at once what to check by hand).
+    .PARAMETER Rows
+      All report rows.
+    .OUTPUTS
+      [pscustomobject] Reason, Count.
+    #>
+    param([object[]]$Rows)
+    $notes = @($Rows | Where-Object { -not $script:Rank.ContainsKey($_.Confidence) })
+    foreach ($group in ($notes | Group-Object { Get-NotScannedGroup $_ } | Sort-Object @{ Expression = 'Count'; Descending = $true }, Name)) {
+        [pscustomobject]@{ Reason = $group.Name; Count = $group.Count }
     }
 }
 
@@ -226,12 +275,34 @@ function Format-BoxTable {
     $border
 }
 
+function Get-TableLines {
+    <#
+    .SYNOPSIS
+      A boxed table as screen lines: borders grey, the header in the label colour, each row in its own colour.
+    .PARAMETER Columns
+      The header texts.
+    .PARAMETER Rows
+      The rows, each an array of cells.
+    .PARAMETER Kinds
+      One Write-Ui colour per row.
+    .OUTPUTS
+      [pscustomobject] Text, Kind, LabelLength (0), one per line.
+    #>
+    param([string[]]$Columns, [object[]]$Rows, [string[]]$Kinds)
+    $table = @(Format-BoxTable $Columns $Rows)
+    for ($i = 0; $i -lt $table.Count; $i++) {
+        $kind = 'Rule'
+        if ($i -eq 1) { $kind = 'Label' } elseif ($i -ge 3 -and $i -lt $table.Count - 1) { $kind = $Kinds[$i - 3] }
+        [pscustomobject]@{ Text = $table[$i]; Kind = $kind; LabelLength = 0 }
+    }
+}
+
 function Get-ScanSummaryText {
     <#
     .SYNOPSIS
       The summary for the screen, line by line with its palette colour: the scan's details and totals, a table of
-      possible PII per type (worst first; red with High hits, gold with Medium, grey otherwise), and a table of the
-      files with the most serious hits. Every hit is listed in the workbook, not here.
+      possible PII per type (worst first; red with High hits, yellow with Medium, white otherwise), a table of the
+      files with the most serious hits, and the not-scanned files per reason. Every hit is listed in the workbook.
     .PARAMETER Rows
       All report rows.
     .PARAMETER ItemsScanned
@@ -241,36 +312,35 @@ function Get-ScanSummaryText {
     .PARAMETER FolderLabel
       'Channel' (a team) or 'Folder' (a plain site).
     .OUTPUTS
-      [pscustomobject] Text, Kind (a Write-Ui colour), one per line.
+      [pscustomobject] Text, Kind (a Write-Ui colour), LabelLength (characters at the start in the label colour), one per line.
     #>
     param([object[]]$Rows, [int]$ItemsScanned, [System.Collections.IDictionary]$Header, [string]$FolderLabel)
     $out = New-Object System.Collections.Generic.List[object]
-    # Adds one screen line with its colour.
-    $add = { param($text, $kind) $out.Add([pscustomobject]@{ Text = $text; Kind = $kind }) }
+    # Adds one screen line with its colour; the first LabelLength characters are written in the label colour.
+    $add = { param($text, $kind, $labelLength = 0) $out.Add([pscustomobject]@{ Text = $text; Kind = $kind; LabelLength = $labelLength }) }
     & $add '' 'Text'; & $add ('==== ' + $script:ToolTitle + ' ====') 'Title'
     foreach ($pair in @($Header.GetEnumerator()) + @((Get-ScanMetrics $Rows $ItemsScanned).GetEnumerator())) {
-        & $add ('{0,-26} {1}' -f ($pair.Key + ':'), $pair.Value) 'Text'
+        & $add ('{0,-26} {1}' -f ($pair.Key + ':'), $pair.Value) 'Text' 27
     }
     $hits = @($Rows | Where-Object { $script:Rank.ContainsKey($_.Confidence) })
-    if ($hits.Count -eq 0) { & $add '' 'Text'; & $add 'No possible PII found in the files that were read.' 'Title' }
+    if ($hits.Count -eq 0) { & $add '' 'Text'; & $add 'No possible PII found in the files that were read.' 'Good' }
     else {
         $types = @(Get-TypeCounts $hits)
         & $add '' 'Text'; & $add 'POSSIBLE PII BY TYPE (worst first)' 'Title'
-        $table = @(Format-BoxTable @('Type', 'High', 'Medium', 'Low', 'Total') @($types | ForEach-Object { , @($_.Type, $_.High, $_.Medium, $_.Low, $_.Total) }))
-        for ($i = 0; $i -lt $table.Count; $i++) {
-            $kind = 'Muted'
-            if ($i -eq 1) { $kind = 'Title' }
-            elseif ($i -ge 3 -and $i -lt $table.Count - 1) {
-                $type = $types[$i - 3]
-                if ($type.High -gt 0) { $kind = 'Alert' } elseif ($type.Medium -gt 0) { $kind = 'Accent' }
-            }
-            & $add $table[$i] $kind
-        }
+        $kinds = @($types | ForEach-Object { if ($_.High -gt 0) { 'Alert' } elseif ($_.Medium -gt 0) { 'Accent' } else { 'Text' } })
+        Get-TableLines @('Type', 'High', 'Medium', 'Low', 'Total') @($types | ForEach-Object { , @($_.Type, $_.High, $_.Medium, $_.Low, $_.Total) }) $kinds |
+            ForEach-Object { $out.Add($_) }
         $top = @(Get-ReportSummary $Rows | Select-Object -First $script:TopItems)
         & $add '' 'Text'; & $add ('FILES WITH THE MOST SERIOUS HITS (first {0}; all are in the workbook)' -f $script:TopItems) 'Title'
-        foreach ($text in @(Format-BoxTable @('Worst', 'Highest', 'Hits', $FolderLabel, 'Item') @($top | ForEach-Object { , @($_.Worst, $_.Highest, $_.Hits, $_.Channel, $_.Item) }))) {
-            & $add $text 'Text'
-        }
+        $kinds = @($top | ForEach-Object { if ($_.Highest -eq 'High') { 'Alert' } else { 'Accent' } })
+        Get-TableLines @('Worst', 'Highest', 'Hits', $FolderLabel, 'File') @($top | ForEach-Object { , @($_.Worst, $_.Highest, $_.Hits, $_.Channel, $_.Item) }) $kinds |
+            ForEach-Object { $out.Add($_) }
+    }
+    $skipped = @(Get-NotScannedCounts $Rows)
+    if ($skipped.Count -gt 0) {
+        & $add '' 'Text'; & $add 'NOT SCANNED: CHECK THESE BY HAND (the workbook lists each file)' 'Title'
+        Get-TableLines @('Reason', 'Files') @($skipped | ForEach-Object { , @($_.Reason, $_.Count) }) @($skipped | ForEach-Object { 'Accent' }) |
+            ForEach-Object { $out.Add($_) }
     }
     & $add '' 'Text'
     & $add 'Confidence is a pattern guess, not proof: open each item and check it before you act.' 'Muted'
@@ -287,7 +357,7 @@ function Get-ResultPath {
     .SYNOPSIS
       A new workbook path: <OutputFolder>\<site>\<yyyy-MM-dd>\Ion Results <HH-mm-ss>.xlsx, with (2), (3) ... added
       if the name exists, so a result is never overwritten. Creates the folders. The site name is masked like any
-      name the tool shows (digits become #), and characters Windows refuses in a folder name are replaced.
+      name the tool shows (found PII only), and characters Windows refuses in a folder name are replaced.
     .PARAMETER OutputFolder
       The base folder.
     .PARAMETER SiteUrl
@@ -297,7 +367,7 @@ function Get-ResultPath {
     #>
     param([string]$OutputFolder, [string]$SiteUrl)
     $siteName = [uri]::UnescapeDataString(($SiteUrl.TrimEnd('/') -split '/')[-1])
-    $siteName = ((Protect-PiiText $siteName) -replace '[\\/:*?"<>|]', '-').Trim(' .')
+    $siteName = ((Protect-PiiName $siteName) -replace '[\\/:*?"<>|]', '-').Trim(' .')
     if (-not $siteName) { $siteName = 'site' }
     if ($siteName -match '^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(\..*)?$') { $siteName = '_' + $siteName }   # names Windows keeps for devices
     $now = Get-Date
@@ -334,23 +404,23 @@ function Get-WorkbookSheets {
     #>
     param([object[]]$Rows, [int]$ItemsScanned, [System.Collections.IDictionary]$Header, [string]$FolderLabel)
     $hits = @($Rows | Where-Object { $script:Rank.ContainsKey($_.Confidence) })
-    $columns = @('Confidence', $FolderLabel, 'Item', 'Masked value', 'Context', 'Modified', 'Link', 'Found in')
+    $columns = @('Confidence', $FolderLabel, 'File', 'Masked value', 'Context', 'Modified', 'Link', 'Found in')
     $widths = @(11, 22, 45, 18, 60, 17, 50, 10)
     $byRank = @{ Expression = { $script:Rank[$_.Confidence] }; Descending = $true }
     $sheets = New-Object System.Collections.Generic.List[object]
     $sheets.Add((New-XlsxSheet 'Summary' @($script:ToolTitle, '', '', '', '') (Get-SummaryRows $Rows $ItemsScanned $Header) @(28, 70, 9, 9, 9)))
     foreach ($type in @(Get-TypeCounts $hits | Where-Object { $_.High + $_.Medium -gt 0 } | ForEach-Object { $_.Type })) {
         $typeHits = @($hits | Where-Object { $_.Detector -eq $type -and $_.Confidence -ne 'Low' } | Sort-Object $byRank, Channel, Item)
-        $sheets.Add((New-XlsxSheet $type $columns @($typeHits | ForEach-Object { , (Get-HitCells $_) }) $widths -List))
+        $sheets.Add((New-XlsxSheet $type $columns @($typeHits | ForEach-Object { , (Get-HitCells $_) }) $widths -List -LinkColumn 6))
     }
     $low = @($hits | Where-Object { $_.Confidence -eq 'Low' } | Sort-Object { Get-SeverityIndex $_.Detector }, Channel, Item)
     if ($low.Count -gt 0) {
-        $sheets.Add((New-XlsxSheet 'Low confidence' (@('Type') + $columns) @($low | ForEach-Object { , (@($_.Detector) + (Get-HitCells $_)) }) (@(16) + $widths) -List))
+        $sheets.Add((New-XlsxSheet 'Low confidence' (@('Type') + $columns) @($low | ForEach-Object { , (@($_.Detector) + (Get-HitCells $_)) }) (@(16) + $widths) -List -LinkColumn 7))
     }
     $notes = @($Rows | Where-Object { -not $script:Rank.ContainsKey($_.Confidence) })
     if ($notes.Count -gt 0) {
-        $sheets.Add((New-XlsxSheet 'Not scanned' @('Status', $FolderLabel, 'Item', 'Reason', 'Link') `
-            @($notes | ForEach-Object { , @($_.Detector, $_.Channel, $_.Item, $_.Context, $_.Link) }) @(14, 22, 45, 70, 50) -List))
+        $sheets.Add((New-XlsxSheet 'Not scanned' @('Status', $FolderLabel, 'File', 'Reason', 'Link') `
+            @($notes | ForEach-Object { , @($_.Detector, $_.Channel, $_.Item, $_.Context, $_.Link) }) @(14, 22, 45, 70, 50) -List -LinkColumn 4))
     }
     return $sheets.ToArray()
 }
@@ -358,8 +428,8 @@ function Get-WorkbookSheets {
 function Get-SummaryRows {
     <#
     .SYNOPSIS
-      The rows of the Summary tab: the scan's details and totals, the hits per type (worst first), then how to read
-      the tabs, the breach step and the handling note.
+      The rows of the Summary tab: the scan's details and totals, the hits per type (worst first), the not-scanned
+      files per reason, then how to read the tabs, the breach step and the handling note.
     .PARAMETER Rows
       All report rows.
     .PARAMETER ItemsScanned
@@ -376,6 +446,12 @@ function Get-SummaryRows {
     , @('Possible PII by type (worst first)', 'High', 'Medium', 'Low', 'Total')
     foreach ($type in @(Get-TypeCounts $hits)) { , @($type.Type, $type.High, $type.Medium, $type.Low, $type.Total) }
     if ($hits.Count -eq 0) { , @('None found in the files that were read.') }
+    $skipped = @(Get-NotScannedCounts $Rows)
+    if ($skipped.Count -gt 0) {
+        , @('')
+        , @('Not scanned: check by hand', 'Files')
+        foreach ($group in $skipped) { , @($group.Reason, $group.Count) }
+    }
     , @('')
     , @('Tabs', 'One tab per type with High or Medium hits, worst type first; then Low confidence; then Not scanned.')
     , @('Confidence', 'A pattern guess, not proof: open each item and check it before you act.')
@@ -404,14 +480,17 @@ function Publish-ScanReport {
     #>
     param([object[]]$Rows, [int]$ItemsScanned, [System.Collections.IDictionary]$Header, [string]$OutputFolder, [string]$SiteUrl,
           [string]$FolderLabel = 'Folder')
-    Get-ScanSummaryText -Rows $Rows -ItemsScanned $ItemsScanned -Header $Header -FolderLabel $FolderLabel | ForEach-Object { Write-Ui $_.Text $_.Kind }
+    foreach ($line in @(Get-ScanSummaryText -Rows $Rows -ItemsScanned $ItemsScanned -Header $Header -FolderLabel $FolderLabel)) {
+        if ($line.LabelLength -gt 0) { Write-Ui $line.Text.Substring(0, $line.LabelLength) 'Label' -NoNewline; Write-Ui $line.Text.Substring($line.LabelLength) $line.Kind }
+        else { Write-Ui $line.Text $line.Kind }
+    }
     $path = Get-ResultPath $OutputFolder $SiteUrl
     Export-Xlsx -Path $path -Sheets (Get-WorkbookSheets $Rows $ItemsScanned $Header $FolderLabel)
     Write-Ui ''
-    Write-Ui "Saved (values masked): $path" 'Title'
+    Write-Ui "Saved (values masked): $path" 'Good'
     Write-Ui 'Handle this file as CUI: it shows where PII is.' 'Accent'
     return $path
 }
 
-Export-ModuleMember -Function Write-Ui, Get-SeverityIndex, New-ReportRow, Add-IncompleteRow, Get-ReportSummary, Get-TypeCounts, Get-ScanSummaryText, Get-WorkbookSheets,
+Export-ModuleMember -Function Write-Ui, Get-SeverityIndex, New-ReportRow, Add-IncompleteRow, Get-ReportSummary, Get-TypeCounts, Get-NotScannedCounts, Get-ScanSummaryText, Get-WorkbookSheets,
 Get-ResultPath, Publish-ScanReport

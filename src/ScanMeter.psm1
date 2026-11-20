@@ -2,11 +2,12 @@
 ScanMeter.psm1 - the progress bars and the per-folder lines of a scan: counts only, so the screen shows no PII.
 
   Purpose:     Lets the person follow a scan: files done of the total, read, not scanned, possible PII,
-               time used and time left (the PAM, 2026-11-20). No file name and no found value is shown; channel
-               names are masked.
+               time used and time left (the PAM, 2026-11-20). No found value is shown; channel and file
+               names show only masked PII.
   Inputs:      the report row list and the counts the scan functions of ChannelScan.psm1 give.
-  Outputs:     a meter (hashtable), status text, percent, a per-file progress bar and one coloured line per folder.
-  Depends on:  PiiMasking.psm1 (Protect-PiiText), Report.psm1 (Write-Ui), imported first by Find-ChannelPII.ps1.
+  Outputs:     a meter (hashtable), status text, percent, a per-file progress bar and one coloured line per folder,
+               counts in fixed widths (the PAM, 2026-11-20).
+  Depends on:  PiiMasking.psm1 (Protect-PiiName), Report.psm1 (Write-Ui), imported first by Find-ChannelPII.ps1.
   How to run:  imported by Find-ChannelPII.ps1; not run on its own.
   Run target:  Windows PowerShell 5.1 (also PowerShell 7).
   Network:     none.
@@ -26,6 +27,12 @@ $script:FileBarBytes = 1MB
 
 # A coloured line of live counts is printed under the progress bar at most this often (and after each folder).
 $script:LiveLineSeconds = 10
+
+# Width of each count on the live lines: 5 characters (up to 99,999), so the columns do not move (the PAM, 2026-11-20).
+$script:CountWidth = 5
+
+# Length of the grey rule after each folder's lines.
+$script:RuleWidth = 100
 
 # Short PII type names for the live line, in the PAM's order (Report.psm1 $SeverityOrder).
 $script:ShortTypeNames = [ordered]@{ 'SSN' = 'SSN'; 'Date of birth' = 'DOB'; 'Passport' = 'Passport'; 'Payment card' = 'Card'
@@ -76,29 +83,40 @@ function Format-Duration {
     return '{0:00}:{1:00}' -f [int][Math]::Floor($Time.TotalMinutes), $Time.Seconds
 }
 
+function Format-Count {
+    # A count right-aligned in $CountWidth characters, so the columns of the live lines stay in place (the PAM, 2026-11-20).
+    param([long]$Value)
+    return ([string]$Value).PadLeft($script:CountWidth)
+}
+
+function Get-TimeLeftText {
+    # ", about mm:ss left" from the pace so far; empty when the total is not known or the step is done.
+    param([hashtable]$Meter)
+    if ($Meter.Total -le 0 -or $Meter.Done -le 0 -or $Meter.Done -ge $Meter.Total) { return '' }
+    $elapsed = $Meter.Clock.Elapsed
+    return ', about ' + (Format-Duration ([TimeSpan]::FromTicks([long]($elapsed.Ticks / $Meter.Done * ($Meter.Total - $Meter.Done))))) + ' left'
+}
+
 function Get-ScanMeterText {
     <#
     .SYNOPSIS
-      The meter as one status line: counts, time used and, when the total is known, time left.
+      The meter as one status line with fixed-width counts: counts, time used and, when the total is known, time left.
+      The parts that change in width (time, PII per type) come last.
     .PARAMETER Meter
       Output of New-ScanMeter.
     .PARAMETER Noun
       What an item is, for example 'file'.
     .OUTPUTS
-      [string] for example "12 of 40 files done | read 10 | not scanned 2 | possible PII 3 in 2 files | 00:42 used, about 01:48 left".
+      [string] for example "   12/   40 files | read    10 | not scanned     2 | possible PII     3 in     2 files | 00:42 used, about 01:48 left".
     #>
     param([hashtable]$Meter, [string]$Noun)
-    $elapsed = $Meter.Clock.Elapsed
-    $text = [string]$Meter.Done
-    if ($Meter.Total -gt 0) { $text += ' of ' + $Meter.Total }
+    $text = Format-Count $Meter.Done
+    if ($Meter.Total -gt 0) { $text += '/' + (Format-Count $Meter.Total) }
     $types = Get-TypeCountText $Meter
-    if ($types) { $types = ' (' + $types + ')' }
-    $text += ' ' + $Noun + 's done | read {0} | not scanned {1} | possible PII {2} in {3} {4}s{5} | {6} used' -f
-        $Meter.Read, $Meter.Skipped, $Meter.Hits, $Meter.HitItems, $Noun, $types, (Format-Duration $elapsed)
-    if ($Meter.Total -gt 0 -and $Meter.Done -gt 0 -and $Meter.Done -lt $Meter.Total) {
-        $left = [TimeSpan]::FromTicks([long]($elapsed.Ticks / $Meter.Done * ($Meter.Total - $Meter.Done)))
-        $text += ', about ' + (Format-Duration $left) + ' left'
-    }
+    if ($types) { $types = ' | ' + $types }
+    $text += ' {0}s | read {1} | not scanned {2} | possible PII {3} in {4} {0}s | {5} used{6}{7}' -f
+        $Noun, (Format-Count $Meter.Read), (Format-Count $Meter.Skipped), (Format-Count $Meter.Hits), (Format-Count $Meter.HitItems),
+        (Format-Duration $Meter.Clock.Elapsed), (Get-TimeLeftText $Meter), $types
     return $text
 }
 
@@ -112,11 +130,26 @@ function Get-TypeCountText {
     return (@($parts) -join ', ')
 }
 
+function Write-CountPart {
+    # One part of a live line: " | " (grey rule), the label (cyan), the count (fixed width) in its colour.
+    param([string]$Label, [long]$Value, [string]$Kind)
+    Write-Ui ' | ' 'Rule' -NoNewline
+    Write-Ui ($Label + ' ') 'Label' -NoNewline
+    Write-Ui (Format-Count $Value) $Kind -NoNewline
+}
+
+function Get-CountKind {
+    # The colour of a count: White when 0; else Yellow (not scanned: check by hand) or Red (possible PII).
+    param([long]$Value, [string]$WhenSome)
+    if ($Value -gt 0) { return $WhenSome }
+    return 'Text'
+}
+
 function Write-MeterLine {
     <#
     .SYNOPSIS
-      Prints the live counts as one coloured line under the progress bar (FULCRUM colours, Report.psm1 Write-Ui):
-      done of the total and percent, read, not scanned, possible PII per type, time used and left. At most every
+      Prints the live counts as one coloured line under the progress bar, every count in a fixed width: done of the
+      total and percent, read, not scanned, possible PII, time used and left, then the PII per type. At most every
       $LiveLineSeconds, unless -Force. Counts only: no file name and no value.
     .PARAMETER Meter
       Output of New-ScanMeter.
@@ -129,19 +162,17 @@ function Write-MeterLine {
     $elapsed = $Meter.Clock.Elapsed
     if (-not $Force -and ($elapsed - $Meter.LastLine).TotalSeconds -lt $script:LiveLineSeconds) { return }
     $Meter.LastLine = $elapsed
-    Write-Ui ('  > {0}/{1} {2}s {3,3}%' -f $Meter.Done, $Meter.Total, $Noun, (Get-MeterPercent $Meter)) 'Title' -NoNewline
-    Write-Ui (' | read {0}' -f $Meter.Read) 'Text' -NoNewline
-    $kind = 'Muted'; if ($Meter.Skipped -gt 0) { $kind = 'Accent' }
-    Write-Ui (' | not scanned {0}' -f $Meter.Skipped) $kind -NoNewline
-    $kind = 'Muted'; if ($Meter.Hits -gt 0) { $kind = 'Alert' }
+    Write-Ui '  > ' 'Rule' -NoNewline
+    Write-Ui ('{0}/{1} {2}s {3,3}%' -f (Format-Count $Meter.Done), (Format-Count $Meter.Total), $Noun, (Get-MeterPercent $Meter)) 'Title' -NoNewline
+    Write-CountPart 'read' $Meter.Read 'Text'
+    Write-CountPart 'not scanned' $Meter.Skipped (Get-CountKind $Meter.Skipped 'Accent')
+    $kind = 'Good'; if ($Meter.Hits -gt 0) { $kind = 'Alert' }
+    Write-CountPart 'possible PII' $Meter.Hits $kind
+    Write-Ui ' | ' 'Rule' -NoNewline
+    Write-Ui ('{0} used{1}' -f (Format-Duration $elapsed), (Get-TimeLeftText $Meter)) 'Text' -NoNewline
     $types = Get-TypeCountText $Meter
-    if ($types) { $types = ' (' + $types + ')' }
-    Write-Ui (' | possible PII {0}{1}' -f $Meter.Hits, $types) $kind -NoNewline
-    $left = ''
-    if ($Meter.Total -gt 0 -and $Meter.Done -gt 0 -and $Meter.Done -lt $Meter.Total) {
-        $left = ', about ' + (Format-Duration ([TimeSpan]::FromTicks([long]($elapsed.Ticks / $Meter.Done * ($Meter.Total - $Meter.Done))))) + ' left'
-    }
-    Write-Ui (' | {0} used{1}' -f (Format-Duration $elapsed), $left) 'Muted'
+    if ($types) { Write-Ui ' | ' 'Rule' -NoNewline; Write-Ui $types 'Alert' -NoNewline }
+    Write-Ui ''
 }
 
 function Get-MeterPercent {
@@ -167,15 +198,19 @@ function Write-FileStep {
     if ($Size -lt $script:FileBarBytes) { return }
     $status = '{0} - {1:N1} MB' -f $Step, ($Size / 1MB)
     if ($Size -ge $script:LargeFileBytes) { $status += ' (a large file: this step can take a minute)' }
-    Write-Progress -Id 2 -ParentId 1 -Activity 'This file' -Status $status -PercentComplete $Percent
+    # No -ParentId: Windows PowerShell ISE indents a child bar; the PAM wants both bars aligned (2026-11-20).
+    Write-Progress -Id 2 -Activity 'This file' -Status $status -PercentComplete $Percent
 }
 
 function Write-ChannelLine {
     <#
     .SYNOPSIS
-      Prints one line when a folder (a channel) is done: its counts in FULCRUM colours; possible PII in red.
+      Prints one line when a folder (a channel) is done: its counts in fixed widths, then its (masked) name, then a
+      grey rule. Not scanned in yellow and possible PII in red when there are some; no PII in green.
     .PARAMETER Number
-      Which folder this is (1-based) and the folder count, as "2/5".
+      Which folder this is (1-based).
+    .PARAMETER Count
+      How many folders there are.
     .PARAMETER Channel
       The channel name (masked here).
     .PARAMETER Before
@@ -185,15 +220,24 @@ function Write-ChannelLine {
     .PARAMETER Noun
       What an item is, for example 'file'.
     #>
-    param([string]$Number, [string]$Channel, [hashtable]$Before, [hashtable]$Meter, [string]$Noun)
+    param([int]$Number, [int]$Count, [string]$Channel, [hashtable]$Before, [hashtable]$Meter, [string]$Noun)
     $hits = $Meter.Hits - $Before.Hits
     $skipped = $Meter.Skipped - $Before.Skipped
-    Write-Ui ('  [{0}] {1}: ' -f $Number, (Protect-PiiText $Channel)) 'Title' -NoNewline
-    Write-Ui ('{0} {1}s - read {2}' -f ($Meter.Done - $Before.Done), $Noun, ($Meter.Read - $Before.Read)) 'Text' -NoNewline
-    $kind = 'Muted'; if ($skipped -gt 0) { $kind = 'Accent' }
-    Write-Ui (', not scanned {0}' -f $skipped) $kind -NoNewline
-    $kind = 'Muted'; if ($hits -gt 0) { $kind = 'Alert' }
-    Write-Ui (', possible PII {0}' -f $hits) $kind
+    $width = ([string]$Count).Length
+    Write-Ui ('  [{0}/{1}] ' -f ([string]$Number).PadLeft($width), $Count) 'Title' -NoNewline
+    Write-Ui ($Noun + 's ') 'Label' -NoNewline
+    Write-Ui (Format-Count ($Meter.Done - $Before.Done)) 'Text' -NoNewline
+    Write-CountPart 'read' ($Meter.Read - $Before.Read) 'Text'
+    Write-CountPart 'not scanned' $skipped (Get-CountKind $skipped 'Accent')
+    $kind = 'Good'; if ($hits -gt 0) { $kind = 'Alert' }
+    Write-CountPart 'possible PII' $hits $kind
+    Write-Ui ' | ' 'Rule' -NoNewline
+    Write-Ui (Protect-PiiName $Channel) 'Title'
 }
 
-Export-ModuleMember -Function New-ScanMeter, Update-ScanMeter, Get-ScanMeterText, Get-MeterPercent, Write-MeterLine, Write-FileStep, Write-ChannelLine
+function Write-RuleLine {
+    # A grey line that ends one folder's block on screen.
+    Write-Ui ('  ' + ('-' * $script:RuleWidth)) 'Rule'
+}
+
+Export-ModuleMember -Function New-ScanMeter, Update-ScanMeter, Get-ScanMeterText, Get-MeterPercent, Write-MeterLine, Write-FileStep, Write-ChannelLine, Write-RuleLine

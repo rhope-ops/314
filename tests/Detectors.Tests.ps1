@@ -147,6 +147,12 @@ Assert-Equal 'CAC_******####.docx' (Protect-PiiText "CAC_$($Sample.DodId).docx")
 Assert-Equal $false (Protect-PiiText "$($Sample.EmailIdn) notes.txt").Contains('john') 'E-mail name with a non-ASCII domain hidden'
 Assert-Equal 'Folder/***@example.com.docx' (Protect-PiiText "Folder/$($Sample.Email).docx") 'Folders before an address stay readable'
 
+# ---- Protect-PiiName: site, folder and file names keep their digits; only found PII is masked ----
+Assert-Equal 'FY27 Roster v2.docx' (Protect-PiiName 'FY27 Roster v2.docx') 'Name: digits that are not PII kept'
+Assert-Equal 'Roster ***-**-6789.docx' (Protect-PiiName "Roster $($Sample.Ssn).docx") 'Name: SSN masked like a found value'
+Assert-Equal 'Folder/***@example.com.docx' (Protect-PiiName "Folder/$($Sample.Email).docx") 'Name: e-mail name hidden'
+Assert-Equal $false (Protect-PiiName "CAC_$($Sample.DodId).docx").Contains($Sample.DodId) 'Name: DoD ID never shown in full'
+
 # ---- Validators ----
 Assert-Equal $true (Test-Luhn '4111111111111111') 'Luhn true'
 Assert-Equal $false (Test-Luhn '4111111111111112') 'Luhn false'

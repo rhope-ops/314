@@ -65,15 +65,18 @@ function Invoke-SiteFiles {
     <#
     .SYNOPSIS
       Scans one signed-in site: its folders and files, then saves the workbook and signs out (also after an error or
-      a cancel: the results so far are saved and say INCOMPLETE).
+      a cancel: the results so far are saved and say INCOMPLETE). Returns the workbook path.
     .PARAMETER SiteUrl
       The signed-in site.
     .PARAMETER OutputFolder
       The base folder for the results.
     .PARAMETER MaxFileMB
       Files larger than this are reported as NOT SCANNED.
+    .OUTPUTS
+      [string] the workbook path.
     #>
     param([string]$SiteUrl, [string]$OutputFolder, [int]$MaxFileMB)
+    $path = $null
     $clock = [Diagnostics.Stopwatch]::StartNew()
     $rows = New-Object System.Collections.Generic.List[object]
     $scanned = 0
@@ -86,7 +89,8 @@ function Invoke-SiteFiles {
         catch { Write-Verbose 'Team check not possible: the folder column is named Folder.' }
         $library = Get-TeamDocumentLibrary
         $selected = @(Get-ChannelFolderNames $library)
-        Write-Ui ($folderLabel + 's to scan: ' + (($selected | ForEach-Object { Protect-PiiText $_ }) -join ', ') + '; also any files at the top of the library') 'Text'
+        Write-Ui ($folderLabel + 's to scan: ') 'Label' -NoNewline
+        Write-Ui ((($selected | ForEach-Object { Protect-PiiName $_ }) -join ', ') + '; also any files at the top of the library') 'Text'
         $scanned += Invoke-FileScan -Library $library -Channels $selected -SiteUrl $SiteUrl -MaxFileMB $MaxFileMB -Rows $rows
         $finished = $true
     }
@@ -100,20 +104,38 @@ function Invoke-SiteFiles {
         Add-IncompleteRow -Rows $rows -Finished $finished
         $header = [ordered]@{}
         $header['Site'] = $SiteUrl
-        $header[$folderLabel + 's'] = ($selected | ForEach-Object { Protect-PiiText $_ }) -join ', '
+        $header[$folderLabel + 's'] = ($selected | ForEach-Object { Protect-PiiName $_ }) -join ', '
         $header['Run'] = Get-Date -Format 'yyyy-MM-dd HH:mm'
         $header['Time used'] = '{0:00}:{1:00}' -f [int][Math]::Floor($clock.Elapsed.TotalMinutes), $clock.Elapsed.Seconds
         foreach ($pair in (Get-ScanTiming).GetEnumerator()) { $header[$pair.Key] = $pair.Value }
-        try { $null = Publish-ScanReport -Rows $rows.ToArray() -ItemsScanned $scanned -Header $header -OutputFolder $OutputFolder -SiteUrl $SiteUrl -FolderLabel $folderLabel }
+        try { $path = Publish-ScanReport -Rows $rows.ToArray() -ItemsScanned $scanned -Header $header -OutputFolder $OutputFolder -SiteUrl $SiteUrl -FolderLabel $folderLabel }
         finally {
             # Sign out even when the results could not be saved (for example, a folder that cannot be written).
             try { Disconnect-PnPOnline }
             catch { Write-Verbose 'Already signed out.' }  # nothing to sign out of: not an error for the person
         }
     }
+    return $path
 }
 
-Write-Ui 'Ion - DoD365 PII Reporter (read-only). Values in the results are masked.' 'Title'
+function Open-ScanResult {
+    <#
+    .SYNOPSIS
+      Asks whether to open the saved workbook now (Enter = yes; the PAM, 2026-11-20) and opens it in Excel.
+      Only the local file is opened; nothing is sent.
+    .PARAMETER Path
+      The workbook path, or empty when nothing was saved.
+    #>
+    param([string]$Path)
+    if (-not $Path -or -not (Test-Path -LiteralPath $Path)) { return }
+    $answer = Read-Host 'Open the workbook now? [Y/n]'
+    if ($answer -and $answer.Trim() -match '^(n|no)$') { return }
+    try { Invoke-Item -LiteralPath $Path }
+    catch { Write-Ui ('The workbook could not be opened: ' + (Protect-PiiText $_.Exception.Message) + '. Open it from the folder above.') 'Accent' }
+}
+
+Write-Ui '==== Ion - DoD365 PII Reporter ====' 'Title'
+Write-Ui 'Read-only. Every PII value found is masked on screen and in the results.' 'Muted'
 
 # ---- Ask for a site, sign in, scan, save; then offer another site, until the person presses Enter ----
 # A wrong paste is explained and asked again (Read-ScanTarget); a site the person cannot open is reported as
@@ -125,10 +147,10 @@ while ($null -ne $target) {
     catch { Write-Ui $_.Exception.Message 'Alert' }
     if ($site) {
         # A results file that cannot be saved (a folder that cannot be written) is reported; the next site is still offered.
-        try { Invoke-SiteFiles -SiteUrl $site -OutputFolder $OutputFolder -MaxFileMB $MaxFileMB }
+        try { Open-ScanResult (Invoke-SiteFiles -SiteUrl $site -OutputFolder $OutputFolder -MaxFileMB $MaxFileMB) }
         catch { Write-Ui ('The results could not be saved: ' + (Protect-PiiText $_.Exception.Message)) 'Alert' }
     }
     Write-Ui ''
     $target = Read-ScanTarget '' 'Scan another site? Paste its Teams link or site address, or press Enter to exit'
 }
-Write-Ui 'Ion is done: nothing stays signed in.' 'Muted'
+Write-Ui 'Ion is done: nothing stays signed in.' 'Good'

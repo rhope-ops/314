@@ -22,3 +22,9 @@ Title: 33-332.Z · <task> · <date>. Read AGENTS.md first.
 6. GitHub Pages is on (live copy checked 2026-11-20). Denylist secret: added 2026-11-20.
 7. Known gap (MINOR, safe): pasted text with a second address after a Teams link without a groupId can supply
    that later groupId; the site-group check still holds.
+8. Done 2026-11-20 (PR #13): Ion polish (plan: docs/reviews/2026-11-20-ion-cli-polish-plan.md): fixed-width counts,
+   cyan/green colours, names mask found PII only, exact-file links, encrypted/empty/web-page reasons, clickable links,
+   not-scanned counts, open-workbook question. The PAM: test one DoD365 run (ISE colours, Doc.aspx links, Excel opens).
+   Follow-ups (MINOR, review of c379e78; no leak): Get-ShownItem drops parent folders when a hit crosses the folder's
+   slash; a channel named with PII now adds a File name hit per file (no test); TrimStart misses a form feed; the
+   file-ID link may not work in a subsite (unverified).

@@ -38,6 +38,13 @@ $script:OfficeParts = @{
     '.pptm' = '^ppt/(slides/slide\d+|notesSlides/notesSlide\d+|comments/comment\d+)\.xml$'
 }
 
+# First bytes of a zip (every .docx/.xlsx/.pptx) and of an OLE compound file. Office saves a file in OLE form when it
+# is encrypted: a password, or a sensitivity label (CUI) with encryption; an old .doc/.xls/.ppt renamed is OLE too.
+# The text of an encrypted file cannot be read without the Microsoft Information Protection SDK (not on the gov device).
+$script:ZipMagic = '504B'
+$script:OleMagic = 'D0CF11E0A1B11AE1'
+$script:EncryptedReason = 'Encrypted, password-protected or labelled with encryption (or an old Office format with a new name): check by hand'
+
 # =====================================================================================
 # Markup to text
 # =====================================================================================
@@ -179,6 +186,27 @@ function Get-PlainText {
     try { return $reader.ReadToEnd() } finally { $reader.Dispose() }
 }
 
+function Get-NotZipReason {
+    <#
+    .SYNOPSIS
+      Why an Office file's bytes are not a zip, from their first bytes; empty when they are one. Without this check
+      the zip reader says only "End of central directory not found" (the PAM's DoD365 run, 2026-11-20).
+    .PARAMETER Bytes
+      The file bytes.
+    .OUTPUTS
+      [string] the reason a person can act on, or ''.
+    #>
+    param([byte[]]$Bytes)
+    if ($null -eq $Bytes -or $Bytes.Length -eq 0) { return 'Empty file (0 bytes)' }
+    $head = ($Bytes[0..([Math]::Min(7, $Bytes.Length - 1))] | ForEach-Object { $_.ToString('X2') }) -join ''
+    if ($head.StartsWith($script:ZipMagic)) { return '' }
+    if ($head.StartsWith($script:OleMagic)) { return $script:EncryptedReason }
+    # Decoded with its byte order mark, if any (UTF-8 or UTF-16), so a web page with a mark is still seen.
+    $start = (Get-PlainText ([byte[]]$Bytes[0..([Math]::Min(255, $Bytes.Length - 1))])).TrimStart([char]0xFEFF, ' ', "`t", "`r", "`n")
+    if ($start.StartsWith('<')) { return 'The download gave a web page, not the file: open it in SharePoint and check by hand' }
+    return 'Not a valid Office file (damaged, or another type with an Office name): check by hand'
+}
+
 function Test-SupportedFile {
     # True when Get-TextFromBytes can read this file type (so other types are not downloaded).
     param([string]$FileName)
@@ -204,7 +232,11 @@ function Get-TextFromBytes {
     try {
         if ($script:PlainTextExtensions -contains $extension) { $result.Text = Get-PlainText $Bytes }
         elseif ($script:HtmlExtensions -contains $extension) { $result.Text = Convert-HtmlToText (Get-PlainText $Bytes) }
-        elseif ($script:OfficeParts.ContainsKey($extension)) { $result.Text = Get-ZipPartText $Bytes $script:OfficeParts[$extension] }
+        elseif ($script:OfficeParts.ContainsKey($extension)) {
+            $notZip = Get-NotZipReason $Bytes
+            if ($notZip) { $result.Status = 'NOT SCANNED'; $result.Reason = $notZip }
+            else { $result.Text = Get-ZipPartText $Bytes $script:OfficeParts[$extension] }
+        }
         else {
             $result.Status = 'NOT SCANNED'
             $result.Reason = "File type '$extension' is not read by this script: check by hand"
