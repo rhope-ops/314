@@ -36,6 +36,7 @@ function Reset-FakePnP {
         PostsAllowed = $false
         ListFails   = $false
         ConnectFails = $false                                     # the web login to a site fails (an error before the scan)
+        SiteFails   = $false                                      # Get-PnPSite fails (the site's group cannot be read)
         TypedSite   = 'https://tenant.example.com/teams/TeamA'   # what the fake Read-Host returns
         SiteGroupId = [guid]'11111111-2222-3333-4444-555555555555'
         Calls       = New-Object System.Collections.Generic.List[string]
@@ -44,8 +45,8 @@ function Reset-FakePnP {
 }
 
 function Set-FakePnPOption {
-    # Changes one switch of the fake site: PostsAllowed, ListFails or ConnectFails.
-    param([ValidateSet('PostsAllowed', 'ListFails', 'ConnectFails')][string]$Name, [bool]$Value)
+    # Changes one switch of the fake site: PostsAllowed, ListFails, ConnectFails or SiteFails.
+    param([ValidateSet('PostsAllowed', 'ListFails', 'ConnectFails', 'SiteFails')][string]$Name, [bool]$Value)
     $global:FakePnP[$Name] = $Value
 }
 
@@ -187,6 +188,7 @@ function global:Disconnect-PnPOnline {
 function global:Get-PnPSite {
     # Fake: the site belongs to a team (a Microsoft 365 group).
     [CmdletBinding()] param($Includes)
+    if ($global:FakePnP.SiteFails) { throw 'FAKE: site refused' }
     [pscustomobject]@{ GroupId = $global:FakePnP.SiteGroupId }
 }
 

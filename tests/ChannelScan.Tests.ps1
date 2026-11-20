@@ -165,6 +165,11 @@ Assert-Equal 0 (Invoke-PostScan -SiteUrl $Sample.Site -Channels @('General') -Ro
 Assert-Equal 'NOT SCANNED' (($siteRows | Select-Object -ExpandProperty Detector) -join ',') 'Site without a team: one NOT SCANNED row'
 Assert-Equal 0 @(Get-FakePnPConnection).Count 'Site without a team: no Graph sign-in'
 Reset-FakePnP @{}
+Set-FakePnPOption SiteFails $true
+$siteRows = New-Object System.Collections.Generic.List[object]
+Assert-Equal 0 (Invoke-PostScan -SiteUrl $Sample.Site -Channels @('General') -Rows $siteRows 6>$null) 'Site group not readable: no posts'
+Assert-Equal 'BLOCKED' (($siteRows | Select-Object -ExpandProperty Detector) -join ',') 'Site group not readable: one BLOCKED row'
+Reset-FakePnP @{}
 
 # ---- Posts refused, then allowed ----
 $rows = New-Object System.Collections.Generic.List[object]
@@ -174,6 +179,7 @@ Assert-Equal $false ($rows[0].Context -match '\d') 'Error text in a BLOCKED row 
 Set-FakePnPOption PostsAllowed $true
 $rows = New-Object System.Collections.Generic.List[object]
 Assert-Equal 2 (Invoke-PostScan -SiteUrl $Sample.Site -Channels @('General', 'Ops') -Rows $rows 6>$null) 'Post and reply scanned'
+Assert-Equal $true (Test-FakePnPCall ('Quiet sign-in ' + $Sample.Site)) 'Posts sign-in warnings hidden'
 $lines = @(Invoke-PostScan -SiteUrl $Sample.Site -Channels @('General', 'Ops') -Rows (New-Object System.Collections.Generic.List[object]) 6>&1 |
     Where-Object { $_ -is [System.Management.Automation.InformationRecord] } | ForEach-Object { [string]$_ })
 Assert-Equal $true (($lines -join ' ') -match '\[1/2\] General: 2 posts - read 2') 'Posts channel line counts its posts and replies'

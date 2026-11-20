@@ -23,7 +23,7 @@
     src/Report.psm1, sha256 7eca78909f79
     src/ScanMeter.psm1, sha256 a97c4956cb1c
     src/ChannelScan.psm1, sha256 56b4a1373fe5
-    src/Find-ChannelPII.ps1, sha256 ea10bd9e03a4
+    src/Find-ChannelPII.ps1, sha256 bd06e48de150
 
   Read-only: it never changes, moves or deletes anything in Teams or SharePoint. Every value found is masked.
   Run target: Windows PowerShell 5.1 with PnP.PowerShell 1.12.0; no admin rights, no file to unblock.
@@ -40,7 +40,7 @@
     line  1177  Module ScanMeter.psm1
     line  1315  Module ChannelScan.psm1
     line  1855  Body of Find-ChannelPII.ps1
-    line  1911  Clean-up
+    line  1914  Clean-up
 #>
 
 # ==== Settings ==== (optional: edit the values between the quotes; empty = the script asks)
@@ -1892,6 +1892,9 @@ finally {
     # ---- Step 6: the report (also after an error or a cancel), then sign out ----
     Add-IncompleteRow -Rows $rows -Finished $finished
     $postsLine = 'tried (see BLOCKED rows if refused)'
+    if (@($rows | Where-Object { $_.Source -eq 'Posts' -and $_.Detector -eq 'NOT SCANNED' -and $_.Item -eq '(posts)' -and $_.Channel -eq '(all)' }).Count -gt 0) {
+        $postsLine = 'none (this site is not a team)'
+    }
     $header = @(
         ('Site:     ' + $SiteUrl),
         ('Folders:  ' + (($selected | ForEach-Object { Protect-PiiText $_ }) -join ', ')),

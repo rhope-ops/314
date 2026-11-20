@@ -42,6 +42,15 @@ Assert-Equal 1 @($blockedRows | Where-Object { $_.Detector -eq 'BLOCKED' }).Coun
 Assert-Equal $true (@($blockedRows | Where-Object { $_.Source -eq 'File' -and $_.Confidence }).Count -gt 0) 'Refused posts: the file hits stay'
 Assert-Equal 1 @(Get-ChildItem -LiteralPath $blockedFolder -Filter 'PIIScan-*.txt').Count 'Refused posts: the text report is saved too'
 
+# ---- A plain SharePoint site (no team): the report says it has no posts ----
+Reset-FakePnP @{ "$library/top.txt" = $Txt }
+Set-FakeSiteAnswer -TypedSite '' -SiteGroupId ([guid]::Empty)
+$siteFolder = Join-Path $runFolder 'site'
+& $script -SiteUrl $Sample.Site -OutputFolder $siteFolder 6>$null
+$siteText = Get-Content -LiteralPath (Get-ChildItem -LiteralPath $siteFolder -Filter 'PIIScan-*.txt')[0].FullName -Raw
+Assert-Equal $true ($siteText -match 'Posts:\s+none \(this site is not a team\)') 'Site without a team: the report header says no posts'
+Assert-Equal $true ($siteText -match '\(top of the library\)') 'Site without a team: top-of-library files reported'
+
 # ---- A run that fails part way still saves a report ----
 Reset-FakePnP @{}
 Set-FakePnPOption ListFails $true

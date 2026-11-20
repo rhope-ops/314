@@ -98,6 +98,9 @@ finally {
     # ---- Step 6: the report (also after an error or a cancel), then sign out ----
     Add-IncompleteRow -Rows $rows -Finished $finished
     $postsLine = 'tried (see BLOCKED rows if refused)'
+    if (@($rows | Where-Object { $_.Source -eq 'Posts' -and $_.Detector -eq 'NOT SCANNED' -and $_.Item -eq '(posts)' -and $_.Channel -eq '(all)' }).Count -gt 0) {
+        $postsLine = 'none (this site is not a team)'
+    }
     $header = @(
         ('Site:     ' + $SiteUrl),
         ('Folders:  ' + (($selected | ForEach-Object { Protect-PiiText $_ }) -join ', ')),
