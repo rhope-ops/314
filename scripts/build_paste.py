@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build the paste bundle of the Teams PII Spot Check: one PowerShell text that a person pastes into Windows
+"""Build the paste bundle of the DoD365 PII Scan: one PowerShell text that a person pastes into Windows
 PowerShell ISE and runs with F5 (AGENTS.md "Platform": paste and run, never an execution-policy change).
 
 Why: a gov computer runs pasted text in ISE, not downloaded files (ISSM ruling 2026-11-13). A pasted text loads no
@@ -132,20 +132,22 @@ def header(sources, contents):
         The header text.
     """
     out = ['<#',
-           '  33-332.Z Teams PII Spot Check (GENERATED from src/ by scripts/build_paste.py: do not edit this text)',
+           '  33-332.Z DoD365 PII Scan (GENERATED from src/ by scripts/build_paste.py: do not edit this text)',
            '',
            '  HOW TO RUN',
            '    1. Optional: read this text first (the Open the script button saves it as a .txt file for Notepad).',
            '    2. Open Windows PowerShell ISE and choose File > New.',
            '    3. Paste ALL of this text (Ctrl+V) and press F5.',
-           '    4. When asked, paste the team\'s Teams link (... next to the team or channel name > Copy link) or its',
-           '       SharePoint address (the team\'s Shared tab > ... > Open in SharePoint). Sign in with your CAC.',
+           '    4. When asked, paste a Teams link (... next to the team or channel name > Copy link) or a SharePoint',
+           '       site address (in Teams: the Shared tab > ... > Open in SharePoint). Sign in with your CAC.',
            '       If you do not see a sign-in window, press Alt+Tab.',
-           '    5. Watch the progress bar and the line per channel. At the end, read the summary; both report files',
-           '       (.txt and .csv) are saved in Documents\\PII-Scan. Handle them as CUI: they show where PII is.',
+           '    5. Watch the two progress bars (the whole scan, and the file in work) and the line per folder.',
+           '       At the end, read the summary; both report files (.txt and .csv) are saved in Documents\\PII-Scan.',
+           '       Handle them as CUI: they show where PII is.',
            '',
-           '  It scans every standard channel of the team: its files, then its posts and replies (a second sign-in;',
-           '  if your tenant refuses it, close that window: the file results are kept).',
+           '  It scans the site\'s Documents library: every folder (in a team, one per standard channel) and the files at',
+           '  its top. For a team it then tries the posts and replies (a second sign-in; if your tenant refuses it,',
+           '  close that window: the file results are kept).',
            '',
            '  Built from these files; to change it, change them and rebuild with: python3 scripts/build_paste.py']
     out += ['    %s, sha256 %s' % (rel, digest[:12]) for rel, digest in sources]

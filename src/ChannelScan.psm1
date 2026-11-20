@@ -1,5 +1,5 @@
 <#
-ChannelScan.psm1 - reads one team's channel files and its posts and turns them into report rows.
+ChannelScan.psm1 - reads one team's or site's files (and a team's posts) and turns them into report rows.
 
   Purpose:     The SharePoint and Teams steps of Find-ChannelPII.ps1, one function per step: read the
                Teams link or site address, sign in to the team's site, find the library, list the channel
@@ -28,6 +28,9 @@ $script:LibraryNames = @('Shared Documents', 'Documents')
 
 # Teams makes one top-level folder per standard channel. "Forms" is SharePoint's own folder, not a channel.
 $script:NotChannelFolders = @('Forms')
+
+# How the report and the screen name the files at the top of the library (in no folder).
+$script:RootGroupName = '(top of the library)'
 
 # Items per request when listing the library. SharePoint refuses views over 5,000 items
 # (list view threshold); 500 keeps each request small.
@@ -147,7 +150,8 @@ function Connect-TeamSite {
             $site = Test-TeamSiteUrl (Read-Host 'Team site address (https://usaf.dps.mil/teams/<team-site>)')
         }
         Write-Host "Signing in to $site (a sign-in window opens; if you do not see it, press Alt+Tab) ..."
-        Connect-PnPOnline -Url $site -UseWebLogin
+        # PnP prints a warning that suggests -Interactive (and its update notice): not useful to the person, so hidden (the PAM, 2026-11-20).
+        Connect-PnPOnline -Url $site -UseWebLogin -WarningAction SilentlyContinue
         if ($null -ne $Target.GroupId) { Assert-SiteGroup $Target.GroupId }
         $ok = $true
         return $site
@@ -184,7 +188,7 @@ function Get-ChannelFolderNames {
     <#
     .SYNOPSIS
       Lists the channel folders: the top-level folders of the library, without SharePoint's own. The scan
-      covers all of them (the PAM, 2026-11-20: no channel choice). Throws when there are none.
+      covers all of them (the PAM, 2026-11-20: no channel choice). A plain SharePoint site may have none.
     .PARAMETER Library
       Output of Get-TeamDocumentLibrary.
     .OUTPUTS
@@ -192,9 +196,7 @@ function Get-ChannelFolderNames {
     #>
     param($Library)
     $folders = Get-PnPFolderItem -FolderSiteRelativeUrl $Library.SiteRelativeUrl -ItemType Folder -ErrorAction Stop
-    $names = @($folders | ForEach-Object { $_.Name } | Where-Object { $script:NotChannelFolders -notcontains $_ } | Sort-Object)
-    if ($names.Count -eq 0) { throw 'No channel folders found in the library.' }
-    return $names
+    return @($folders | ForEach-Object { $_.Name } | Where-Object { $script:NotChannelFolders -notcontains $_ } | Sort-Object)
 }
 
 # =====================================================================================
@@ -275,6 +277,17 @@ function Get-ChannelFiles {
     }
 }
 
+function Get-RootFiles {
+    # The files at the top of the library, in no folder (a plain SharePoint site keeps files there; a team has none).
+    param([object[]]$AllItems, [string]$LibraryUrl)
+    $prefix = $LibraryUrl + '/'
+    $AllItems | Where-Object {
+        $ref = Get-FieldValue $_ 'FileRef'
+        (Get-FieldValue $_ 'FSObjType') -eq '0' -and $ref.StartsWith($prefix, [System.StringComparison]::OrdinalIgnoreCase) -and
+            $ref.Substring($prefix.Length).IndexOf('/') -lt 0
+    }
+}
+
 function Invoke-OneFileScan {
     <#
     .SYNOPSIS
@@ -313,13 +326,19 @@ function Invoke-OneFileScan {
     if (-not (Test-SupportedFile $name)) { $skipReason = 'File type is not read by this script: check by hand' }
     elseif ($size -gt ($MaxFileMB * 1MB)) { $skipReason = "Larger than $MaxFileMB MB: check by hand" }
     if ($skipReason) { $Rows.Add((New-ReportRow 'File' $Channel $item $link $modified 'NOT SCANNED' '' '' $skipReason)); return 0 }
-    try { $text = Get-TextFromBytes -Bytes (Get-FileBytes $ref) -FileName $name }
+    try {
+        Write-FileStep $size 'Downloading' 10
+        $bytes = Get-FileBytes $ref
+        Write-FileStep $size 'Reading the text' 50
+        $text = Get-TextFromBytes -Bytes $bytes -FileName $name
+    }
     catch {
         # One file that cannot be downloaded must not stop the scan: note it and go on.
         $reason = Protect-PiiText ('Download failed: ' + $_.Exception.Message)
         $Rows.Add((New-ReportRow 'File' $Channel $item $link $modified 'NOT SCANNED' '' '' $reason)); return 0
     }
     if ($text.Status -ne 'OK') { $Rows.Add((New-ReportRow 'File' $Channel $item $link $modified 'NOT SCANNED' '' '' (Protect-PiiText $text.Reason))); return 0 }
+    Write-FileStep $size 'Checking for PII' 80
     foreach ($hit in @(Find-PiiInText $text.Text)) {
         $Rows.Add((New-ReportRow 'File' $Channel $item $link $modified $hit.Detector $hit.Confidence $hit.MaskedValue $hit.Context))
     }
@@ -347,26 +366,34 @@ function Invoke-FileScan {
     $origin = ([uri]$SiteUrl).GetLeftPart([System.UriPartial]::Authority)
     $fields = @('FileLeafRef', 'FileRef', 'FSObjType', 'File_x0020_Size', 'Modified')
     $allItems = @(Get-PnPListItem -List $Library.List -PageSize $script:ListPageSize -Fields $fields -ErrorAction Stop)
-    $perChannel = @(foreach ($channel in $Channels) { , @(Get-ChannelFiles $allItems ($Library.ServerRelativeUrl + '/' + $channel + '/')) })
-    $total = 0
-    foreach ($files in $perChannel) { $total += $files.Count }
-    Write-Host ('Found {0} files in {1} channels. Scanning ...' -f $total, $Channels.Count) -ForegroundColor Cyan
-    $meter = New-ScanMeter $total
-    for ($c = 0; $c -lt $Channels.Count; $c++) {
-        $channel = $Channels[$c]
+    # One group per folder; files at the top of the library (a plain SharePoint site) are one more group.
+    $groups = @(foreach ($channel in $Channels) {
         $prefix = $Library.ServerRelativeUrl + '/' + $channel + '/'
-        $shownChannel = Protect-PiiText $channel   # the progress bar is on screen too
+        [pscustomobject]@{ Name = $channel; Prefix = $prefix; Files = @(Get-ChannelFiles $allItems $prefix) }
+    })
+    $rootFiles = @(Get-RootFiles $allItems $Library.ServerRelativeUrl)
+    if ($rootFiles.Count -gt 0) {
+        $groups += [pscustomobject]@{ Name = $script:RootGroupName; Prefix = $Library.ServerRelativeUrl + '/'; Files = $rootFiles }
+    }
+    $total = 0
+    foreach ($group in $groups) { $total += $group.Files.Count }
+    Write-Host ('Found {0} files in {1} folders. Scanning ...' -f $total, $groups.Count) -ForegroundColor Cyan
+    $meter = New-ScanMeter $total
+    for ($c = 0; $c -lt $groups.Count; $c++) {
+        $group = $groups[$c]
+        $shownChannel = Protect-PiiText $group.Name   # the progress bar is on screen too
         $before = $meter.Clone()
-        foreach ($file in $perChannel[$c]) {
-            Write-Progress -Activity ("Scanning files - channel {0} of {1}: '{2}'" -f ($c + 1), $Channels.Count, $shownChannel) `
+        foreach ($file in $group.Files) {
+            Write-Progress -Id 1 -Activity ("Scanning files - folder {0} of {1}: '{2}'" -f ($c + 1), $groups.Count, $shownChannel) `
                 -Status (Get-ScanMeterText $meter 'file') -PercentComplete (Get-MeterPercent $meter)
             $firstRow = $Rows.Count
-            $read = Invoke-OneFileScan $file $channel $prefix $origin $MaxFileMB $Rows
+            $read = Invoke-OneFileScan $file $group.Name $group.Prefix $origin $MaxFileMB $Rows
+            Write-Progress -Id 2 -Activity 'This file' -Completed
             Update-ScanMeter $meter $Rows $firstRow $read
         }
-        Write-ChannelLine ('{0}/{1}' -f ($c + 1), $Channels.Count) $channel $before $meter 'file'
+        Write-ChannelLine ('{0}/{1}' -f ($c + 1), $groups.Count) $group.Name $before $meter 'file'
     }
-    Write-Progress -Activity 'Scanning files' -Completed
+    Write-Progress -Id 1 -Activity 'Scanning files' -Completed
     Write-Host ('Files done: ' + (Get-ScanMeterText $meter 'file')) -ForegroundColor Cyan
     return $meter.Read
 }
@@ -418,7 +445,7 @@ function Connect-TeamGraph {
     $groupId = (Get-PnPSite -Includes GroupId -ErrorAction Stop).GroupId
     if (-not $groupId -or $groupId -eq [guid]::Empty) { throw 'This site is not connected to a team.' }
     Write-Host 'Posts: a second sign-in window opens for Microsoft Graph (if you do not see it, press Alt+Tab). If your tenant refuses it, close the window: the file results are kept.'
-    Connect-PnPOnline -Url $SiteUrl -Interactive -AzureEnvironment $script:GraphCloud -ErrorAction Stop
+    Connect-PnPOnline -Url $SiteUrl -Interactive -AzureEnvironment $script:GraphCloud -ErrorAction Stop -WarningAction SilentlyContinue
     $channels = @(Get-PnPTeamsChannel -Team $groupId -ErrorAction Stop)
     [pscustomobject]@{ GroupId = $groupId; Channels = $channels }
 }
@@ -488,7 +515,7 @@ function Invoke-PostScan {
     $meter = New-ScanMeter 0   # the post count is not known up front: the bar moves by channel
     for ($c = 0; $c -lt $Channels.Count; $c++) {
         $channel = $Channels[$c]
-        Write-Progress -Activity ("Scanning posts - channel {0} of {1}: '{2}'" -f ($c + 1), $Channels.Count, (Protect-PiiText $channel)) `
+        Write-Progress -Id 1 -Activity ("Scanning posts - channel {0} of {1}: '{2}'" -f ($c + 1), $Channels.Count, (Protect-PiiText $channel)) `
             -Status (Get-ScanMeterText $meter 'post') -PercentComplete ([int](100 * $c / $Channels.Count))
         $before = $meter.Clone()
         $firstRow = $Rows.Count
@@ -497,7 +524,7 @@ function Invoke-PostScan {
         $meter.Done += $read - 1   # Update-ScanMeter counted the channel as one item: count its posts and replies
         Write-ChannelLine ('{0}/{1}' -f ($c + 1), $Channels.Count) $channel $before $meter 'post'
     }
-    Write-Progress -Activity 'Scanning posts' -Completed
+    Write-Progress -Id 1 -Activity 'Scanning posts' -Completed
     Write-Host ('Posts done: ' + (Get-ScanMeterText $meter 'post')) -ForegroundColor Cyan
     return $meter.Read
 }

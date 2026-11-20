@@ -1,6 +1,6 @@
-# Teams channel PII spot check
+# DoD365 PII Scan
 
-A read-only PowerShell script that a **team member** runs to find files and posts in one Microsoft Teams team that may hold PII. It uses only your own access: owner rights are not needed, and a private or shared channel is scanned only if you are in it. It scans every standard channel, shows a progress bar and live counts while it works, then shows a readable summary on screen and saves both a readable text report and a CSV. **Every found value is masked** (for example `***-**-1234`), so the report is not a PII spill itself.
+A read-only PowerShell script that a **member** runs to find files (and a team's posts) that may hold PII in one Microsoft Teams team or SharePoint site. It uses only your own access: owner rights are not needed, and a private or shared channel is scanned only if you are in it. It scans every folder of the site's Documents library (in a team, one folder per standard channel) and the files at its top, shows two progress bars (the whole scan, and the file in work) and live counts while it works, then shows a readable summary on screen and saves both a readable text report and a CSV. **Every found value is masked** (for example `***-**-1234`), so the report is not a PII spill itself.
 
 > This is a spot check, not a compliance control. The standard tool for PII in Teams is **Microsoft Purview** (DLP policies and Content Search), run by your wing's privacy or cybersecurity office.
 
@@ -8,7 +8,7 @@ A read-only PowerShell script that a **team member** runs to find files and post
 
 | Content | Scanned? | How |
 |---|---|---|
-| Files in standard channels (Shared tab, formerly Files) | Yes | Your own CAC sign-in to the team's SharePoint site |
+| Files in standard channels (Shared tab, formerly Files), or in a SharePoint site's Documents library (every folder and its top) | Yes | Your own CAC sign-in to that one site |
 | .docx .xlsx .pptx (and macro versions), .txt .csv .md .log .json .xml .html | Yes | Text read in memory; nothing saved to disk |
 | PDF, images, legacy .doc/.xls/.ppt, files over 25 MB | No | Listed as **NOT SCANNED**: check them by hand |
 | Channel posts and replies | Always tried; read only if your tenant allows it | Needs a Microsoft Graph permission (ChannelMessage.Read.All) that a tenant admin must approve. If it is missing, the report shows **BLOCKED** and the file scan still runs |
@@ -39,7 +39,7 @@ Needs: Windows PowerShell 5.1 and PnP.PowerShell 1.12.0. No other modules, no ad
 1. Get the paste text: **Copy the script** on the site page, or open [paste/33332Z-pii-spot-check.ps1](https://raw.githubusercontent.com/rhope-ops/33-332.Z/main/paste/33332Z-pii-spot-check.ps1), select all (Ctrl+A) and copy (Ctrl+C). Its first lines repeat these steps.
 2. Open **Windows PowerShell ISE**, choose **File > New**, paste into the script pane (Ctrl+V) and press **F5**.
 3. When asked, paste the team (see "The team to scan" below), then sign in with your CAC. If you do not see the sign-in window, press Alt+Tab.
-4. Watch the progress bar (files done of the total, read, not scanned, possible PII, time used and time left) and the line printed for each channel.
+4. Watch the progress bar (files done of the total, read, not scanned, possible PII, time used and time left) and the line printed for each folder. A second bar shows the file in work: its size and its step (download, read, check). PnP gives no byte count while it downloads, so a large file moves by step.
 5. Posts: a second sign-in window opens for Microsoft Graph. If your tenant refuses it, close the window: the file results are kept and the report shows **BLOCKED**.
 6. Read the summary on screen. The paths of both saved files are printed at the end (default folder: `Documents\PII-Scan`).
 
@@ -86,7 +86,7 @@ Each file starts with a header: purpose, inputs, outputs, how to run, run target
 | `src/PiiDetectors.psm1` | One detector per PII type; finds positions and raw values |
 | `src/PiiMasking.psm1` | Masks every value and snippet; the only way results leave the detectors |
 | `src/Report.psm1` | Screen summary, the `.txt` and `.csv` files |
-| `src/ScanMeter.psm1` | The progress bar text and the line per channel: counts only, channel names masked |
+| `src/ScanMeter.psm1` | The two progress bars and the line per folder: counts, sizes and steps only; folder names masked |
 | `tests/Run-Tests.ps1` | Runs all tests (invented data, fake PnP cmdlets, no network) |
 | `tests/TestKit.ps1`, `tests/FakePnP.ps1` | The test assertion and samples; the fake PnP cmdlets |
 | `tests/*.Tests.ps1` | One test file per module, a start-to-end run, and a run of the paste text |

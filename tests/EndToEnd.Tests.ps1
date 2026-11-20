@@ -28,7 +28,8 @@ $types = (Import-Csv -LiteralPath $csvFiles[0].FullName | ForEach-Object { $_.De
 Assert-Equal 'DoD ID NOT SCANNED Personal e-mail Phone SSN' $types 'Script found every planted type'
 Assert-Equal $false (Test-FakePnPCall 'Read-Host') 'No question asked when the site is given'
 Assert-Equal $true ((Get-FakeProgressText) -match '2 of 3 files done \| read \d+ \| not scanned 0 \| possible PII \d+ in \d+ files') 'Progress bar shows the file counts'
-Assert-Equal $true ((Get-FakeProgressText) -match "channel 2 of 2: 'Ops'") 'Progress bar names the channel and its number'
+Assert-Equal $true ((Get-FakeProgressText) -match "folder 2 of 2: 'Ops'") 'Progress bar names the folder and its number'
+Assert-Equal $true ((Get-FakeProgressText) -match 'This file Checking for PII - \d+\.\d MB') 'Per-file bar shows the step and the size'
 Assert-Equal $true ((Get-FakeProgressText) -match 'Scanning posts') 'Posts tried without being asked'
 
 # ---- Posts refused: the file results and both reports stay ----

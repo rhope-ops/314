@@ -125,8 +125,8 @@ tr:last-child td{border-bottom:0}
   <div class="wrap">
     <article class="tool" aria-labelledby="t1">
       <header>
-        <h2 id="t1">PII Scan</h2>
-        <p>Checks the files and posts in one Teams team you are a member of for personal data (SSNs, DoD IDs, dates of birth and more) and gives you a short report. It only reads, and every value it finds is masked.</p>
+        <h2 id="t1">DoD365 PII Scan</h2>
+        <p>Checks the files in one Teams team or SharePoint site you can open (and a team's posts) for personal data (SSNs, DoD IDs, dates of birth and more) and gives you a short report. It only reads, and every value it finds is masked.</p>
       </header>
 
       <section aria-labelledby="h-ok">
@@ -188,7 +188,7 @@ tr:last-child td{border-bottom:0}
 /*
   The two buttons of this page.
 
-  What it does: loads the PII Scan paste script from this site (paste/33332Z-pii-spot-check.ps1) as it is, and then
+  What it does: loads the DoD365 PII Scan paste script from this site (paste/33332Z-pii-spot-check.ps1) as it is, and then
   either copies the whole script ("Copy the script") or saves it as a .txt file to read first ("Open the script").
   The page adds nothing to the script: the script asks for the Teams link or site address when it runs.
   Text is only ever shown with textContent, never as HTML.

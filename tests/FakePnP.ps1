@@ -49,6 +49,12 @@ function Set-FakePnPOption {
     $global:FakePnP[$Name] = $Value
 }
 
+function Set-FakeFolders {
+    # Sets the top-level folders of the fake library (Get-PnPFolderItem).
+    param([string[]]$Names)
+    $global:FakePnP.Folders = $Names
+}
+
 function Set-FakeSiteAnswer {
     <#
     .SYNOPSIS
@@ -150,7 +156,7 @@ function global:Get-PnPContext {
 # The progress bar is on screen too: the fake records its text so tests can check it is masked.
 function global:Write-Progress {
     # Fake: records the activity and status text instead of drawing a bar.
-    [CmdletBinding()] param($Activity, $Status, $PercentComplete, [switch]$Completed)
+    [CmdletBinding()] param($Activity, $Status, $PercentComplete, [switch]$Completed, $Id, $ParentId)
     $global:FakePnP.Progress.Add(('{0} {1}' -f $Activity, $Status))
 }
 

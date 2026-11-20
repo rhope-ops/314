@@ -110,6 +110,17 @@ Assert-Equal 'https://tenant.example.com/sites/TeamA/Shared%20Documents/General/
 Assert-Equal 'https://tenant.example.com/sites/TeamA/Shared%20Documents/Ops/scan%20%23A.pdf' `
     ($rows | Where-Object { $_.Item -eq 'scan #A.pdf' }).Link 'Link escapes #'
 
+# A plain SharePoint site: files at the top of the library are scanned too, also when there is no folder.
+Reset-FakePnP @{ "$library/top.txt" = $Txt; "$library/General/notes.txt" = $Txt }
+Set-FakeFolders @('Forms')
+Assert-Equal 0 @(Get-ChannelFolderNames $lib).Count 'A site with no folders is not an error'
+$rootRows = New-Object System.Collections.Generic.List[object]
+Assert-Equal 1 (Invoke-FileScan -Library $lib -Channels @() -SiteUrl $Sample.Site -MaxFileMB 25 -Rows $rootRows 6>$null) 'Top-of-library file scanned'
+Assert-Equal '(top of the library)' (($rootRows | Select-Object -ExpandProperty Channel -Unique) -join ',') 'Top-of-library files named as such'
+Assert-Equal 'top.txt' (($rootRows | Select-Object -ExpandProperty Item -Unique) -join ',') 'Only the top file, not the folder file'
+Write-FileStep (6MB) 'Downloading' 10
+Assert-Equal $true ((Get-FakeProgressText) -match 'This file Downloading - 6\.0 MB \(a large file') 'Large file: the per-file bar says it can take a minute'
+
 # A file named after an SSN: reported as a hit, and neither the item nor the link shows the SSN.
 $nameRows = @($rows | Where-Object { $_.Source -eq 'File name' })
 Assert-Equal 1 $nameRows.Count 'SSN in a file name reported'

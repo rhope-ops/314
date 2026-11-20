@@ -1,11 +1,11 @@
 <#
-ScanMeter.psm1 - the progress bar text and the per-channel lines of a scan: counts only, so the screen shows no PII.
+ScanMeter.psm1 - the progress bars and the per-folder lines of a scan: counts only, so the screen shows no PII.
 
   Purpose:     Lets the person follow a scan: files (or posts) done of the total, read, not scanned, possible PII,
                time used and time left (the PAM, 2026-11-20). No file name and no found value is shown; channel
                names are masked.
   Inputs:      the report row list and the counts the scan functions of ChannelScan.psm1 give.
-  Outputs:     a meter (hashtable), status text, percent, and one coloured line per channel on screen.
+  Outputs:     a meter (hashtable), status text, percent, a per-file progress bar and one coloured line per folder.
   Depends on:  PiiMasking.psm1 (Protect-PiiText), imported first by Find-ChannelPII.ps1.
   How to run:  imported by Find-ChannelPII.ps1; not run on its own.
   Run target:  Windows PowerShell 5.1 (also PowerShell 7).
@@ -15,6 +15,10 @@ ScanMeter.psm1 - the progress bar text and the per-channel lines of a scan: coun
 #>
 
 Set-StrictMode -Version 2.0
+
+# From this size on, the per-file bar says the step can take a minute (5 MB: a slow download on a gov network
+# takes tens of seconds; the author's choice, 2026-11-20).
+$script:LargeFileBytes = 5MB
 
 function New-ScanMeter {
     <#
@@ -90,10 +94,28 @@ function Get-MeterPercent {
     return [int][Math]::Min(100, 100 * $Meter.Done / $Meter.Total)
 }
 
+function Write-FileStep {
+    <#
+    .SYNOPSIS
+      A second progress bar for the file in work: its size and its step, so a large file does not look hung.
+      PnP gives no byte count while it downloads, so the bar moves by step (download, read, check), not by byte.
+    .PARAMETER Size
+      The file size in bytes.
+    .PARAMETER Step
+      What is being done now.
+    .PARAMETER Percent
+      How far through the file's steps (0-100).
+    #>
+    param([long]$Size, [string]$Step, [int]$Percent)
+    $status = '{0} - {1:N1} MB' -f $Step, ($Size / 1MB)
+    if ($Size -ge $script:LargeFileBytes) { $status += ' (a large file: this step can take a minute)' }
+    Write-Progress -Id 2 -ParentId 1 -Activity 'This file' -Status $status -PercentComplete $Percent
+}
+
 function Write-ChannelLine {
     <#
     .SYNOPSIS
-      Prints one line when a channel is done: its counts, yellow when it has possible PII.
+      Prints one line when a folder (a channel) is done: its counts, yellow when it has possible PII.
     .PARAMETER Number
       Which channel this is (1-based) and the channel count, as "2/5".
     .PARAMETER Channel
@@ -114,4 +136,4 @@ function Write-ChannelLine {
     Write-Host $line -ForegroundColor $colour
 }
 
-Export-ModuleMember -Function New-ScanMeter, Update-ScanMeter, Get-ScanMeterText, Get-MeterPercent, Write-ChannelLine
+Export-ModuleMember -Function New-ScanMeter, Update-ScanMeter, Get-ScanMeterText, Get-MeterPercent, Write-FileStep, Write-ChannelLine
