@@ -1,112 +1,164 @@
 <#
 TextExtract.psm1 - turns file bytes or a Teams post body into plain text, in memory.
 
-  Purpose:     Text from .docx/.xlsx/.pptx (Office Open XML zip parts), plain text files and HTML.
-               PDF, images, legacy .doc/.xls/.ppt and other types are reported as NOT SCANNED.
+  Purpose:     Plain text from Word, Excel and PowerPoint files (.docx/.xlsx/.pptx and macro versions),
+               text files and HTML. Other types (PDF, images, legacy .doc/.xls/.ppt, scripts and
+               anything else) are reported as NOT SCANNED, so a person checks them by hand.
+  Inputs:      file bytes and the file name (for its extension); HTML text of a Teams post.
+  Outputs:     an object with Status ('OK' or 'NOT SCANNED'), Reason and Text.
+  How to run:  imported by Find-ChannelPII.ps1; not run on its own.
+  Run target:  Windows PowerShell 5.1 (also PowerShell 7); .NET System.IO.Compression only.
   Network:     none.
-  Writes:      none (works on byte arrays in memory; nothing is saved to disk).
+  Writes:      none. Bytes stay in memory; nothing is saved to disk.
   Credentials: none.
-  Runs on:     Windows PowerShell 5.1 and PowerShell 7 (.NET System.IO.Compression only).
 #>
 
 Set-StrictMode -Version 2.0
 Add-Type -AssemblyName System.IO.Compression
 
-$script:TextExtensions = @('.txt', '.csv', '.md', '.log', '.json', '.xml', '.tsv')
+# =====================================================================================
+# Settings: which files are read, and which parts of an Office file hold text
+# =====================================================================================
+
+# Plain text types, read as they are.
+$script:PlainTextExtensions = @('.txt', '.csv', '.md', '.log', '.json', '.xml', '.tsv')
+
+# HTML types, read and stripped of tags.
 $script:HtmlExtensions = @('.html', '.htm')
-$script:OfficeExtensions = @('.docx', '.docm', '.xlsx', '.xlsm', '.pptx', '.pptm')
+
+# Office Open XML types (a zip of XML parts, ECMA-376) and the parts that hold their text:
+# body, headers, footers, comments, notes; cell text and shared strings; slides and speaker notes.
+$script:OfficeParts = @{
+    '.docx' = '^word/(document|header\d*|footer\d*|comments|footnotes|endnotes)\.xml$'
+    '.docm' = '^word/(document|header\d*|footer\d*|comments|footnotes|endnotes)\.xml$'
+    '.xlsx' = '^xl/(sharedStrings\.xml|worksheets/sheet\d+\.xml|comments\d*\.xml)$'
+    '.xlsm' = '^xl/(sharedStrings\.xml|worksheets/sheet\d+\.xml|comments\d*\.xml)$'
+    '.pptx' = '^ppt/(slides/slide\d+|notesSlides/notesSlide\d+|comments/comment\d+)\.xml$'
+    '.pptm' = '^ppt/(slides/slide\d+|notesSlides/notesSlide\d+|comments/comment\d+)\.xml$'
+}
+
+# =====================================================================================
+# Markup to text
+# =====================================================================================
 
 function Convert-XmlToText {
     <#
-    .SYNOPSIS  Strips Office XML to text. Paragraph, cell and row ends become spaces or new lines;
-               all other tags are removed with no space, so text split across runs joins again
-               (Word often splits "123-45-" and "6789" into two runs).
+    .SYNOPSIS
+      Strips Office XML to plain text. Paragraph, row and cell ends become line breaks or spaces;
+      every other tag is removed with no space, so text that Word splits into several runs
+      ("123-45-" and "6789") joins again.
+    .PARAMETER Xml
+      The XML text of one part.
+    .OUTPUTS
+      [string]
     #>
     param([string]$Xml)
-    $t = $Xml -replace '<w:tab/>|<w:br/>|<a:br/>', ' '
-    $t = $t -replace '</w:p>|</a:p>|</row>', "`n"
-    $t = $t -replace '</si>|</c>|</w:tc>|</a:tc>', ' '
-    $t = $t -replace '<[^>]+>', ''
-    return [System.Net.WebUtility]::HtmlDecode($t)
+    $text = $Xml -replace '<w:tab/>|<w:br/>|<a:br/>', ' '
+    $text = $text -replace '</w:p>|</a:p>|</row>', "`n"
+    $text = $text -replace '</si>|</c>|</w:tc>|</a:tc>', ' '
+    $text = $text -replace '<[^>]+>', ''
+    return [System.Net.WebUtility]::HtmlDecode($text)
 }
 
 function Convert-HtmlToText {
     <#
-    .SYNOPSIS  Strips HTML (Teams post bodies, .html files) to text. Block ends become new lines.
+    .SYNOPSIS
+      Strips HTML (Teams post bodies, .html files) to plain text. Script and style blocks are dropped;
+      block ends become line breaks.
+    .PARAMETER Html
+      The HTML text.
+    .OUTPUTS
+      [string]
     #>
     param([AllowEmptyString()][string]$Html)
     if ([string]::IsNullOrEmpty($Html)) { return '' }
-    $t = $Html -replace '(?is)<(script|style)[^>]*>.*?</\1>', ' '
-    $t = $t -replace '(?i)<br\s*/?>|</p>|</div>|</li>|</tr>', "`n"
-    $t = $t -replace '(?i)</td>|</th>', ' '
-    $t = $t -replace '<[^>]+>', ''
-    return [System.Net.WebUtility]::HtmlDecode($t)
+    $text = $Html -replace '(?is)<(script|style)[^>]*>.*?</\1>', ' '
+    $text = $text -replace '(?i)<br\s*/?>|</p>|</div>|</li>|</tr>', "`n"
+    $text = $text -replace '(?i)</td>|</th>', ' '
+    $text = $text -replace '<[^>]+>', ''
+    return [System.Net.WebUtility]::HtmlDecode($text)
 }
+
+# =====================================================================================
+# Reading bytes
+# =====================================================================================
 
 function Get-ZipPartText {
     <#
-    .SYNOPSIS  Reads the zip entries whose names match a pattern and returns their joined text.
-    .PARAMETER Bytes        The file bytes (an Office Open XML package is a zip).
-    .PARAMETER NamePattern  Regex on the entry full name, for example '^word/(document|header\d*)\.xml$'.
+    .SYNOPSIS
+      Opens an Office file (a zip) in memory and returns the text of the parts whose names match.
+    .PARAMETER Bytes
+      The file bytes.
+    .PARAMETER PartPattern
+      Regular expression on the part name (from $OfficeParts).
+    .OUTPUTS
+      [string] the parts' text, joined with line breaks.
     #>
-    param([byte[]]$Bytes, [string]$NamePattern)
-    $ms = New-Object System.IO.MemoryStream(, $Bytes)
-    $zip = New-Object System.IO.Compression.ZipArchive($ms, [System.IO.Compression.ZipArchiveMode]::Read)
+    param([byte[]]$Bytes, [string]$PartPattern)
+    $memory = New-Object System.IO.MemoryStream(, $Bytes)
+    $zip = New-Object System.IO.Compression.ZipArchive($memory, [System.IO.Compression.ZipArchiveMode]::Read)
     try {
-        $parts = New-Object System.Collections.Generic.List[string]
-        $entries = $zip.Entries | Where-Object { $_.FullName -match $NamePattern } | Sort-Object FullName
-        foreach ($e in $entries) {
-            $reader = New-Object System.IO.StreamReader($e.Open())
-            try { $parts.Add((Convert-XmlToText $reader.ReadToEnd())) } finally { $reader.Dispose() }
+        $texts = New-Object System.Collections.Generic.List[string]
+        foreach ($entry in ($zip.Entries | Where-Object { $_.FullName -match $PartPattern } | Sort-Object FullName)) {
+            $reader = New-Object System.IO.StreamReader($entry.Open())
+            try { $texts.Add((Convert-XmlToText $reader.ReadToEnd())) } finally { $reader.Dispose() }
         }
-        return ($parts -join "`n")
+        return ($texts -join "`n")
     }
-    finally { $zip.Dispose(); $ms.Dispose() }
+    finally { $zip.Dispose(); $memory.Dispose() }
+}
+
+function Get-PlainText {
+    <#
+    .SYNOPSIS
+      Decodes a text file. A UTF-8 or UTF-16 byte order mark is honoured; no mark means UTF-8.
+    .PARAMETER Bytes
+      The file bytes.
+    .OUTPUTS
+      [string]
+    #>
+    param([byte[]]$Bytes)
+    $reader = New-Object System.IO.StreamReader((New-Object System.IO.MemoryStream(, $Bytes)), $true)
+    try { return $reader.ReadToEnd() } finally { $reader.Dispose() }
+}
+
+function Test-SupportedFile {
+    # True when Get-TextFromBytes can read this file type (so other types are not downloaded).
+    param([string]$FileName)
+    $extension = [System.IO.Path]::GetExtension($FileName).ToLower()
+    return ($script:PlainTextExtensions -contains $extension) -or ($script:HtmlExtensions -contains $extension) -or
+        $script:OfficeParts.ContainsKey($extension)
 }
 
 function Get-TextFromBytes {
     <#
-    .SYNOPSIS  Returns the text of one file, or why it was not scanned.
-    .PARAMETER Bytes     File content.
-    .PARAMETER FileName  Used only for its extension.
-    .OUTPUTS   Object with Status ('OK' or 'NOT SCANNED'), Reason and Text.
+    .SYNOPSIS
+      Returns the text of one file, or why it was not scanned.
+    .PARAMETER Bytes
+      The file bytes.
+    .PARAMETER FileName
+      The file name; only its extension is used.
+    .OUTPUTS
+      [pscustomobject] Status ('OK' or 'NOT SCANNED'), Reason, Text.
     #>
     param([byte[]]$Bytes, [string]$FileName)
-    $ext = [System.IO.Path]::GetExtension($FileName).ToLower()
+    $extension = [System.IO.Path]::GetExtension($FileName).ToLower()
     $result = [pscustomobject]@{ Status = 'OK'; Reason = ''; Text = '' }
     try {
-        if ($script:TextExtensions -contains $ext -or $script:HtmlExtensions -contains $ext) {
-            # StreamReader detects a UTF-8/UTF-16 byte order mark; no mark = UTF-8.
-            $reader = New-Object System.IO.StreamReader((New-Object System.IO.MemoryStream(, $Bytes)), $true)
-            try { $result.Text = $reader.ReadToEnd() } finally { $reader.Dispose() }
-            if ($script:HtmlExtensions -contains $ext) { $result.Text = Convert-HtmlToText $result.Text }
-        }
-        elseif ($ext -like '.doc?') {
-            $result.Text = Get-ZipPartText $Bytes '^word/(document|header\d*|footer\d*|comments|footnotes|endnotes)\.xml$'
-        }
-        elseif ($ext -like '.xls?') {
-            $result.Text = Get-ZipPartText $Bytes '^xl/(sharedStrings\.xml|worksheets/sheet\d+\.xml|comments\d*\.xml)$'
-        }
-        elseif ($ext -like '.ppt?') {
-            $result.Text = Get-ZipPartText $Bytes '^ppt/(slides/slide\d+|notesSlides/notesSlide\d+|comments/comment\d+)\.xml$'
-        }
+        if ($script:PlainTextExtensions -contains $extension) { $result.Text = Get-PlainText $Bytes }
+        elseif ($script:HtmlExtensions -contains $extension) { $result.Text = Convert-HtmlToText (Get-PlainText $Bytes) }
+        elseif ($script:OfficeParts.ContainsKey($extension)) { $result.Text = Get-ZipPartText $Bytes $script:OfficeParts[$extension] }
         else {
             $result.Status = 'NOT SCANNED'
-            $result.Reason = "File type '$ext' is not supported (PDF, images, legacy Office and others: check by hand)"
+            $result.Reason = "File type '$extension' is not read by this script: check by hand"
         }
     }
     catch {
+        # A damaged or protected file must not stop the scan: report it and go on.
         $result.Status = 'NOT SCANNED'
-        $result.Reason = 'Could not read the file: ' + $_.Exception.Message
+        $result.Reason = 'Could not read the file (damaged or protected?): ' + $_.Exception.Message
     }
     return $result
-}
-
-function Test-SupportedFile {
-    # True when Get-TextFromBytes can read this extension (used to skip downloads of other types).
-    param([string]$FileName)
-    $ext = [System.IO.Path]::GetExtension($FileName).ToLower()
-    return ($script:TextExtensions + $script:HtmlExtensions + $script:OfficeExtensions) -contains $ext
 }
 
 Export-ModuleMember -Function Get-TextFromBytes, Convert-HtmlToText, Test-SupportedFile

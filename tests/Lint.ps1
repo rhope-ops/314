@@ -1,9 +1,14 @@
 <#
-Lint.ps1 - parser check and PSScriptAnalyzer (Windows PowerShell 5.1 syntax) on every .ps1/.psm1 in the repo.
+Lint.ps1 - the parser check and PSScriptAnalyzer on every .ps1 and .psm1 file in the repo.
 
-  Network:     none.  Writes: none.  Credentials: none.
-  Needs:       PSScriptAnalyzer (dev machine or CI only; not needed on the gov device).
-  Usage:       pwsh -NoProfile -File tests/Lint.ps1   (exit code 0 = findings=0)
+  Purpose:     Proves each file parses and uses only Windows PowerShell 5.1 syntax (the gov-device version).
+  Inputs:      the .ps1/.psm1 files; PSScriptAnalyzerSettings.psd1 (rules, and why some are off).
+  Outputs:     one line per finding, then 'LINT files=<n> findings=<n>'; exit code 0 when findings=0.
+  How to run:  pwsh -NoProfile -File tests/Lint.ps1
+  Run target:  PowerShell 7 with the PSScriptAnalyzer module (dev machine or CI only; not needed on the gov device).
+  Network:     none.
+  Writes:      none.
+  Credentials: none.
 #>
 $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot -Parent

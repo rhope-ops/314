@@ -1,0 +1,180 @@
+<#
+PiiMasking.psm1 - turns raw PII hits into masked report data. Nothing unmasked leaves this module.
+
+  Purpose:     Find-PiiInText returns, for one text, each hit's type, confidence, masked value and a
+               masked snippet of the text around it. Protect-PiiText masks PII inside a short text that
+               the report shows as it is (file and folder names, error messages).
+               The PFM, 2026-11-20: every value is masked on screen and in the report files.
+  Inputs:      plain text; hits from PiiDetectors.psm1 (Get-PiiSpan).
+  Outputs:     masked hit objects and masked strings.
+  Depends on:  PiiDetectors.psm1 (Get-PiiSpan), imported first by Find-ChannelPII.ps1.
+  How to run:  imported by Find-ChannelPII.ps1; not run on its own.
+  Run target:  Windows PowerShell 5.1 (also PowerShell 7).
+  Network:     none.
+  Writes:      none (pure functions on strings).
+  Credentials: none.
+#>
+
+Set-StrictMode -Version 2.0
+
+# =====================================================================================
+# Settings
+# =====================================================================================
+
+# Characters of text kept on each side of a hit in the report snippet. The author's choice,
+# 2026-11-20: enough to see the label ("SSN:", "DOB") without copying a whole paragraph.
+$script:SnippetRadiusChars = 30
+
+# How many trailing characters a masked value keeps, so a reviewer can find it in the file.
+$script:KeepLastDigits = 4
+$script:KeepLastPassportChars = 3
+
+# An e-mail local part: everything before "@domain.tld" that is not a space or a delimiter.
+# Broad on purpose (apostrophes, accents), so no part of a name in an address stays visible.
+$script:EmailLocalPartPattern = '[^\s@<>()\[\],;:"]+(?=@[A-Za-z0-9-]+\.)'
+
+# =====================================================================================
+# Masking one value
+# =====================================================================================
+
+function Get-LastCharacters {
+    # Returns the last $Count characters of a string (all of it when it is shorter).
+    param([string]$Value, [int]$Count)
+    return $Value.Substring([Math]::Max(0, $Value.Length - $Count))
+}
+
+function Get-MaskedValue {
+    <#
+    .SYNOPSIS
+      Masks one found value so the report never holds it in full.
+    .DESCRIPTION
+      SSN    -> ***-**-1234        DoD ID   -> ******7890        Card    -> ************1111
+      Phone  -> ***-***-1234       Passport -> *****567          E-mail  -> ***@domain
+      DOB    -> [date masked]      Address  -> [address masked]  Name    -> initials (P*** S***)
+    .PARAMETER Detector
+      The PII type (as named in PiiDetectors.psm1).
+    .PARAMETER Value
+      The raw value.
+    .OUTPUTS
+      [string] the masked value.
+    #>
+    param([string]$Detector, [string]$Value)
+    $digits = $Value -replace '\D', ''
+    $lastDigits = Get-LastCharacters $digits $script:KeepLastDigits
+    switch ($Detector) {
+        'SSN' { return '***-**-' + $lastDigits }
+        'DoD ID' { return '******' + $lastDigits }
+        'Payment card' { return ('*' * ($digits.Length - $lastDigits.Length)) + $lastDigits }
+        'Phone' { return '***-***-' + $lastDigits }
+        'Personal e-mail' { return '***@' + ($Value -split '@')[-1] }
+        'Passport' {
+            $tail = Get-LastCharacters $Value $script:KeepLastPassportChars
+            return ('*' * ($Value.Length - $tail.Length)) + $tail
+        }
+        'Date of birth' { return '[date masked]' }
+        'Home address' { return '[address masked]' }
+        'Name' { return ((($Value -split '[\s,]+') | Where-Object { $_ } | ForEach-Object { $_.Substring(0, 1) + '***' }) -join ' ') }
+        default { return '[masked]' }
+    }
+}
+
+# =====================================================================================
+# Masking a whole text, then cutting snippets from it
+# =====================================================================================
+
+function Get-MaskedText {
+    <#
+    .SYNOPSIS
+      Masks a whole text and keeps its length: every digit becomes '#', every e-mail local part
+      becomes '*', and every hit (names and addresses included) becomes '*'. Because the length
+      stays the same, hit positions from the raw text still point to the right place.
+    .PARAMETER Text
+      The raw text.
+    .PARAMETER Hits
+      The hits found in it (Get-PiiSpan).
+    .OUTPUTS
+      [string] the masked text, same length as the input.
+    #>
+    param([string]$Text, [object[]]$Hits)
+    $sameLengthStars = [System.Text.RegularExpressions.MatchEvaluator] { param($m) '*' * $m.Length }
+    $masked = [regex]::Replace($Text, $script:EmailLocalPartPattern, $sameLengthStars) -replace '\d', '#'
+    $chars = $masked.ToCharArray()
+    foreach ($hit in $Hits) {
+        for ($i = $hit.Index; $i -lt $hit.Index + $hit.Length; $i++) {
+            if (-not [char]::IsWhiteSpace($chars[$i])) { $chars[$i] = '*' }
+        }
+    }
+    return New-Object string (, $chars)
+}
+
+function Get-MaskedSnippet {
+    <#
+    .SYNOPSIS
+      A short piece of the MASKED text around one hit. It is cut from text that is already masked,
+      so a cut through an address or number cannot expose part of it.
+    .PARAMETER MaskedText
+      Output of Get-MaskedText.
+    .PARAMETER Index
+      Start position of the hit.
+    .PARAMETER Length
+      Length of the hit.
+    .OUTPUTS
+      [string] the snippet, white space folded to single spaces.
+    #>
+    param([string]$MaskedText, [int]$Index, [int]$Length)
+    $start = [Math]::Max(0, $Index - $script:SnippetRadiusChars)
+    $end = [Math]::Min($MaskedText.Length, $Index + $Length + $script:SnippetRadiusChars)
+    return ($MaskedText.Substring($start, $end - $start) -replace '\s+', ' ').Trim()
+}
+
+# =====================================================================================
+# Public functions
+# =====================================================================================
+
+function Find-PiiInText {
+    <#
+    .SYNOPSIS
+      Finds PII in one text and returns masked results only.
+    .PARAMETER Text
+      Plain text from a file or a post.
+    .OUTPUTS
+      [pscustomobject] Detector, Confidence, MaskedValue, Context (no raw values).
+    #>
+    param([AllowEmptyString()][string]$Text)
+    if ([string]::IsNullOrEmpty($Text)) { return }
+    $hits = @(Get-PiiSpan $Text)
+    if ($hits.Count -eq 0) { return }
+    $maskedText = Get-MaskedText $Text $hits
+    foreach ($hit in $hits) {
+        [pscustomobject]@{
+            Detector    = $hit.Detector
+            Confidence  = $hit.Confidence
+            MaskedValue = Get-MaskedValue $hit.Detector $hit.Value
+            Context     = Get-MaskedSnippet $maskedText $hit.Index $hit.Length
+        }
+    }
+}
+
+function Protect-PiiText {
+    <#
+    .SYNOPSIS
+      Replaces each PII hit in a short text with its masked value and leaves the rest readable.
+      Used for text the report shows as it is: a file named after a person's SSN must not put the
+      SSN in the report. Text with no hits comes back unchanged.
+    .PARAMETER Text
+      A file or folder path, or an error message.
+    .OUTPUTS
+      [string]
+    #>
+    param([AllowEmptyString()][string]$Text)
+    if ([string]::IsNullOrEmpty($Text)) { return $Text }
+    $result = $Text
+    # Replace from the end, so the positions of earlier hits stay valid.
+    foreach ($hit in (@(Get-PiiSpan $Text) | Sort-Object Index -Descending)) {
+        $masked = Get-MaskedValue $hit.Detector $hit.Value
+        $result = $result.Substring(0, $hit.Index) + $masked + $result.Substring($hit.Index + $hit.Length)
+    }
+    return $result
+}
+
+Export-ModuleMember -Function Find-PiiInText, Protect-PiiText, Get-MaskedValue
