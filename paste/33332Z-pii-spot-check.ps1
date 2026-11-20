@@ -20,8 +20,8 @@
     src/PiiDetectors.psm1, sha256 5758bbd9b581
     src/PiiMasking.psm1, sha256 dda7cdacfaf9
     src/TextExtract.psm1, sha256 7d3ab72e3627
-    src/XlsxWriter.psm1, sha256 ec4f7b5f9610
-    src/Report.psm1, sha256 0a75aefe7707
+    src/XlsxWriter.psm1, sha256 180fda2898e2
+    src/Report.psm1, sha256 7ff23ecaac2d
     src/ScanMeter.psm1, sha256 9825bc0e2aa8
     src/ChannelScan.psm1, sha256 c1f5308abae5
     src/Find-ChannelPII.ps1, sha256 ccecf99228d2
@@ -38,11 +38,11 @@
     line   523  Module PiiMasking.psm1
     line   709  Module TextExtract.psm1
     line   926  Module XlsxWriter.psm1
-    line  1131  Module Report.psm1
-    line  1497  Module ScanMeter.psm1
-    line  1635  Module ChannelScan.psm1
-    line  2044  Body of Find-ChannelPII.ps1
-    line  2101  Clean-up
+    line  1138  Module Report.psm1
+    line  1504  Module ScanMeter.psm1
+    line  1642  Module ChannelScan.psm1
+    line  2051  Body of Find-ChannelPII.ps1
+    line  2108  Clean-up
 #>
 
 # ==== Settings ==== (optional: edit the values between the quotes; empty = the script asks)
@@ -1115,6 +1115,7 @@ function Export-Xlsx {
     $rels += '<Relationship Id="rId' + ($Sheets.Count + 1) + '" Type="' + $script:RelNs + '/styles" Target="styles.xml"/></Relationships>'
     $stream = New-Object System.IO.FileStream($Path, [System.IO.FileMode]::CreateNew)   # CreateNew: never overwrite
     $zip = $null
+    $written = $false
     try {
         $zip = New-Object System.IO.Compression.ZipArchive($stream, [System.IO.Compression.ZipArchiveMode]::Create)
         Add-ZipText $zip '[Content_Types].xml' ($types + '</Types>')
@@ -1124,8 +1125,14 @@ function Export-Xlsx {
         Add-ZipText $zip 'xl/_rels/workbook.xml.rels' $rels
         Add-ZipText $zip 'xl/styles.xml' $script:StylesXml
         for ($i = 1; $i -le $Sheets.Count; $i++) { Add-ZipText $zip ('xl/worksheets/sheet' + $i + '.xml') (ConvertTo-SheetXml $Sheets[$i - 1]) }
+        $written = $true
     }
-    finally { if ($zip) { $zip.Dispose() }; $stream.Dispose() }
+    finally {
+        if ($zip) { $zip.Dispose() }
+        $stream.Dispose()
+        # A half-written workbook would not open: remove it, so a rerun can use the name.
+        if (-not $written) { Remove-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue }
+    }
 }
 
 # ==== Module Report.psm1 ====
@@ -1380,7 +1387,7 @@ function Get-ResultPath {
     $siteName = [uri]::UnescapeDataString(($SiteUrl.TrimEnd('/') -split '/')[-1])
     $siteName = ((Protect-PiiText $siteName) -replace '[\\/:*?"<>|]', '-').Trim(' .')
     if (-not $siteName) { $siteName = 'site' }
-    if ($siteName -match '^(CON|PRN|AUX|NUL|COM\d|LPT\d)$') { $siteName = '_' + $siteName }   # names Windows keeps for devices
+    if ($siteName -match '^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(\..*)?$') { $siteName = '_' + $siteName }   # names Windows keeps for devices
     $now = Get-Date
     $folder = Join-Path (Join-Path $OutputFolder $siteName) ($now.ToString('yyyy-MM-dd'))
     if (-not (Test-Path -LiteralPath $folder)) { New-Item -ItemType Directory -Path $folder -Force -ErrorAction Stop | Out-Null }

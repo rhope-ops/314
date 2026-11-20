@@ -190,6 +190,7 @@ function Export-Xlsx {
     $rels += '<Relationship Id="rId' + ($Sheets.Count + 1) + '" Type="' + $script:RelNs + '/styles" Target="styles.xml"/></Relationships>'
     $stream = New-Object System.IO.FileStream($Path, [System.IO.FileMode]::CreateNew)   # CreateNew: never overwrite
     $zip = $null
+    $written = $false
     try {
         $zip = New-Object System.IO.Compression.ZipArchive($stream, [System.IO.Compression.ZipArchiveMode]::Create)
         Add-ZipText $zip '[Content_Types].xml' ($types + '</Types>')
@@ -199,8 +200,14 @@ function Export-Xlsx {
         Add-ZipText $zip 'xl/_rels/workbook.xml.rels' $rels
         Add-ZipText $zip 'xl/styles.xml' $script:StylesXml
         for ($i = 1; $i -le $Sheets.Count; $i++) { Add-ZipText $zip ('xl/worksheets/sheet' + $i + '.xml') (ConvertTo-SheetXml $Sheets[$i - 1]) }
+        $written = $true
     }
-    finally { if ($zip) { $zip.Dispose() }; $stream.Dispose() }
+    finally {
+        if ($zip) { $zip.Dispose() }
+        $stream.Dispose()
+        # A half-written workbook would not open: remove it, so a rerun can use the name.
+        if (-not $written) { Remove-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue }
+    }
 }
 
 Export-ModuleMember -Function New-XlsxSheet, Export-Xlsx

@@ -40,6 +40,15 @@ $siteFolder = Join-Path $runFolder 'site'
 $siteBook = Get-XlsxSheets (Get-ResultFiles $siteFolder)[0].FullName
 Assert-Equal 'Folder|(top of the library)' (($siteBook['Phone'][0][1], $siteBook['Phone'][1][1]) -join '|') 'A plain site: Folder column; top-of-library file reported'
 
+# ---- The team check fails: the scan goes on, and the column is named Folder ----
+Reset-FakePnP @{ "$library/General/notes.txt" = $Txt }
+Set-FakePnPOption SiteFails $true
+$checkFolder = Join-Path $runFolder 'teamcheck'
+& $script -SiteUrl $Sample.Site -OutputFolder $checkFolder 6>$null
+$checkBook = Get-XlsxSheets (Get-ResultFiles $checkFolder)[0].FullName
+Assert-Equal 'Folder' $checkBook['Phone'][0][1] 'Team check failed: scan went on with the Folder label'
+Assert-Equal $false (@($checkBook.Keys) -contains 'Not scanned') 'Team check failed: the scan is not INCOMPLETE'
+
 # ---- A run that fails part way still saves a report ----
 Reset-FakePnP @{}
 Set-FakePnPOption ListFails $true

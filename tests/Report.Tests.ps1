@@ -63,6 +63,7 @@ $refused = $false
 try { Export-Xlsx -Path $oddPath -Sheets @((New-XlsxSheet 'S' @('T') @() @(5))) } catch { $refused = $true }  # expected: the file exists
 Assert-Equal $true $refused 'An existing workbook is never overwritten'
 Assert-Equal $true ((Get-ResultPath $reportFolder 'https://tenant.example.com/teams/CON') -match '[\\/]_CON[\\/]') 'A Windows device name gets a leading _'
+Assert-Equal $true ((Get-ResultPath $reportFolder 'https://tenant.example.com/teams/nul.x') -match '[\\/]_nul\.x[\\/]') 'A device name with an extension too'
 
 # ---- The screen summary ----
 $screen = (Get-ScanSummaryText -Rows $reportRows -ItemsScanned 2 -Header $header -FolderLabel 'Channel') -join "`n"
