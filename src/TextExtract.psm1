@@ -201,7 +201,8 @@ function Get-NotZipReason {
     $head = ($Bytes[0..([Math]::Min(7, $Bytes.Length - 1))] | ForEach-Object { $_.ToString('X2') }) -join ''
     if ($head.StartsWith($script:ZipMagic)) { return '' }
     if ($head.StartsWith($script:OleMagic)) { return $script:EncryptedReason }
-    $start = [System.Text.Encoding]::ASCII.GetString($Bytes, 0, [Math]::Min(64, $Bytes.Length)).TrimStart()
+    # Decoded with its byte order mark, if any (UTF-8 or UTF-16), so a web page with a mark is still seen.
+    $start = (Get-PlainText ([byte[]]$Bytes[0..([Math]::Min(255, $Bytes.Length - 1))])).TrimStart([char]0xFEFF, ' ', "`t", "`r", "`n")
     if ($start.StartsWith('<')) { return 'The download gave a web page, not the file: open it in SharePoint and check by hand' }
     return 'Not a valid Office file (damaged, or another type with an Office name): check by hand'
 }

@@ -145,6 +145,15 @@ Assert-Equal "https://tenant.example.com/sites/TeamA/_layouts/15/Doc.aspx?source
 Assert-Equal 'https://tenant.example.com/sites/TeamA/Shared%20Documents/FY27/Plan%202.docx' `
     (& $linkOf "$library/FY27/Plan 2.docx" $fileId) 'Digits that are not PII: link to the file itself'
 
+# A label in a parent folder or in the channel name, the number in the file name: masked, reported, not in the link.
+Reset-FakePnP @{ "$library/General/CAC/$($Sample.DodId).docx" = $Txt; "$library/CAC/$($Sample.DodId).txt" = $Txt }
+$rows = New-Object System.Collections.Generic.List[object]
+$null = Invoke-FileScan -Library $lib -Channels @('General', 'CAC') -SiteUrl $Sample.Site -MaxFileMB 25 -Rows $rows 6>$null
+$splitText = (($rows | ForEach-Object { $_.Item + ' ' + $_.Link }) -join ' ') + ' ' + (Get-FakeProgressText)
+Assert-Equal $false $splitText.Contains($Sample.DodId) 'Label in a parent folder or the channel: no full DoD ID in item, link or bar'
+Assert-Equal 2 @($rows | Where-Object { $_.Source -eq 'File name' -and $_.Detector -eq 'DoD ID' }).Count 'Label in a parent folder or the channel: reported as a hit'
+Assert-Equal $true (@($rows | Where-Object { $_.Link -match 'Doc\.aspx\?sourcedoc=' }).Count -gt 0) 'Label in a parent folder: Office file linked by its ID'
+
 # A channel named with PII: masked in every row.
 Reset-FakePnP @{ "$library/SSN $($Sample.Ssn)/a.txt" = $Txt }
 $rows = New-Object System.Collections.Generic.List[object]

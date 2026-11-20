@@ -274,7 +274,7 @@ function Get-SafeLink {
     <#
     .SYNOPSIS
       A link for the report that holds no PII and opens the exact file (the PAM, 2026-11-20). It is the file's own
-      path when no folder or file name in it holds PII (Protect-PiiName changes nothing). Else, for an Office file,
+      path when its path below the library holds no PII (Protect-PiiName on the whole path changes nothing). Else, for an Office file,
       a link by the file's ID (<site>/_layouts/15/Doc.aspx?sourcedoc={id}), which names nothing; else the deepest
       folder whose name is clean (at least the library). Each part is escaped, so names with '#', '%' or spaces work.
     .PARAMETER Origin
@@ -292,7 +292,12 @@ function Get-SafeLink {
     $escape = { param($names) ($names | ForEach-Object { [uri]::EscapeDataString($_) }) -join '/' }
     # The first three parts are the site and the library, which the person gave or Teams named.
     $keep = [Math]::Min(3, $parts.Count)
-    while ($keep -lt $parts.Count -and (Protect-PiiName $parts[$keep]) -ceq $parts[$keep]) { $keep++ }
+    # Each step checks the whole path below the library, so a label in a parent folder ("CAC/<number>") is seen.
+    while ($keep -lt $parts.Count) {
+        $below = $parts[3..$keep] -join '/'
+        if ((Protect-PiiName $below) -cne $below) { break }
+        $keep++
+    }
     if ($keep -eq $parts.Count) { return $Origin + '/' + (& $escape $parts) }
     $id = [guid]::Empty
     $extension = [System.IO.Path]::GetExtension($parts[-1]).ToLower()
@@ -300,6 +305,26 @@ function Get-SafeLink {
         return '{0}/{1}/_layouts/15/Doc.aspx?sourcedoc=%7B{2}%7D' -f $Origin, (& $escape $parts[0..1]), $id
     }
     return $Origin + '/' + (& $escape $parts[0..($keep - 1)])
+}
+
+function Get-ShownItem {
+    <#
+    .SYNOPSIS
+      A file's path inside its folder, as the report and the progress bar show it: PII masked, checked together with
+      the folder name, so a label in the folder ("CAC", "DOB") and a number in the file name are seen as one hit.
+    .PARAMETER Channel
+      The folder (channel) name, not masked.
+    .PARAMETER RawItem
+      The path inside the folder, not masked.
+    .OUTPUTS
+      [string] the masked path inside the folder.
+    #>
+    param([string]$Channel, [string]$RawItem)
+    $masked = Protect-PiiName ($Channel + '/' + $RawItem)
+    $cut = $masked.IndexOf('/')
+    # A hit across the folder's slash: fall back to the strict mask of the path alone.
+    if ($cut -lt 0) { return Protect-PiiText $RawItem }
+    return $masked.Substring($cut + 1)
 }
 
 function Get-FileBytes {
@@ -406,13 +431,14 @@ function Invoke-OneFileScan {
     param($File, [string]$Channel, [string]$Prefix, [string]$Origin, [int]$MaxFileMB, $Rows)
     $name = Get-FieldValue $File 'FileLeafRef'
     $ref = Get-FieldValue $File 'FileRef'
+    $rawChannel = $Channel
     $Channel = Protect-PiiName $Channel   # from here on, the channel name as the report shows it
     $modified = Get-FieldValue $File 'Modified'
-    # The path is shown in the report: mask PII in it, and report a name that holds PII as a hit.
+    # The path is shown in the report: mask PII in it (with its folder name), and report a name that holds PII as a hit.
     $rawItem = $ref.Substring($Prefix.Length)
-    $item = Protect-PiiName $rawItem
+    $item = Get-ShownItem $rawChannel $rawItem
     $link = Get-SafeLink $Origin $ref (Get-FieldValue $File 'UniqueId')
-    foreach ($hit in @(Find-PiiInText $rawItem)) {
+    foreach ($hit in @(Find-PiiInText ($rawChannel + '/' + $rawItem))) {
         $Rows.Add((New-ReportRow 'File name' $Channel $item $link $modified $hit.Detector $hit.Confidence $hit.MaskedValue 'In the file or folder name'))
     }
     $size = 0L
@@ -485,7 +511,7 @@ function Invoke-FileScan {
         $before = $meter.Clone()
         foreach ($file in $group.Files) {
             # The file in work, with PII masked (the PAM, 2026-11-20: a slow file is then visible).
-            $shownFile = Protect-PiiName ((Get-FieldValue $file 'FileRef').Substring($group.Prefix.Length))
+            $shownFile = Get-ShownItem $group.Name ((Get-FieldValue $file 'FileRef').Substring($group.Prefix.Length))
             Write-Progress -Id 1 -Activity ("Scanning files - folder {0} of {1}: '{2}'" -f ($c + 1), $groups.Count, $shownChannel) `
                 -Status (Get-ScanMeterText $meter 'file') -PercentComplete (Get-MeterPercent $meter) -CurrentOperation ('Now: ' + $shownFile)
             $firstRow = $Rows.Count
