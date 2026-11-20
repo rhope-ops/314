@@ -1,18 +1,17 @@
 <#
-ChannelScan.psm1 - reads one team's channel files (and, if asked, its posts) and turns them into report rows.
+ChannelScan.psm1 - reads one team's channel files and its posts and turns them into report rows.
 
   Purpose:     The SharePoint and Teams steps of Find-ChannelPII.ps1, one function per step: read the
                Teams link or site address, sign in to the team's site, find the library, list the channel
-               folders, pick channels, scan each file, try the posts.
+               folders, scan each file with a progress bar and live counts, try the posts.
   Inputs:      the Teams link or site address the person gives.
   Outputs:     report rows (Report.psm1 New-ReportRow) added to the list the caller passes in.
-  Depends on:  PnP.PowerShell 1.12.0; PiiDetectors.psm1, PiiMasking.psm1, TextExtract.psm1, Report.psm1
-               (all imported first by Find-ChannelPII.ps1).
+  Depends on:  PnP.PowerShell 1.12.0; PiiDetectors.psm1, PiiMasking.psm1, TextExtract.psm1, Report.psm1,
+               ScanMeter.psm1 (all imported first by Find-ChannelPII.ps1).
   How to run:  imported by Find-ChannelPII.ps1; not run on its own.
   Run target:  Windows PowerShell 5.1 (also PowerShell 7).
-  Network:     only the one SharePoint site of the team the person gives; for a Teams link, first one
-               lookup of that one group's site at the tenant root address (the PAM, 2026-11-20); for posts,
-               Microsoft Graph for that one team. Nothing lists other sites or teams (no network reconnaissance).
+  Network:     only the one SharePoint site of the team the person gives; for posts, Microsoft Graph for that
+               one team. Nothing lists other sites or teams (no network reconnaissance).
   Writes:      none in SharePoint or Teams: read calls only. Rows go to an in-memory list.
   Credentials: the person's own CAC sign-in (PnP web login). Posts open a second, interactive sign-in.
                Nothing is stored.
@@ -44,10 +43,6 @@ $script:SiteUrlPattern = '^(?<host>https://[A-Za-z0-9.-]+)/(?::[a-z]:/r/)?(?<sit
 # The path may hold spaces (a channel name) but not a second address ('://' or '/l/'), so text pasted after the link is not read.
 $script:TeamsLinkPattern = '^https://[A-Za-z0-9.-]+/l/(?<kind>team|channel)/(?:(?!://|/l/)[^?#\r\n])+\?(?:[^#\s]*&)?groupId=' +
                            '(?<id>[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12})(?![0-9A-Fa-f-])'
-
-# Where a Teams link's site is looked up: the tenant's root address. Only one call is made there, for the
-# one group ID in the link (the PAM, 2026-11-20); the site it gives must be on this same host.
-$script:SharePointRoot = 'https://usaf.dps.mil'
 
 # Microsoft cloud for the posts sign-in: DoD365 runs in the US Government DoD cloud.
 $script:GraphCloud = 'USGovernmentDoD'
@@ -114,31 +109,6 @@ function Get-ScanTarget {
     return [pscustomobject]@{ GroupId = $null; SiteUrl = (Test-TeamSiteUrl $Address); IsChannel = $false }
 }
 
-function Find-GroupSiteUrl {
-    <#
-    .SYNOPSIS
-      Asks SharePoint for the site of one Microsoft 365 group (GroupSiteManager GetSiteStatus). Reads that one
-      group's record only; lists nothing. Needs a connection to $script:SharePointRoot.
-    .PARAMETER GroupId
-      The group ID from the Teams link.
-    .OUTPUTS
-      [string] the team's site (cut to the site name, on the root's host), or $null when SharePoint gives none.
-    #>
-    param([guid]$GroupId)
-    $answer = Invoke-PnPSPRestMethod -Method Post -Url '/_api/GroupSiteManager/GetSiteStatus' `
-        -Content @{ groupId = $GroupId.ToString() } -ErrorAction Stop
-    if ($answer -is [string]) { $answer = $answer | ConvertFrom-Json }
-    if ($answer -and $answer.PSObject.Properties['d']) { $answer = $answer.d }   # the verbose JSON form
-    if (-not $answer -or -not $answer.PSObject.Properties['SiteUrl'] -or -not $answer.SiteUrl) { return $null }
-    # SiteStatus 2 = the site is ready; any other status (none, being made, error) gives no site to scan.
-    if ($answer.PSObject.Properties['SiteStatus'] -and [int]$answer.SiteStatus -ne 2) { return $null }
-    $site = Test-TeamSiteUrl ([string]$answer.SiteUrl)
-    if (-not $site.StartsWith($script:SharePointRoot + '/', [StringComparison]::OrdinalIgnoreCase)) {
-        throw "The lookup gave a site on another host: $site"
-    }
-    return $site
-}
-
 function Assert-SiteGroup {
     <#
     .SYNOPSIS
@@ -157,9 +127,9 @@ function Assert-SiteGroup {
 function Connect-TeamSite {
     <#
     .SYNOPSIS
-      Signs in (own CAC, PnP web login) to the team's site and returns its address. For a Teams link it first
-      looks up that one group's site; if the lookup gives nothing, it asks for the site address, and in both
-      cases it checks that the site belongs to the team in the link. On any error or cancel it signs out.
+      Signs in (own CAC, PnP web login) to the team's site and returns its address. For a Teams link it asks
+      for the site address (a lookup at the tenant root hung on DoD365: the PAM, 2026-11-20), then checks that
+      the site belongs to the team in the link. On any error or cancel it signs out.
     .PARAMETER Target
       Output of Get-ScanTarget.
     .OUTPUTS
@@ -173,21 +143,10 @@ function Connect-TeamSite {
             if ($Target.IsChannel) {
                 Write-Host 'Channel link: the scan covers the standard channels of its team. A private or shared channel has its own site: give that site address instead.' -ForegroundColor Yellow
             }
-            Write-Host "Teams link: looking up this team's site at $script:SharePointRoot (one sign-in) ..."
-            try {
-                Connect-PnPOnline -Url $script:SharePointRoot -UseWebLogin
-                $site = Find-GroupSiteUrl $Target.GroupId
-            }
-            catch {
-                # The lookup is a help, not a must: on any failure the person gives the site address instead.
-                Write-Host ('The lookup did not work: ' + (Protect-PiiText $_.Exception.Message)) -ForegroundColor Yellow
-            }
-            if (-not $site) {
-                Write-Host "In Teams: the team's Shared tab > ... > Open in SharePoint, then copy the address." -ForegroundColor Yellow
-                $site = Test-TeamSiteUrl (Read-Host 'Team site address (https://usaf.dps.mil/teams/<team-site>)')
-            }
+            Write-Host "Teams link: the script needs this team's site address. In Teams: the team's Shared tab > ... > Open in SharePoint, then copy the address." -ForegroundColor Yellow
+            $site = Test-TeamSiteUrl (Read-Host 'Team site address (https://usaf.dps.mil/teams/<team-site>)')
         }
-        Write-Host "Signing in to $site ..."
+        Write-Host "Signing in to $site (a sign-in window opens; if you do not see it, press Alt+Tab) ..."
         Connect-PnPOnline -Url $site -UseWebLogin
         if ($null -ne $Target.GroupId) { Assert-SiteGroup $Target.GroupId }
         $ok = $true
@@ -224,7 +183,8 @@ function Get-TeamDocumentLibrary {
 function Get-ChannelFolderNames {
     <#
     .SYNOPSIS
-      Lists the channel folders: the top-level folders of the library, without SharePoint's own.
+      Lists the channel folders: the top-level folders of the library, without SharePoint's own. The scan
+      covers all of them (the PAM, 2026-11-20: no channel choice). Throws when there are none.
     .PARAMETER Library
       Output of Get-TeamDocumentLibrary.
     .OUTPUTS
@@ -232,41 +192,9 @@ function Get-ChannelFolderNames {
     #>
     param($Library)
     $folders = Get-PnPFolderItem -FolderSiteRelativeUrl $Library.SiteRelativeUrl -ItemType Folder -ErrorAction Stop
-    return @($folders | ForEach-Object { $_.Name } | Where-Object { $script:NotChannelFolders -notcontains $_ } | Sort-Object)
-}
-
-function Select-ChannelFolders {
-    <#
-    .SYNOPSIS
-      The channel folders to scan: all of them, one by name, or a pick from a numbered list.
-    .PARAMETER Available
-      The folder names (Get-ChannelFolderNames).
-    .PARAMETER Requested
-      The -Channel value: 'All', a folder name, or empty to ask.
-    .OUTPUTS
-      [string[]] the chosen folder names.
-    #>
-    param([string[]]$Available, [string]$Requested)
-    if ($Available.Count -eq 0) { throw 'No channel folders found in the library.' }
-    if ($Requested -eq 'All') { return $Available }
-    if ($Requested) {
-        $found = @($Available | Where-Object { $_ -ieq $Requested })
-        if ($found.Count -eq 0) { throw "Channel folder '$Requested' not found. Found: $($Available -join ', ')" }
-        return $found
-    }
-    Write-Host 'Channel folders on this site:'
-    # Channel names are shown masked too (a channel named after a person's record must not show it).
-    for ($i = 0; $i -lt $Available.Count; $i++) { Write-Host ('  {0}. {1}' -f ($i + 1), (Protect-PiiText $Available[$i])) }
-    $answer = Read-Host 'Type a number, several numbers with commas (1,3), or A for all'
-    if ($answer.Trim() -ieq 'A') { return $Available }
-    $picked = foreach ($part in ($answer -split ',')) {
-        $number = 0
-        if (-not ([int]::TryParse($part.Trim(), [ref]$number) -and $number -ge 1 -and $number -le $Available.Count)) {
-            throw "Not a valid choice: '$part'"
-        }
-        $Available[$number - 1]
-    }
-    return @($picked | Select-Object -Unique)
+    $names = @($folders | ForEach-Object { $_.Name } | Where-Object { $script:NotChannelFolders -notcontains $_ } | Sort-Object)
+    if ($names.Count -eq 0) { throw 'No channel folders found in the library.' }
+    return $names
 }
 
 # =====================================================================================
@@ -401,7 +329,7 @@ function Invoke-OneFileScan {
 function Invoke-FileScan {
     <#
     .SYNOPSIS
-      Scans every file in the chosen channel folders and adds report rows.
+      Scans every file in the given channel folders (all of the team's) and adds report rows.
     .PARAMETER Library
       Output of Get-TeamDocumentLibrary.
     .PARAMETER Channels
@@ -419,22 +347,32 @@ function Invoke-FileScan {
     $origin = ([uri]$SiteUrl).GetLeftPart([System.UriPartial]::Authority)
     $fields = @('FileLeafRef', 'FileRef', 'FSObjType', 'File_x0020_Size', 'Modified')
     $allItems = @(Get-PnPListItem -List $Library.List -PageSize $script:ListPageSize -Fields $fields -ErrorAction Stop)
-    $scanned = 0
-    foreach ($channel in $Channels) {
+    $perChannel = @(foreach ($channel in $Channels) { , @(Get-ChannelFiles $allItems ($Library.ServerRelativeUrl + '/' + $channel + '/')) })
+    $total = 0
+    foreach ($files in $perChannel) { $total += $files.Count }
+    Write-Host ('Found {0} files in {1} channels. Scanning ...' -f $total, $Channels.Count) -ForegroundColor Cyan
+    $meter = New-ScanMeter $total
+    for ($c = 0; $c -lt $Channels.Count; $c++) {
+        $channel = $Channels[$c]
         $prefix = $Library.ServerRelativeUrl + '/' + $channel + '/'
         $shownChannel = Protect-PiiText $channel   # the progress bar is on screen too
-        $files = @(Get-ChannelFiles $allItems $prefix)
-        for ($i = 0; $i -lt $files.Count; $i++) {
-            Write-Progress -Activity "Scanning files in '$shownChannel'" -Status ('{0} of {1}' -f ($i + 1), $files.Count) -PercentComplete ([int](100 * ($i + 1) / $files.Count))
-            $scanned += Invoke-OneFileScan $files[$i] $channel $prefix $origin $MaxFileMB $Rows
+        $before = $meter.Clone()
+        foreach ($file in $perChannel[$c]) {
+            Write-Progress -Activity ("Scanning files - channel {0} of {1}: '{2}'" -f ($c + 1), $Channels.Count, $shownChannel) `
+                -Status (Get-ScanMeterText $meter 'file') -PercentComplete (Get-MeterPercent $meter)
+            $firstRow = $Rows.Count
+            $read = Invoke-OneFileScan $file $channel $prefix $origin $MaxFileMB $Rows
+            Update-ScanMeter $meter $Rows $firstRow $read
         }
-        Write-Progress -Activity "Scanning files in '$shownChannel'" -Completed
+        Write-ChannelLine ('{0}/{1}' -f ($c + 1), $Channels.Count) $channel $before $meter 'file'
     }
-    return $scanned
+    Write-Progress -Activity 'Scanning files' -Completed
+    Write-Host ('Files done: ' + (Get-ScanMeterText $meter 'file')) -ForegroundColor Cyan
+    return $meter.Read
 }
 
 # =====================================================================================
-# Posts (optional)
+# Posts (always tried; a refusal is reported and the file results stay)
 # =====================================================================================
 
 function Add-PostRows {
@@ -479,7 +417,7 @@ function Connect-TeamGraph {
     param([string]$SiteUrl)
     $groupId = (Get-PnPSite -Includes GroupId -ErrorAction Stop).GroupId
     if (-not $groupId -or $groupId -eq [guid]::Empty) { throw 'This site is not connected to a team.' }
-    Write-Host 'Posts: a second sign-in window opens for Microsoft Graph ...'
+    Write-Host 'Posts: a second sign-in window opens for Microsoft Graph (if you do not see it, press Alt+Tab). If your tenant refuses it, close the window: the file results are kept.'
     Connect-PnPOnline -Url $SiteUrl -Interactive -AzureEnvironment $script:GraphCloud -ErrorAction Stop
     $channels = @(Get-PnPTeamsChannel -Team $groupId -ErrorAction Stop)
     [pscustomobject]@{ GroupId = $groupId; Channels = $channels }
@@ -528,7 +466,7 @@ function Invoke-ChannelPostScan {
 function Invoke-PostScan {
     <#
     .SYNOPSIS
-      Tries to scan the posts and replies of the chosen channels through Microsoft Graph. Reading posts
+      Tries to scan the posts and replies of the given channels (all of the team's) through Microsoft Graph. Reading posts
       needs a permission an admin may not have granted; then one BLOCKED row says so, and the file
       results stay.
     .PARAMETER SiteUrl
@@ -547,14 +485,22 @@ function Invoke-PostScan {
         $Rows.Add((New-ReportRow 'Posts' '(all)' '(posts)' '' '' 'BLOCKED' '' '' ((Protect-PiiText ('Posts could not be read: ' + $_.Exception.Message)) + ' | ' + $script:PostsBlockedAdvice)))
         return 0
     }
-    $scanned = 0
-    foreach ($channel in $Channels) {
-        Write-Progress -Activity 'Scanning posts' -Status (Protect-PiiText $channel)
-        $scanned += Invoke-ChannelPostScan $team $channel $Rows
+    $meter = New-ScanMeter 0   # the post count is not known up front: the bar moves by channel
+    for ($c = 0; $c -lt $Channels.Count; $c++) {
+        $channel = $Channels[$c]
+        Write-Progress -Activity ("Scanning posts - channel {0} of {1}: '{2}'" -f ($c + 1), $Channels.Count, (Protect-PiiText $channel)) `
+            -Status (Get-ScanMeterText $meter 'post') -PercentComplete ([int](100 * $c / $Channels.Count))
+        $before = $meter.Clone()
+        $firstRow = $Rows.Count
+        $read = Invoke-ChannelPostScan $team $channel $Rows
+        Update-ScanMeter $meter $Rows $firstRow $read
+        $meter.Done += $read - 1   # Update-ScanMeter counted the channel as one item: count its posts and replies
+        Write-ChannelLine ('{0}/{1}' -f ($c + 1), $Channels.Count) $channel $before $meter 'post'
     }
     Write-Progress -Activity 'Scanning posts' -Completed
-    return $scanned
+    Write-Host ('Posts done: ' + (Get-ScanMeterText $meter 'post')) -ForegroundColor Cyan
+    return $meter.Read
 }
 
-Export-ModuleMember -Function Test-TeamSiteUrl, Get-ScanTarget, Connect-TeamSite, Get-TeamDocumentLibrary, Get-ChannelFolderNames, Select-ChannelFolders,
+Export-ModuleMember -Function Test-TeamSiteUrl, Get-ScanTarget, Connect-TeamSite, Get-TeamDocumentLibrary, Get-ChannelFolderNames,
 Invoke-FileScan, Invoke-PostScan

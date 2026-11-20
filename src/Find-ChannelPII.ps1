@@ -3,18 +3,18 @@
   Find-ChannelPII.ps1 - read-only spot check of one Microsoft Teams team for possible PII.
 
 .DESCRIPTION
-  Scans the files of a team's standard channels (the team site's "Shared Documents" library) and,
-  with -IncludePosts, tries to scan the channel posts and replies. Shows a readable summary on screen
-  and saves a readable text report and/or a CSV. Every value found is MASKED on screen and in the files.
+  Scans the files of all standard channels of a team (the team site's "Shared Documents" library), then
+  tries to scan the channel posts and replies. A progress bar and one line per channel show the counts as
+  it goes. Shows a readable summary on screen and saves a readable text report and a CSV. Every value
+  found is MASKED on screen and in the files.
 
-  Purpose:     Help a team owner find files and posts that may hold PII, so they can review them.
+  Purpose:     Help a team member (owner rights are not needed) find files and posts that may hold PII, so they can review them.
                A spot check, not a replacement for Microsoft Purview DLP or Content Search.
-  Inputs:      the team's Teams link or site address, the channels, the report choice (asked when not given).
-  Outputs:     the summary on screen; PIIScan-<time>.txt and/or PIIScan-<time>.csv in -OutputFolder.
+  Inputs:      the team's Teams link or site address (asked when not given).
+  Outputs:     progress and the summary on screen; PIIScan-<time>.txt and PIIScan-<time>.csv in -OutputFolder.
   How to run:  .\Find-ChannelPII.ps1   (README.md "Run it" gives every step)
   Run target:  Windows PowerShell 5.1 (also PowerShell 7) with PnP.PowerShell 1.12.0. No other modules.
-  Network:     only the one team's SharePoint site; for a Teams link, first one lookup of that one group's site at
-               https://usaf.dps.mil; with -IncludePosts, Microsoft Graph for that one team.
+  Network:     only the one team's SharePoint site, then Microsoft Graph for that one team (posts).
   Writes:      only the report files in -OutputFolder (default Documents\PII-Scan); nothing in Teams or SharePoint.
   Credentials: the person's own CAC sign-in in the PnP sign-in window; nothing is stored or saved.
 
@@ -27,17 +27,9 @@
 .PARAMETER SiteUrl
   The team's Teams link or its SharePoint site address.
   Teams link: in Teams, open the team or one of its channels, click the ... next to its name > Copy link
-  (https://<teams-host>/l/team/...?groupId=...). The script looks up the team's site and checks it belongs to the team.
+  (https://<teams-host>/l/team/...?groupId=...). The script asks for the team's site address and checks the site belongs to that team.
   Site address: the team's Shared tab > ... > Open in SharePoint (https://usaf.dps.mil/teams/<team-site>);
   a file's Copy link from the Shared tab works too. Anything after the site name is cut off.
-.PARAMETER Channel
-  A channel folder name, or 'All'. Leave it out to pick from a list.
-.PARAMETER IncludePosts
-  Also try to scan channel posts and replies. Needs a second sign-in and a Graph permission that a
-  tenant admin may not have granted; if it is refused, the report says BLOCKED and the file scan still counts.
-.PARAMETER Report
-  What to save: 'Both' (readable .txt and .csv), 'Text' (.txt only) or 'Csv' (.csv only). The summary is
-  always shown on screen. Leave it out to choose from a list (Enter = Both).
 .PARAMETER OutputFolder
   Where to save the report files. Default: Documents\PII-Scan in your profile.
 .PARAMETER MaxFileMB
@@ -45,17 +37,13 @@
 
 .EXAMPLE
   .\Find-ChannelPII.ps1
-  Asks for the Teams link or site address, the channels and the report choice, then scans the files.
+  Asks for the Teams link or site address, then scans every channel's files and posts.
 .EXAMPLE
-  .\Find-ChannelPII.ps1 -SiteUrl https://usaf.dps.mil/teams/<team-site> -Channel All -IncludePosts -Report Both
+  .\Find-ChannelPII.ps1 -SiteUrl https://usaf.dps.mil/teams/<team-site>
 #>
 [CmdletBinding()]
 param(
     [string]$SiteUrl,
-    [string]$Channel,
-    [switch]$IncludePosts,
-    [ValidateSet('Both', 'Text', 'Csv')]
-    [string]$Report,
     [string]$OutputFolder = (Join-Path ([Environment]::GetFolderPath('MyDocuments')) 'PII-Scan'),
     # 25 MB: larger Office files are rare in a channel and slow to read in memory. The author's choice, 2026-11-20.
     [int]$MaxFileMB = 25
@@ -65,7 +53,7 @@ Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
 
 # Modules, in dependency order (each module's header names what it needs).
-foreach ($module in @('PiiDetectors.psm1', 'PiiMasking.psm1', 'TextExtract.psm1', 'Report.psm1', 'ChannelScan.psm1')) {
+foreach ($module in @('PiiDetectors.psm1', 'PiiMasking.psm1', 'TextExtract.psm1', 'Report.psm1', 'ScanMeter.psm1', 'ChannelScan.psm1')) {
     Import-Module (Join-Path $PSScriptRoot $module) -Force
 }
 
@@ -74,10 +62,9 @@ foreach ($module in @('PiiDetectors.psm1', 'PiiMasking.psm1', 'TextExtract.psm1'
 
 Write-Host 'Teams channel PII spot check (read-only). Values in the report are masked.' -ForegroundColor Cyan
 
-# ---- Step 1: the Teams link or site address (only this one team is touched) and the report choice ----
+# ---- Step 1: the Teams link or site address (only this one team is touched) ----
 if (-not $SiteUrl) { $SiteUrl = Read-Host 'Teams link of the team or channel, or its site address (https://usaf.dps.mil/teams/<team-site>)' }
 $target = Get-ScanTarget $SiteUrl
-$format = Select-ReportFormat $Report
 
 # ---- Step 2: sign in with the person's own CAC (a Teams link first finds the team's site) ----
 $SiteUrl = Connect-TeamSite $target
@@ -87,16 +74,16 @@ $scanned = 0
 $selected = @()
 $finished = $false   # set only after the last step; a cancelled run (Ctrl+C) skips 'catch' but not 'finally'
 try {
-    # ---- Step 3: the channels to scan ----
+    # ---- Step 3: the channels to scan: all of them ----
     $library = Get-TeamDocumentLibrary
-    $selected = @(Select-ChannelFolders -Available @(Get-ChannelFolderNames $library) -Requested $Channel)
+    $selected = @(Get-ChannelFolderNames $library)
     Write-Host ('Channels to scan: ' + (($selected | ForEach-Object { Protect-PiiText $_ }) -join ', '))
 
     # ---- Step 4: the files ----
     $scanned += Invoke-FileScan -Library $library -Channels $selected -SiteUrl $SiteUrl -MaxFileMB $MaxFileMB -Rows $rows
 
-    # ---- Step 5 (optional): the posts ----
-    if ($IncludePosts) { $scanned += Invoke-PostScan -SiteUrl $SiteUrl -Channels $selected -Rows $rows }
+    # ---- Step 5: the posts (a refusal becomes a BLOCKED row; the file results stay) ----
+    $scanned += Invoke-PostScan -SiteUrl $SiteUrl -Channels $selected -Rows $rows
     $finished = $true
 }
 catch {
@@ -108,8 +95,7 @@ catch {
 finally {
     # ---- Step 6: the report (also after an error or a cancel), then sign out ----
     Add-IncompleteRow -Rows $rows -Finished $finished
-    $postsLine = 'not scanned (posts not chosen)'
-    if ($IncludePosts) { $postsLine = 'tried (see BLOCKED rows if refused)' }
+    $postsLine = 'tried (see BLOCKED rows if refused)'
     $header = @(
         ('Site:     ' + $SiteUrl),
         ('Channels: ' + (($selected | ForEach-Object { Protect-PiiText $_ }) -join ', ')),
@@ -117,7 +103,7 @@ finally {
         ('Run:      ' + (Get-Date -Format 'yyyy-MM-dd HH:mm'))
     )
     try {
-        $null = Publish-ScanReport -Rows $rows.ToArray() -ItemsScanned $scanned -Header $header -Format $format -OutputFolder $OutputFolder
+        $null = Publish-ScanReport -Rows $rows.ToArray() -ItemsScanned $scanned -Header $header -OutputFolder $OutputFolder
     }
     finally {
         # Sign out even when the report could not be saved (for example, a folder that cannot be written).
