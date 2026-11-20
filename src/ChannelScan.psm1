@@ -126,20 +126,21 @@ function Assert-SiteGroup {
 function ConvertTo-FriendlyError {
     <#
     .SYNOPSIS
-      A sign-in or site error in words a person can act on: no access, site not found, sign-in not finished.
-      Any other message is shown masked, as it is.
+      A sign-in error in words a person can act on: no access, site not found, sign-in not finished. Used only for
+      the sign-in step (Connect-TeamSite); the original message always follows, masked, so no real error is hidden.
     .PARAMETER Message
       The error message.
     .OUTPUTS
       [string]
     #>
     param([string]$Message)
-    if ($Message -match '\b(401|403)\b|forbidden|access (is )?denied|unauthori[sz]ed|do(es)? not have (access|permission)') {
-        return "No access: your account cannot open this site. Ask the site's owner for access, or check the address."
+    $details = Protect-PiiText $Message
+    if ($Message -match '\((401|403)\)|\bforbidden\b|access (is )?denied|do(es)? not have (access|permission)') {
+        return "No access: your account cannot open this site. Ask the site's owner for access, or check the address. ($details)"
     }
-    if ($Message -match '\b404\b|not found|could not be resolved|remote name') { return 'Site not found: check the address.' }
-    if ($Message -match 'cancel|closed|aborted') { return 'The sign-in did not finish (was the sign-in window closed?).' }
-    return Protect-PiiText $Message
+    if ($Message -match '\(404\)|could not be resolved|remote name could not') { return "Site not found: check the address. ($details)" }
+    if ($Message -match 'user cancel+ed|cancel+ed by the user|prompt cancel+ed') { return "The sign-in did not finish (was the sign-in window closed?). ($details)" }
+    return $details
 }
 
 function Read-ScanTarget {
@@ -478,6 +479,7 @@ function Invoke-FileScan {
             Write-MeterLine $meter 'file'   # live counts, at most every few seconds
         }
         Write-ChannelLine ('{0}/{1}' -f ($c + 1), $groups.Count) $group.Name $before $meter 'file'
+        Write-MeterLine $meter 'file' -Force   # the running totals after each folder
     }
     Write-Progress -Id 1 -Activity 'Scanning files' -Completed
     Write-Ui ('Files done: ' + (Get-ScanMeterText $meter 'file')) 'Title'

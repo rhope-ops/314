@@ -68,6 +68,7 @@ Assert-Equal 'Phone/Low/***-***-0142' (Get-HitSummary "office $($Sample.PhonePar
 Assert-Equal 'Personal e-mail/Low/***@example.com' (Get-HitSummary "write to $($Sample.Email)") 'Personal e-mail'
 Assert-Equal 0 (Get-HitSummary $Sample.GovEmail).Count '.gov e-mail not reported'
 Assert-Equal 'Personal e-mail/Medium/***@gmail.com' (Get-HitSummary ('write to pat.sample' + '@gmail.com')) 'E-mail at a personal provider: Medium'
+Assert-Equal 'Personal e-mail/Low/***@mail.example.com' (Get-HitSummary ('write to pat.sample' + '@mail.example.com')) 'A company subdomain named mail is not a personal provider'
 
 # ---- False positives in typical documents (the PAM, 2026-11-20) ----
 Assert-Equal 0 (Get-HitSummary ('PAGEREF _Toc' + $Sample.SsnBare)).Count 'A Word bookmark number is no SSN'

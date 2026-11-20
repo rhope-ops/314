@@ -49,6 +49,24 @@ $checkBook = Get-XlsxSheets (Get-ResultFiles $checkFolder)[0].FullName
 Assert-Equal 'Folder' $checkBook['Phone'][0][1] 'Team check failed: scan went on with the Folder label'
 Assert-Equal $false (@($checkBook.Keys) -contains 'Not scanned') 'Team check failed: the scan is not INCOMPLETE'
 
+# ---- No access to the site: a clear message, nothing saved, signed out, another site offered ----
+Reset-FakePnP @{ "$library/General/notes.txt" = $Txt }
+Set-FakePnPOption NoAccess $true
+$noAccessFolder = Join-Path $runFolder 'noaccess'
+$shown = (& $script -SiteUrl $Sample.Site -OutputFolder $noAccessFolder 6>&1 | ForEach-Object { [string]$_ }) -join ' '
+Assert-Equal $true ($shown -match 'No access: your account cannot open this site') 'No access: the person is told'
+Assert-Equal 0 @(Get-ResultFiles $noAccessFolder).Count 'No access: nothing saved'
+Assert-Equal $true ((Test-FakePnPCall 'Disconnect-PnPOnline') -and (Get-FakeCallCount 'Read-Host') -eq 1) 'No access: signed out, another site offered'
+
+# ---- A wrong paste is explained and asked again; Enter exits ----
+Reset-FakePnP @{ "$library/General/notes.txt" = $Txt }
+Set-FakeSiteAnswer -TypedSite @('not a link', $Sample.Site)
+$retryFolder = Join-Path $runFolder 'retry'
+$shown = (& $script -OutputFolder $retryFolder 6>&1 | ForEach-Object { [string]$_ }) -join ' '
+Assert-Equal $true ($shown -match 'That is not a Teams link or a site address') 'Wrong paste: explained'
+Assert-Equal 1 @(Get-ResultFiles $retryFolder).Count 'Wrong paste: asked again, then the right one scanned'
+Assert-Equal 3 (Get-FakeCallCount 'Read-Host') 'Wrong paste, right paste, then Enter to exit'
+
 # ---- A run that fails part way still saves a report ----
 Reset-FakePnP @{}
 Set-FakePnPOption ListFails $true
@@ -63,10 +81,9 @@ Assert-Equal $true (Test-FakePnPCall 'Disconnect-PnPOnline') 'Signed out after a
 Reset-FakePnP @{}
 $blocker = Join-Path $runFolder 'not-a-folder.txt'
 Set-Content -LiteralPath $blocker -Value 'x'
-$saveFailed = $false
-try { & $script -SiteUrl $Sample.Site -OutputFolder (Join-Path $blocker 'sub') 6>$null }
-catch { $saveFailed = $true }  # the save error is the expected result here
-Assert-Equal $true $saveFailed 'Save error reaches the person'
+$shown = (& $script -SiteUrl $Sample.Site -OutputFolder (Join-Path $blocker 'sub') 6>&1 | ForEach-Object { [string]$_ }) -join ' '
+Assert-Equal $true ($shown -match 'The results could not be saved') 'Save error reaches the person'
+Assert-Equal 1 (Get-FakeCallCount 'Read-Host') 'After a save error another site is still offered'
 Assert-Equal $true (Test-FakePnPCall 'Disconnect-PnPOnline') 'Signed out when the report could not be saved'
 
 Remove-Item -LiteralPath $runFolder -Recurse -Force

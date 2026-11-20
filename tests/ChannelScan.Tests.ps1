@@ -160,6 +160,22 @@ Assert-Equal $true (Test-FakePnPCall 'Get-PnPContext') 'Fallback used the client
 Assert-Equal 1 @($rows | Where-Object { $_.Detector -eq 'SSN' -and $_.Item -eq 'Roster.docx' }).Count 'Fallback finds the SSN'
 . (Join-Path $PSScriptRoot 'FakePnP.ps1')  # put the full fake Get-PnPFile back for the next tests
 
+# ---- Error wording: a sign-in error a person can act on; the original always follows; other errors as they are ----
+Assert-Equal $true ((ConvertTo-FriendlyError 'The remote server returned an error: (403) Forbidden.') -match '^No access: .*\(The remote server') 'A 403 says No access, with the original after it'
+$closed = 'The underlying connection was closed: An unexpected error occurred on a send.'
+Assert-Equal $closed (ConvertTo-FriendlyError $closed) 'A closed connection is not called a closed sign-in window'
+Assert-Equal 'File Not Found.' (ConvertTo-FriendlyError 'File Not Found.') 'A missing file is not called a missing site'
+
+# ---- Live counts line and the timing ----
+Reset-FakePnP @{}
+$liveMeter = @{ Total = 4; Done = 2; Read = 1; Skipped = 1; Hits = 2; HitItems = 1; Types = @{ 'SSN' = 1; 'Phone' = 1 }; LastLine = [TimeSpan]::Zero
+    Clock = [pscustomobject]@{ Elapsed = [TimeSpan]::FromSeconds(20) } }
+$live = (Write-MeterLine $liveMeter 'file' -Force 6>&1 | ForEach-Object { [string]$_ }) -join ''
+Assert-Equal '  > 2/4 files  50% | read 1 | not scanned 1 | possible PII 2 (SSN 1, Phone 1) | 00:20 used, about 00:20 left' $live 'Live line: counts, types worst first, time'
+$liveMeter.Clock = [pscustomobject]@{ Elapsed = [TimeSpan]::FromSeconds(25) }
+Assert-Equal '' ((Write-MeterLine $liveMeter 'file' 6>&1 | ForEach-Object { [string]$_ }) -join '') 'Live line: not again within 10 seconds'
+Assert-Equal 'Time downloading|Time reading and checking' (@((Get-ScanTiming).Keys) -join '|') 'Timing: download and check times'
+
 # ---- Team or plain site: names the folder column ----
 Reset-FakePnP @{}
 Assert-Equal $true (Test-TeamSite) 'A team site is a team'

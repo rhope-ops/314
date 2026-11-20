@@ -17,14 +17,14 @@
   its top. One sign-in only: channel posts are not read.
 
   Built from these files; to change it, change them and rebuild with: python3 scripts/build_paste.py
-    src/PiiDetectors.psm1, sha256 350ea3a15015
+    src/PiiDetectors.psm1, sha256 ea19831b4d68
     src/PiiMasking.psm1, sha256 dda7cdacfaf9
-    src/TextExtract.psm1, sha256 e95cfccbf066
+    src/TextExtract.psm1, sha256 fd22c80d9635
     src/XlsxWriter.psm1, sha256 180fda2898e2
     src/Report.psm1, sha256 a3e6b39e2cad
     src/ScanMeter.psm1, sha256 56c9305644d3
-    src/ChannelScan.psm1, sha256 d86e0edd0963
-    src/Find-ChannelPII.ps1, sha256 50ddbee2f6b3
+    src/ChannelScan.psm1, sha256 d82f914d44c4
+    src/Find-ChannelPII.ps1, sha256 98fbad11105e
 
   Read-only: it never changes, moves or deletes anything in Teams or SharePoint. Every value found is masked.
   Run target: Windows PowerShell 5.1 with PnP.PowerShell 1.12.0; no admin rights, no file to unblock.
@@ -35,14 +35,14 @@
   Contents (line numbers of this file):
     line    48  Settings
     line    59  Module PiiDetectors.psm1
-    line   545  Module PiiMasking.psm1
-    line   731  Module TextExtract.psm1
-    line   951  Module XlsxWriter.psm1
-    line  1163  Module Report.psm1
-    line  1578  Module ScanMeter.psm1
-    line  1776  Module ChannelScan.psm1
-    line  2278  Body of Find-ChannelPII.ps1
-    line  2349  Clean-up
+    line   547  Module PiiMasking.psm1
+    line   733  Module TextExtract.psm1
+    line   953  Module XlsxWriter.psm1
+    line  1165  Module Report.psm1
+    line  1580  Module ScanMeter.psm1
+    line  1778  Module ChannelScan.psm1
+    line  2282  Body of Find-ChannelPII.ps1
+    line  2357  Clean-up
 #>
 
 # ==== Settings ==== (optional: edit the values between the quotes; empty = the script asks)
@@ -110,14 +110,16 @@ $script:GovernmentMailLabels = @('gov', 'mil')
 
 # Personal mail providers (AFI 33-332 A3's breach example names Yahoo, Gmail and Hotmail): an address there is Medium;
 # an address at any other domain (a company, a vendor, a no-reply sender) is Low, to cut noise (the PAM, 2026-11-20).
+# The whole domain must be the provider and a top-level label (gmail.com, yahoo.co.uk): mail.<company>.com is not one.
 $script:PersonalMailDomains = '^(?:gmail|googlemail|yahoo|ymail|rocketmail|hotmail|outlook|live|msn|aol|icloud|me|mac|' +
-    'proton|protonmail|pm|gmx|mail|zoho|yandex|comcast|verizon|att|sbcglobal|cox|charter|spectrum|earthlink|juno|netzero)\.'
+    'proton|protonmail|pm|gmx|mail|zoho|yandex|comcast|verizon|att|sbcglobal|cox|charter|spectrum|earthlink|juno|netzero)' +
+    '\.(?:[a-z]{2,6}|co\.[a-z]{2}|com\.[a-z]{2})$'
 
 # Payment card issuer prefixes and lengths (ISO/IEC 7812 IINs as the networks publish them): Visa 4 (13, 16, 19 digits);
 # Mastercard 51-55 and 2221-2720 (16); American Express 34, 37 (15); Discover 6011, 644-649, 65 (16-19); JCB 3528-3589
-# (16-19); Diners Club 300-305, 36, 38, 39 (14-19). A Luhn-valid number outside these is a document or tracking number.
+# (16-19); Diners Club 300-305, 3095, 36, 38, 39 (14-19); Discover also 622126-622925 (16-19). A Luhn-valid number outside these is a document or tracking number.
 $script:CardIssuerPattern = '^(?:4(?:\d{12}|\d{15}|\d{18})|(?:5[1-5]\d{2}|222[1-9]|22[3-9]\d|2[3-6]\d{2}|27[01]\d|2720)\d{12}|' +
-    '3[47]\d{13}|(?:6011|64[4-9]\d|65\d{2})\d{12,15}|(?:352[89]|35[3-8]\d)\d{12,15}|(?:30[0-5]\d|3[689]\d{2})\d{10,15})$'
+    '3[47]\d{13}|(?:6011|64[4-9]\d|65\d{2})\d{12,15}|62(?:212[6-9]|21[3-9]\d|2[2-8]\d{2}|29[01]\d|292[0-5])\d{10,13}|(?:352[89]|35[3-8]\d)\d{12,15}|(?:30[0-5]\d|3095|3[689]\d{2})\d{10,15})$'
 
 # =====================================================================================
 # Small helpers
@@ -822,7 +824,7 @@ function Convert-XmlToText {
     param([string]$Xml)
     # Word field codes are not shown on the page: PAGEREF _Toc123456789, HYPERLINK addresses, form IDs. They gave
     # false positives (a 9-digit bookmark number read as an SSN), so their text is dropped (the PAM, 2026-11-20).
-    $text = $Xml -replace '(?s)<w:instrText\b[^>]*>.*?</w:instrText>', ''
+    $text = $Xml -replace '(?s)<w:instrText\b[^>]*?(?:/>|>.*?</w:instrText>)', ''
     $text = $text -replace '<w:tab/>|<w:br/>|<a:br/>', ' '
     $text = $text -replace '</w:p>|</a:p>|</row>', "`n"
     $text = $text -replace '</si>|</c>|</w:tc>|</a:tc>', ' '
@@ -1901,20 +1903,21 @@ function Assert-SiteGroup {
 function ConvertTo-FriendlyError {
     <#
     .SYNOPSIS
-      A sign-in or site error in words a person can act on: no access, site not found, sign-in not finished.
-      Any other message is shown masked, as it is.
+      A sign-in error in words a person can act on: no access, site not found, sign-in not finished. Used only for
+      the sign-in step (Connect-TeamSite); the original message always follows, masked, so no real error is hidden.
     .PARAMETER Message
       The error message.
     .OUTPUTS
       [string]
     #>
     param([string]$Message)
-    if ($Message -match '\b(401|403)\b|forbidden|access (is )?denied|unauthori[sz]ed|do(es)? not have (access|permission)') {
-        return "No access: your account cannot open this site. Ask the site's owner for access, or check the address."
+    $details = Protect-PiiText $Message
+    if ($Message -match '\((401|403)\)|\bforbidden\b|access (is )?denied|do(es)? not have (access|permission)') {
+        return "No access: your account cannot open this site. Ask the site's owner for access, or check the address. ($details)"
     }
-    if ($Message -match '\b404\b|not found|could not be resolved|remote name') { return 'Site not found: check the address.' }
-    if ($Message -match 'cancel|closed|aborted') { return 'The sign-in did not finish (was the sign-in window closed?).' }
-    return Protect-PiiText $Message
+    if ($Message -match '\(404\)|could not be resolved|remote name could not') { return "Site not found: check the address. ($details)" }
+    if ($Message -match 'user cancel+ed|cancel+ed by the user|prompt cancel+ed') { return "The sign-in did not finish (was the sign-in window closed?). ($details)" }
+    return $details
 }
 
 function Read-ScanTarget {
@@ -2253,6 +2256,7 @@ function Invoke-FileScan {
             Write-MeterLine $meter 'file'   # live counts, at most every few seconds
         }
         Write-ChannelLine ('{0}/{1}' -f ($c + 1), $groups.Count) $group.Name $before $meter 'file'
+        Write-MeterLine $meter 'file' -Force   # the running totals after each folder
     }
     Write-Progress -Id 1 -Activity 'Scanning files' -Completed
     Write-Ui ('Files done: ' + (Get-ScanMeterText $meter 'file')) 'Title'
@@ -2309,7 +2313,7 @@ function Invoke-SiteFiles {
     }
     catch {
         # Keep what was found so far: the results say the scan stopped early, and why, in words a person can act on.
-        $reason = ConvertTo-FriendlyError $_.Exception.Message
+        $reason = Protect-PiiText $_.Exception.Message
         Write-Ui ('The scan stopped early: ' + $reason) 'Alert'
         $rows.Add((New-ReportRow 'Scan' '(all)' '(scan)' '' '' 'INCOMPLETE' '' '' ('Stopped early: ' + $reason)))
     }
@@ -2340,7 +2344,11 @@ while ($null -ne $target) {
     $site = $null
     try { $site = Connect-TeamSite $target }
     catch { Write-Ui $_.Exception.Message 'Alert' }
-    if ($site) { Invoke-SiteFiles -SiteUrl $site -OutputFolder $OutputFolder -MaxFileMB $MaxFileMB }
+    if ($site) {
+        # A results file that cannot be saved (a folder that cannot be written) is reported; the next site is still offered.
+        try { Invoke-SiteFiles -SiteUrl $site -OutputFolder $OutputFolder -MaxFileMB $MaxFileMB }
+        catch { Write-Ui ('The results could not be saved: ' + (Protect-PiiText $_.Exception.Message)) 'Alert' }
+    }
     Write-Ui ''
     $target = Read-ScanTarget '' 'Scan another site? Paste its Teams link or site address, or press Enter to exit'
 }

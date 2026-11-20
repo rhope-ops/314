@@ -92,7 +92,7 @@ function Invoke-SiteFiles {
     }
     catch {
         # Keep what was found so far: the results say the scan stopped early, and why, in words a person can act on.
-        $reason = ConvertTo-FriendlyError $_.Exception.Message
+        $reason = Protect-PiiText $_.Exception.Message
         Write-Ui ('The scan stopped early: ' + $reason) 'Alert'
         $rows.Add((New-ReportRow 'Scan' '(all)' '(scan)' '' '' 'INCOMPLETE' '' '' ('Stopped early: ' + $reason)))
     }
@@ -123,7 +123,11 @@ while ($null -ne $target) {
     $site = $null
     try { $site = Connect-TeamSite $target }
     catch { Write-Ui $_.Exception.Message 'Alert' }
-    if ($site) { Invoke-SiteFiles -SiteUrl $site -OutputFolder $OutputFolder -MaxFileMB $MaxFileMB }
+    if ($site) {
+        # A results file that cannot be saved (a folder that cannot be written) is reported; the next site is still offered.
+        try { Invoke-SiteFiles -SiteUrl $site -OutputFolder $OutputFolder -MaxFileMB $MaxFileMB }
+        catch { Write-Ui ('The results could not be saved: ' + (Protect-PiiText $_.Exception.Message)) 'Alert' }
+    }
     Write-Ui ''
     $target = Read-ScanTarget '' 'Scan another site? Paste its Teams link or site address, or press Enter to exit'
 }
