@@ -58,7 +58,7 @@ function Set-FakeLookup {
     .PARAMETER LookupSite
       The SiteUrl of the answer; '' = none; 'throw' = the lookup is refused.
     .PARAMETER TypedSite
-      What the fake Read-Host returns.
+      What the fake Read-Host returns; 'cancel' = the prompt fails (stands in for a cancel).
     .PARAMETER SiteGroupId
       The group ID of the connected site (Get-PnPSite).
     .PARAMETER Form
@@ -215,6 +215,8 @@ function global:Read-Host {
     # Fake: the address the person would type.
     [CmdletBinding()] param($Prompt)
     $global:FakePnP.Calls.Add('Read-Host')
+    # A real cancel stops the whole pipeline (the test run too); an error leaves through the same 'finally'.
+    if ($global:FakePnP.TypedSite -eq 'cancel') { throw 'FAKE: prompt cancelled' }
     return $global:FakePnP.TypedSite
 }
 

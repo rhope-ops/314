@@ -80,7 +80,19 @@ Reset-FakePnP @{}
 $printed = (Connect-TeamSite (Get-ScanTarget $channelLink) 6>&1 | Where-Object { $_ -is [System.Management.Automation.InformationRecord] }) -join ' '
 Assert-Equal $true ($printed -match 'private or shared channel has its own site') 'Channel link prints the private-channel note'
 Reset-FakePnP @{}
+Set-FakeLookup -LookupSite '' -TypedSite 'cancel'
+try { Connect-TeamSite (Get-ScanTarget $teamLink) 6>$null | Out-Null } catch { Write-Verbose 'cancel reached the caller' }  # expected
+Assert-Equal $true (Test-FakePnPCall 'Disconnect-PnPOnline') 'Cancelled address prompt: signed out of the root'
+$twoLinks = 'https://teams.example.com/l/team/A see also https://teams.example.com/l/team/B?groupId=' + $groupId
+$refused = $false
+try { Get-ScanTarget $twoLinks | Out-Null } catch { $refused = $true }  # expected: the first link has no groupId
+Assert-Equal $true $refused 'A second link pasted after the first is not read'
+Reset-FakePnP @{}
+$null = Connect-TeamSite (Get-ScanTarget $teamLink) 6>$null
+Assert-Equal $false (Test-FakePnPCall 'Disconnect-PnPOnline') 'Teams link: still signed in after success'
+Reset-FakePnP @{}
 Assert-Equal $Sample.Site (Connect-TeamSite (Get-ScanTarget $Sample.Site) 6>$null) 'Site address: no lookup'
+Assert-Equal $false (Test-FakePnPCall 'Disconnect-PnPOnline') 'Site address: still signed in after success'
 Assert-Equal $Sample.Site ((Get-FakePnPConnection) -join ' ') 'Site address: one sign-in, to that site'
 & (Get-Module ChannelScan) { param($root) $script:SharePointRoot = $root } $realRoot   # back to the real root
 Assert-Equal 'General' (Select-ChannelFolders -Available @('General', 'Ops') -Requested 'general') 'Channel by name, any case'
