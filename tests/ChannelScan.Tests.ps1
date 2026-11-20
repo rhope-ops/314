@@ -80,10 +80,14 @@ Assert-Equal $Sample.Site (Connect-TeamSite (Get-ScanTarget $Sample.Site) 6>$nul
 Assert-Equal $false (Test-FakePnPCall 'Read-Host') 'Site address: no address prompt'
 Assert-Equal $false (Test-FakePnPCall 'Disconnect-PnPOnline') 'Site address: still signed in after success'
 Assert-Equal $Sample.Site ((Get-FakePnPConnection) -join ' ') 'Site address: one sign-in, to that site'
-$meter = @{ Total = 40; Done = 10; Read = 8; Skipped = 2; Hits = 3; HitItems = 2; Clock = [Diagnostics.Stopwatch]::new() }
-Assert-Equal '10 of 40 files done | read 8 | not scanned 2 | possible PII 3 in 2 files | 00:00 used, about 00:00 left' (Get-ScanMeterText $meter 'file') 'Meter text: counts and time'
+$meter = @{ Total = 40; Done = 10; Read = 8; Skipped = 2; Hits = 3; HitItems = 2; Clock = [pscustomobject]@{ Elapsed = [TimeSpan]::FromSeconds(30) } }
+Assert-Equal '10 of 40 files done | read 8 | not scanned 2 | possible PII 3 in 2 files | 00:30 used, about 01:30 left' (Get-ScanMeterText $meter 'file') 'Meter text: counts, time used and left'
+Assert-Equal 25 (Get-MeterPercent $meter) 'Meter percent'
+$meter.Clock = [pscustomobject]@{ Elapsed = [TimeSpan]::FromMinutes(65) }
+Assert-Equal $true ((Get-ScanMeterText $meter 'file') -match '\| 65:00 used, about 195:00 left$') 'Meter time past an hour does not wrap'
 $meter.Total = 0
-Assert-Equal '10 posts done | read 8 | not scanned 2 | possible PII 3 in 2 posts | 00:00 used' (Get-ScanMeterText $meter 'post') 'Meter text: no total, no time left'
+Assert-Equal 0 (Get-MeterPercent $meter) 'Meter percent with no total'
+Assert-Equal '10 posts done | read 8 | not scanned 2 | possible PII 3 in 2 posts | 65:00 used' (Get-ScanMeterText $meter 'post') 'Meter text: no total, no time left'
 
 # ---- File scan ----
 $library = '/sites/TeamA/Shared Documents'
@@ -147,6 +151,10 @@ Assert-Equal $false ($rows[0].Context -match '\d') 'Error text in a BLOCKED row 
 Set-FakePnPOption PostsAllowed $true
 $rows = New-Object System.Collections.Generic.List[object]
 Assert-Equal 2 (Invoke-PostScan -SiteUrl $Sample.Site -Channels @('General', 'Ops') -Rows $rows 6>$null) 'Post and reply scanned'
+$lines = @(Invoke-PostScan -SiteUrl $Sample.Site -Channels @('General', 'Ops') -Rows (New-Object System.Collections.Generic.List[object]) 6>&1 |
+    Where-Object { $_ -is [System.Management.Automation.InformationRecord] } | ForEach-Object { [string]$_ })
+Assert-Equal $true (($lines -join ' ') -match '\[1/2\] General: 2 posts - read 2') 'Posts channel line counts its posts and replies'
+Assert-Equal $true (($lines -join ' ') -match 'Posts done: 2 posts done \| read 2') 'Posts total counts posts and replies'
 Assert-Equal 'DoD ID Personal e-mail NOT SCANNED' (($rows | ForEach-Object { $_.Detector }) -join ' ') 'Post hits; Ops has no Teams channel'
 $rows = New-Object System.Collections.Generic.List[object]
 $shown = (Invoke-PostScan -SiteUrl $Sample.Site -Channels @("SSN $($Sample.Ssn)") -Rows $rows 6>&1 | ForEach-Object { [string]$_ }) -join ' '

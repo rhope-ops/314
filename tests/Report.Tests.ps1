@@ -1,7 +1,7 @@
 <#
 Report.Tests.ps1 - tests of Report.psm1: the readable text report, the CSV, and that both are always saved.
 
-  Purpose:     The choice (Both, Text, Csv) saves the right files; reports are never overwritten; the CSV
+  Purpose:     Both files (.txt and .csv) are always saved; reports are never overwritten; the CSV
                holds masked values only and no cell Excel would read as a formula; empty results still
                give a file.
   Inputs:      $Sample (TestKit.ps1).

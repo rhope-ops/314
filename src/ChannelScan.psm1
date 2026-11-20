@@ -329,7 +329,7 @@ function Invoke-OneFileScan {
 function Invoke-FileScan {
     <#
     .SYNOPSIS
-      Scans every file in the chosen channel folders and adds report rows.
+      Scans every file in the given channel folders (all of the team's) and adds report rows.
     .PARAMETER Library
       Output of Get-TeamDocumentLibrary.
     .PARAMETER Channels
@@ -466,7 +466,7 @@ function Invoke-ChannelPostScan {
 function Invoke-PostScan {
     <#
     .SYNOPSIS
-      Tries to scan the posts and replies of the chosen channels through Microsoft Graph. Reading posts
+      Tries to scan the posts and replies of the given channels (all of the team's) through Microsoft Graph. Reading posts
       needs a permission an admin may not have granted; then one BLOCKED row says so, and the file
       results stay.
     .PARAMETER SiteUrl

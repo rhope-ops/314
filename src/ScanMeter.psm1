@@ -26,6 +26,7 @@ function New-ScanMeter {
       [hashtable] the meter (Update-ScanMeter and Get-ScanMeterText use it).
     #>
     param([int]$Total)
+    # Clock: anything with an Elapsed [TimeSpan] (a running stopwatch here; a fixed time in the tests).
     @{ Total = $Total; Done = 0; Read = 0; Skipped = 0; Hits = 0; HitItems = 0; Clock = [Diagnostics.Stopwatch]::StartNew() }
 }
 
@@ -52,6 +53,12 @@ function Update-ScanMeter {
     $Meter.HitItems += @($hits | Select-Object -ExpandProperty Item -Unique).Count   # files or posts with a hit
 }
 
+function Format-Duration {
+    # A time as minutes:seconds; the minutes go past 59 (65 minutes = 65:00), so a long scan never wraps to 05:00.
+    param([TimeSpan]$Time)
+    return '{0:00}:{1:00}' -f [int][Math]::Floor($Time.TotalMinutes), $Time.Seconds
+}
+
 function Get-ScanMeterText {
     <#
     .SYNOPSIS
@@ -67,11 +74,11 @@ function Get-ScanMeterText {
     $elapsed = $Meter.Clock.Elapsed
     $text = [string]$Meter.Done
     if ($Meter.Total -gt 0) { $text += ' of ' + $Meter.Total }
-    $text += ' ' + $Noun + 's done | read {0} | not scanned {1} | possible PII {2} in {3} {4}s | {5:mm\:ss} used' -f
-        $Meter.Read, $Meter.Skipped, $Meter.Hits, $Meter.HitItems, $Noun, $elapsed
+    $text += ' ' + $Noun + 's done | read {0} | not scanned {1} | possible PII {2} in {3} {4}s | {5} used' -f
+        $Meter.Read, $Meter.Skipped, $Meter.Hits, $Meter.HitItems, $Noun, (Format-Duration $elapsed)
     if ($Meter.Total -gt 0 -and $Meter.Done -gt 0 -and $Meter.Done -lt $Meter.Total) {
         $left = [TimeSpan]::FromTicks([long]($elapsed.Ticks / $Meter.Done * ($Meter.Total - $Meter.Done)))
-        $text += ', about {0:mm\:ss} left' -f $left
+        $text += ', about ' + (Format-Duration $left) + ' left'
     }
     return $text
 }

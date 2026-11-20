@@ -19,8 +19,8 @@
     src/PiiMasking.psm1, sha256 dda7cdacfaf9
     src/TextExtract.psm1, sha256 1741328077ee
     src/Report.psm1, sha256 5458cc87fecc
-    src/ScanMeter.psm1, sha256 f5a7b5365145
-    src/ChannelScan.psm1, sha256 a85e33bafecd
+    src/ScanMeter.psm1, sha256 1c7bdc31edca
+    src/ChannelScan.psm1, sha256 1542e679bb2c
     src/Find-ChannelPII.ps1, sha256 8928466a7d4d
 
   Read-only: it never changes, moves or deletes anything in Teams or SharePoint. Every value found is masked.
@@ -36,9 +36,9 @@
     line   705  Module TextExtract.psm1
     line   868  Module Report.psm1
     line  1175  Module ScanMeter.psm1
-    line  1284  Module ChannelScan.psm1
-    line  1788  Body of Find-ChannelPII.ps1
-    line  1843  Clean-up
+    line  1291  Module ChannelScan.psm1
+    line  1795  Body of Find-ChannelPII.ps1
+    line  1850  Clean-up
 #>
 
 # ==== Settings ==== (optional: edit the values between the quotes; empty = the script asks)
@@ -1200,6 +1200,7 @@ function New-ScanMeter {
       [hashtable] the meter (Update-ScanMeter and Get-ScanMeterText use it).
     #>
     param([int]$Total)
+    # Clock: anything with an Elapsed [TimeSpan] (a running stopwatch here; a fixed time in the tests).
     @{ Total = $Total; Done = 0; Read = 0; Skipped = 0; Hits = 0; HitItems = 0; Clock = [Diagnostics.Stopwatch]::StartNew() }
 }
 
@@ -1226,6 +1227,12 @@ function Update-ScanMeter {
     $Meter.HitItems += @($hits | Select-Object -ExpandProperty Item -Unique).Count   # files or posts with a hit
 }
 
+function Format-Duration {
+    # A time as minutes:seconds; the minutes go past 59 (65 minutes = 65:00), so a long scan never wraps to 05:00.
+    param([TimeSpan]$Time)
+    return '{0:00}:{1:00}' -f [int][Math]::Floor($Time.TotalMinutes), $Time.Seconds
+}
+
 function Get-ScanMeterText {
     <#
     .SYNOPSIS
@@ -1241,11 +1248,11 @@ function Get-ScanMeterText {
     $elapsed = $Meter.Clock.Elapsed
     $text = [string]$Meter.Done
     if ($Meter.Total -gt 0) { $text += ' of ' + $Meter.Total }
-    $text += ' ' + $Noun + 's done | read {0} | not scanned {1} | possible PII {2} in {3} {4}s | {5:mm\:ss} used' -f
-        $Meter.Read, $Meter.Skipped, $Meter.Hits, $Meter.HitItems, $Noun, $elapsed
+    $text += ' ' + $Noun + 's done | read {0} | not scanned {1} | possible PII {2} in {3} {4}s | {5} used' -f
+        $Meter.Read, $Meter.Skipped, $Meter.Hits, $Meter.HitItems, $Noun, (Format-Duration $elapsed)
     if ($Meter.Total -gt 0 -and $Meter.Done -gt 0 -and $Meter.Done -lt $Meter.Total) {
         $left = [TimeSpan]::FromTicks([long]($elapsed.Ticks / $Meter.Done * ($Meter.Total - $Meter.Done)))
-        $text += ', about {0:mm\:ss} left' -f $left
+        $text += ', about ' + (Format-Duration $left) + ' left'
     }
     return $text
 }
@@ -1612,7 +1619,7 @@ function Invoke-OneFileScan {
 function Invoke-FileScan {
     <#
     .SYNOPSIS
-      Scans every file in the chosen channel folders and adds report rows.
+      Scans every file in the given channel folders (all of the team's) and adds report rows.
     .PARAMETER Library
       Output of Get-TeamDocumentLibrary.
     .PARAMETER Channels
@@ -1749,7 +1756,7 @@ function Invoke-ChannelPostScan {
 function Invoke-PostScan {
     <#
     .SYNOPSIS
-      Tries to scan the posts and replies of the chosen channels through Microsoft Graph. Reading posts
+      Tries to scan the posts and replies of the given channels (all of the team's) through Microsoft Graph. Reading posts
       needs a permission an admin may not have granted; then one BLOCKED row says so, and the file
       results stay.
     .PARAMETER SiteUrl
