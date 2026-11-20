@@ -275,10 +275,10 @@ footer{padding-block:0 36px;color:var(--mut);font-size:.85rem}
   // SharePoint: https://<host>/sites/<name> or /teams/<name>, also as a file's Copy link (/:w:/r/teams/<name>/...);
   // anything after the site name is cut off (as the script's Test-TeamSiteUrl does).
   var SITE_RULE = /^(https:\/\/[A-Za-z0-9.-]+)\/(?::[a-z]:\/r\/)?((?:sites|teams)\/[A-Za-z0-9._~%-]+)(?=$|[\/?#])/i;
-  // Teams: a team's or channel's Copy link, kept up to its groupId (the script uses only that ID).
-  var TEAMS_RULE = new RegExp('^https://[A-Za-z0-9.-]+/l/(?:team|channel)(?:/[A-Za-z0-9._~%:@-]+)+\\?' +
-                              '(?:[A-Za-z0-9._~%=&-]*&)?groupId=[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' +
-                              '(?![0-9a-f-])', 'i');
+  // Teams: a team's or channel's Copy link. The page passes on only its kind and groupId, in a fixed form
+  // (https://<host>/l/team/link?groupId=<id>; the script uses nothing else), so a channel name with any character
+  // is accepted and no part of it reaches the script.
+  var TEAMS_RULE = /^https:\/\/([A-Za-z0-9.-]+)\/l\/(team|channel)\/[^?#\s]+\?(?:[^#\s]*&)?groupId=([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(?![0-9a-f-])/i;
   // The allowed values of the two choice groups; anything else read back from storage is ignored.
   var CHANNEL_VALUES = ['', 'All'];
   var REPORT_VALUES = ['Both', 'Text', 'Csv'];
@@ -352,8 +352,9 @@ footer{padding-block:0 36px;color:var(--mut);font-size:.85rem}
     if (!typed) { hint.textContent = hintDefault; return ''; }
     var link = typed.match(TEAMS_RULE);
     if (link) {
-      hint.textContent = 'Teams link: only this team will be scanned; the script finds its site and checks it belongs to the team.';
-      return link[0];
+      hint.textContent = 'Teams link: only this team will be scanned; the script finds its site and checks it belongs to the team.' +
+                         (link[2].toLowerCase() === 'channel' ? ' A private or shared channel has its own site: give that address instead.' : '');
+      return 'https://' + link[1] + '/l/' + link[2].toLowerCase() + '/link?groupId=' + link[3].toLowerCase();
     }
     var site = typed.match(SITE_RULE);
     if (site) { hint.textContent = 'SharePoint address: only this site will be scanned: ' + site[1] + '/' + site[2]; return site[1] + '/' + site[2]; }

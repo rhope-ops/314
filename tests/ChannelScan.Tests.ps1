@@ -30,6 +30,7 @@ $channelLink = 'https://teams.example.com/l/channel/19%3aabc%40thread.tacv2/Gene
 Assert-Equal $groupId (Get-ScanTarget $teamLink).GroupId 'Team link gives the group ID'
 Assert-Equal $groupId (Get-ScanTarget $channelLink).GroupId 'Channel link gives the group ID'
 Assert-Equal $null (Get-ScanTarget $Sample.Site).GroupId 'Site address has no group ID'
+Assert-Equal $groupId (Get-ScanTarget ('https://teams.example.com/l/channel/link?groupId=' + $groupId)).GroupId 'The page form of a link is read'
 $refused = $false
 try { Get-ScanTarget 'https://teams.example.com/l/team/19%3aabc/conversations?tenantId=x' | Out-Null } catch { $refused = $true }  # expected
 Assert-Equal $true $refused 'Teams link without groupId refused'
@@ -55,6 +56,23 @@ $refused = $false
 try { Connect-TeamSite (Get-ScanTarget $teamLink) 6>$null | Out-Null } catch { $refused = $true }  # expected: another team's site
 Assert-Equal $true $refused 'Site of another team refused'
 Assert-Equal $true (Test-FakePnPCall 'Disconnect-PnPOnline') 'Signed out of the other team site'
+foreach ($form in @('plain', 'json')) {
+    Reset-FakePnP @{}
+    Set-FakeLookup -LookupSite 'https://tenant.example.com/teams/TeamA' -Form $form
+    Assert-Equal 'https://tenant.example.com/teams/TeamA' (Connect-TeamSite (Get-ScanTarget $teamLink) 6>$null) "Lookup answer read in $form form"
+}
+foreach ($case in @(@{ Site = ''; Status = 0; Name = 'empty SiteUrl' }, @{ Site = 'https://tenant.example.com/teams/TeamA'; Status = 1; Name = 'site not ready' })) {
+    Reset-FakePnP @{}
+    Set-FakeLookup -LookupSite $case.Site -Status $case.Status -TypedSite 'https://tenant.example.com/teams/TeamA'
+    $null = Connect-TeamSite (Get-ScanTarget $teamLink) 6>$null
+    Assert-Equal $true (Test-FakePnPCall 'Read-Host') "Address asked when the lookup gives $($case.Name)"
+}
+Reset-FakePnP @{}
+Set-FakeLookup -LookupSite '' -TypedSite 'not an address'
+$refused = $false
+try { Connect-TeamSite (Get-ScanTarget $teamLink) 6>$null | Out-Null } catch { $refused = $true }  # expected: bad typed address
+Assert-Equal $true ($refused -and (Test-FakePnPCall 'Disconnect-PnPOnline')) 'Bad typed address: signed out of the root'
+Assert-Equal $true (Get-ScanTarget $channelLink).IsChannel 'Channel link marked as a channel'
 Reset-FakePnP @{}
 Assert-Equal $Sample.Site (Connect-TeamSite (Get-ScanTarget $Sample.Site) 6>$null) 'Site address: no lookup'
 Assert-Equal $Sample.Site ((Get-FakePnPConnection) -join ' ') 'Site address: one sign-in, to that site'
