@@ -38,9 +38,10 @@ $script:TopItems = 10
 
 # Screen colours (the PAM, 2026-11-20: less grey, more format). Write-Host has only the 16 console colours:
 # Cyan = headings and labels, White = values, Green = clean or done, Yellow = check by hand and Medium,
-# Red = possible PII, High and errors, Gray = hints only, DarkGray = rules and table borders.
+# Red = possible PII, High and errors, Gray = hints and the labels of the folder rows, DarkGray = rules and table
+# borders, DarkCyan (teal) = folder names on the folder rows (the PAM, 2026-11-20).
 $script:ScreenColors = @{ Title = 'Cyan'; Label = 'Cyan'; Text = 'White'; Good = 'Green'; Accent = 'Yellow'; Alert = 'Red'
-    Muted = 'Gray'; Rule = 'DarkGray' }
+    Muted = 'Gray'; Rule = 'DarkGray'; Folder = 'DarkCyan' }
 
 # Not-scanned reasons in groups for the counts on screen and on the Summary tab: a pattern on the reason, its group.
 # A file type that is not read is counted per extension (Get-NotScannedGroup).
@@ -48,9 +49,12 @@ $script:NotScannedGroups = [ordered]@{
     '^Encrypted' = 'Encrypted or labelled with encryption'
     '^Larger than' = 'Too large'
     '^Empty file' = 'Empty file'
+    '^No text in this PDF' = 'PDF without text (scanned image?)'
     'web page' = 'Download gave a web page'
     '^Download failed' = 'Download failed'
-    '^Not a valid Office file|^Could not read' = 'Damaged or not readable'
+    '^Not a valid (Office file|PDF)|^Could not read|too large or damaged to read in time|^Part of this PDF' = 'Damaged or not readable'
+    'could not be fully read|^A font in this PDF|^Some characters in this PDF' = 'PDF fonts not fully readable'
+    '^Files attached inside this PDF' = 'PDF attachments'
 }
 
 
@@ -125,11 +129,11 @@ function Write-Ui {
     .PARAMETER Text
       The text (already masked by the caller).
     .PARAMETER Kind
-      Title, Label, Text, Good, Accent, Alert, Muted or Rule.
+      Title, Label, Text, Good, Accent, Alert, Muted, Rule or Folder.
     .PARAMETER NoNewline
       Keep writing on the same line (for a line with several colours).
     #>
-    param([AllowEmptyString()][string]$Text, [ValidateSet('Title', 'Label', 'Text', 'Good', 'Accent', 'Alert', 'Muted', 'Rule')][string]$Kind = 'Text',
+    param([AllowEmptyString()][string]$Text, [ValidateSet('Title', 'Label', 'Text', 'Good', 'Accent', 'Alert', 'Muted', 'Rule', 'Folder')][string]$Kind = 'Text',
           [switch]$NoNewline)
     Write-Host $Text -ForegroundColor $script:ScreenColors[$Kind] -NoNewline:$NoNewline
 }

@@ -91,6 +91,54 @@ function New-ZipBytes {
     return $memory.ToArray()
 }
 
+function New-PdfBytes {
+    <#
+    .SYNOPSIS
+      Builds a minimal one-page PDF in memory: a content stream (zlib-compressed unless -Plain), font F1 (with a
+      ToUnicode map when one is given) and any extra objects (form fields, an encryption entry).
+    .PARAMETER Content
+      The page content stream.
+    .PARAMETER ToUnicode
+      A ToUnicode CMap for font F1, or empty.
+    .PARAMETER Extra
+      More object bodies, numbered from 7.
+    .PARAMETER Trailer
+      Extra trailer entries (for example an /Encrypt entry).
+    .PARAMETER Plain
+      Leave the content stream uncompressed.
+    .PARAMETER PageContents
+      The page's /Contents value (default 4 0 R, the content stream).
+    .PARAMETER FontDict
+      Font F1's dictionary instead of the default (a Type1 font, or a Type0 font with the ToUnicode map).
+    .PARAMETER After
+      Raw text added after the last object (for example an object defined again, as an incremental update does).
+    .OUTPUTS
+      [byte[]]
+    #>
+    param([string]$Content, [string]$ToUnicode = '', [string[]]$Extra = @(), [string]$Trailer = '', [switch]$Plain, [string]$PageContents = '4 0 R',
+          [string]$FontDict = '', [string]$After = '')
+    $latin1 = [System.Text.Encoding]::GetEncoding(28591)
+    $stream = $latin1.GetBytes($Content)
+    $filter = ''
+    if (-not $Plain) {
+        $memory = New-Object System.IO.MemoryStream
+        $memory.WriteByte(0x78); $memory.WriteByte(0x9C)   # zlib header, as PDF writers put it
+        $deflate = New-Object System.IO.Compression.DeflateStream($memory, [System.IO.Compression.CompressionMode]::Compress, $true)
+        $deflate.Write($stream, 0, $stream.Length); $deflate.Dispose()
+        $stream = $memory.ToArray(); $filter = ' /Filter /FlateDecode'
+    }
+    $font = '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>'
+    if ($ToUnicode) { $font = '<< /Type /Font /Subtype /Type0 /BaseFont /X /ToUnicode 6 0 R >>' }
+    if ($FontDict) { $font = $FontDict }
+    $text = "%PDF-1.4`n1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj`n2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj`n" +
+        "3 0 obj << /Type /Page /Parent 2 0 R /Resources << /Font << /F1 5 0 R >> >> /Contents $PageContents >> endobj`n" +
+        "4 0 obj << /Length $($stream.Length)$filter >> stream`n" + $latin1.GetString($stream) + "`nendstream endobj`n5 0 obj $font endobj`n" +
+        "6 0 obj << /Length $($ToUnicode.Length) >> stream`n$ToUnicode`nendstream endobj`n"
+    for ($i = 0; $i -lt $Extra.Count; $i++) { $text += "$($i + 7) 0 obj $($Extra[$i]) endobj`n" }
+    $text += $After + "trailer << /Root 1 0 R $Trailer >>`n%%EOF"
+    return $latin1.GetBytes($text)
+}
+
 function Get-XlsxSheets {
     <#
     .SYNOPSIS

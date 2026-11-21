@@ -2,11 +2,13 @@
 TextExtract.psm1 - turns file bytes into plain text, in memory.
 
   Purpose:     Plain text from Word, Excel and PowerPoint files (.docx/.xlsx/.pptx and macro versions),
-               text files and HTML. Other types (PDF, images, legacy .doc/.xls/.ppt, scripts and
-               anything else) are reported as NOT SCANNED, so a person checks them by hand.
+               PDF (page text and form fields; the PAM, 2026-11-20), text files and HTML. Other types (images,
+               legacy .doc/.xls/.ppt, scripts and anything else), encrypted files and PDFs without text are
+               reported as NOT SCANNED, so a person checks them by hand.
   Inputs:      file bytes and the file name (for its extension).
   Outputs:     an object with Status ('OK' or 'NOT SCANNED'), Reason and Text.
   How to run:  imported by Find-ChannelPII.ps1; not run on its own.
+  Depends on:  PdfText.psm1 (Get-PdfText), imported first by Find-ChannelPII.ps1.
   Run target:  Windows PowerShell 5.1 (also PowerShell 7); .NET System.IO.Compression only.
   Network:     none.
   Writes:      none. Bytes stay in memory; nothing is saved to disk.
@@ -212,7 +214,7 @@ function Test-SupportedFile {
     param([string]$FileName)
     $extension = [System.IO.Path]::GetExtension($FileName).ToLower()
     return ($script:PlainTextExtensions -contains $extension) -or ($script:HtmlExtensions -contains $extension) -or
-        $script:OfficeParts.ContainsKey($extension)
+        $script:OfficeParts.ContainsKey($extension) -or $extension -eq '.pdf'
 }
 
 function Get-TextFromBytes {
@@ -224,14 +226,19 @@ function Get-TextFromBytes {
     .PARAMETER FileName
       The file name; only its extension is used.
     .OUTPUTS
-      [pscustomobject] Status ('OK' or 'NOT SCANNED'), Reason, Text.
+      [pscustomobject] Status ('OK' or 'NOT SCANNED'), Reason, Text, Note (a part of a read file that was not read).
     #>
     param([byte[]]$Bytes, [string]$FileName)
     $extension = [System.IO.Path]::GetExtension($FileName).ToLower()
-    $result = [pscustomobject]@{ Status = 'OK'; Reason = ''; Text = '' }
+    $result = [pscustomobject]@{ Status = 'OK'; Reason = ''; Text = ''; Note = '' }
     try {
         if ($script:PlainTextExtensions -contains $extension) { $result.Text = Get-PlainText $Bytes }
         elseif ($script:HtmlExtensions -contains $extension) { $result.Text = Convert-HtmlToText (Get-PlainText $Bytes) }
+        elseif ($extension -eq '.pdf') {
+            $pdf = Get-PdfText $Bytes
+            if ($pdf.Reason) { $result.Status = 'NOT SCANNED'; $result.Reason = $pdf.Reason }
+            else { $result.Text = $pdf.Text; $result.Note = $pdf.Note }
+        }
         elseif ($script:OfficeParts.ContainsKey($extension)) {
             $notZip = Get-NotZipReason $Bytes
             if ($notZip) { $result.Status = 'NOT SCANNED'; $result.Reason = $notZip }

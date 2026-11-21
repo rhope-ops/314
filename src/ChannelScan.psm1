@@ -23,8 +23,15 @@ Set-StrictMode -Version 2.0
 # Settings
 # =====================================================================================
 
-# A team site's file library: Teams names it "Documents" (URL "Shared Documents"); some sites renamed it.
+# A team site's file library: Teams names it "Documents" (URL "Shared Documents"). It is scanned first.
 $script:LibraryNames = @('Shared Documents', 'Documents')
+
+# A document library is list template 101 (SharePoint ListTemplateType.DocumentLibrary).
+$script:DocumentLibraryTemplate = 101
+
+# Visible libraries that hold SharePoint's own files, not people's files: not scanned (the PAM, 2026-11-20: Site Assets,
+# Preservation Hold Library and Site Collection Documents are scanned).
+$script:NotScannedLibraries = @('Style Library', 'Form Templates')
 
 # Teams makes one top-level folder per standard channel. "Forms" is SharePoint's own folder, not a channel.
 $script:NotChannelFolders = @('Forms')
@@ -222,24 +229,27 @@ function Connect-TeamSite {
     }
 }
 
-function Get-TeamDocumentLibrary {
+function Get-SiteDocumentLibraries {
     <#
     .SYNOPSIS
-      Finds the team's file library on the connected site.
+      The document libraries of the connected site that hold people's files: every visible library (template 101),
+      without SharePoint's own ($NotScannedLibraries). The team's "Documents" library comes first. Only this one
+      site: subsites are not read (the PAM, 2026-11-20).
     .OUTPUTS
-      [pscustomobject] List (the PnP list), ServerRelativeUrl (/sites/<name>/Shared Documents),
-      SiteRelativeUrl (Shared Documents).
+      [pscustomobject] Title, List (the PnP list), ServerRelativeUrl (/sites/<name>/Shared Documents),
+      SiteRelativeUrl (Shared Documents); one per library.
     #>
-    $list = $null
-    foreach ($name in $script:LibraryNames) {
-        # A name that is not on this site is normal (the library may be renamed): try the next one.
-        $list = Get-PnPList -Identity $name -ErrorAction SilentlyContinue
-        if ($list) { break }
+    $lists = @(Get-PnPList -ErrorAction Stop | Where-Object {
+        [int]$_.BaseTemplate -eq $script:DocumentLibraryTemplate -and -not $_.Hidden -and $script:NotScannedLibraries -notcontains $_.Title
+    })
+    $libraries = foreach ($list in $lists) {
+        $rootUrl = (Get-PnPProperty -ClientObject $list -Property RootFolder -ErrorAction Stop).ServerRelativeUrl.TrimEnd('/')
+        $siteRelative = $rootUrl -replace '^.*?/(sites|teams)/[^/]+/', ''
+        [pscustomobject]@{ Title = [string]$list.Title; List = $list; ServerRelativeUrl = $rootUrl; SiteRelativeUrl = $siteRelative }
     }
-    if (-not $list) { throw "No 'Shared Documents' library on this site. Is this the team's own site?" }
-    $rootUrl = (Get-PnPProperty -ClientObject $list -Property RootFolder -ErrorAction Stop).ServerRelativeUrl.TrimEnd('/')
-    $siteRelative = $rootUrl -replace '^.*?/(sites|teams)/[^/]+/', ''
-    [pscustomobject]@{ List = $list; ServerRelativeUrl = $rootUrl; SiteRelativeUrl = $siteRelative }
+    $libraries = @($libraries | Sort-Object @{ Expression = { $script:LibraryNames -notcontains $_.SiteRelativeUrl } }, Title)
+    if ($libraries.Count -eq 0) { throw 'No document library with files on this site. Check the address, or ask the site owner.' }
+    return $libraries
 }
 
 function Get-ChannelFolderNames {
@@ -248,7 +258,7 @@ function Get-ChannelFolderNames {
       Lists the channel folders: the top-level folders of the library, without SharePoint's own. The scan
       covers all of them (the PAM, 2026-11-20: no channel choice). A plain SharePoint site may have none.
     .PARAMETER Library
-      Output of Get-TeamDocumentLibrary.
+      One library of Get-SiteDocumentLibraries.
     .OUTPUTS
       [string[]] folder names, sorted.
     #>
@@ -455,6 +465,8 @@ function Invoke-OneFileScan {
         $Rows.Add((New-ReportRow 'File' $Channel $item $link $modified 'NOT SCANNED' '' '' $reason)); return 0
     }
     if ($text.Status -ne 'OK') { $Rows.Add((New-ReportRow 'File' $Channel $item $link $modified 'NOT SCANNED' '' '' (Protect-PiiText $text.Reason))); return 0 }
+    # A file read in part (a PDF over a cap, damaged, or with attachments): a "check by hand" row next to its hits.
+    if ($text.Note) { $Rows.Add((New-ReportRow 'File' $Channel $item $link $modified 'NOT SCANNED' '' '' (Protect-PiiText $text.Note))) }
     Write-FileStep $size 'Checking for PII' 80
     $clock.Restart()
     foreach ($hit in @(Find-PiiInText $text.Text)) {
@@ -470,14 +482,41 @@ function Get-ScanTiming {
     [ordered]@{ 'Time downloading' = (& $format $script:Timing.Download); 'Time reading and checking' = (& $format $script:Timing.Check) }
 }
 
+function Get-ScanGroups {
+    <#
+    .SYNOPSIS
+      The scan groups of one library: one per top-level folder, then the files at the top of the library.
+    .PARAMETER Library
+      One library of Get-SiteDocumentLibraries.
+    .PARAMETER Folders
+      The top-level folder names.
+    .PARAMETER Label
+      Put before each group name ("Library / ") when the site has several libraries; else empty.
+    .OUTPUTS
+      [pscustomobject] Name, Prefix, Files; a group without files is kept only when it is a folder.
+    #>
+    param($Library, [string[]]$Folders, [string]$Label)
+    $fields = @('FileLeafRef', 'FileRef', 'FSObjType', 'File_x0020_Size', 'Modified', 'UniqueId')
+    $allItems = @(Get-PnPListItem -List $Library.List -PageSize $script:ListPageSize -Fields $fields -ErrorAction Stop)
+    foreach ($folder in $Folders) {
+        $prefix = $Library.ServerRelativeUrl + '/' + $folder + '/'
+        [pscustomobject]@{ Name = $Label + $folder; Prefix = $prefix; Files = @(Get-ChannelFiles $allItems $prefix) }
+    }
+    $rootFiles = @(Get-RootFiles $allItems $Library.ServerRelativeUrl)
+    if ($rootFiles.Count -gt 0) {
+        [pscustomobject]@{ Name = $Label + $script:RootGroupName; Prefix = $Library.ServerRelativeUrl + '/'; Files = $rootFiles }
+    }
+}
+
 function Invoke-FileScan {
     <#
     .SYNOPSIS
-      Scans every file in the given channel folders (all of the team's) and adds report rows.
+      Scans every file in the given libraries' top-level folders and at their top, and adds report rows.
     .PARAMETER Library
-      Output of Get-TeamDocumentLibrary.
+      One or more libraries of Get-SiteDocumentLibraries.
     .PARAMETER Channels
-      The channel folder names to scan.
+      The channel folder names to scan when there is one library; with several libraries, each library's own
+      top-level folders are scanned.
     .PARAMETER SiteUrl
       The site address (for the links in the report).
     .PARAMETER MaxFileMB
@@ -490,21 +529,21 @@ function Invoke-FileScan {
     param($Library, [string[]]$Channels, [string]$SiteUrl, [int]$MaxFileMB, $Rows)
     $origin = ([uri]$SiteUrl).GetLeftPart([System.UriPartial]::Authority)
     $script:Timing = @{ Download = [TimeSpan]::Zero; Check = [TimeSpan]::Zero }
-    $fields = @('FileLeafRef', 'FileRef', 'FSObjType', 'File_x0020_Size', 'Modified', 'UniqueId')
-    $allItems = @(Get-PnPListItem -List $Library.List -PageSize $script:ListPageSize -Fields $fields -ErrorAction Stop)
-    # One group per folder; files at the top of the library (a plain SharePoint site) are one more group.
-    $groups = @(foreach ($channel in $Channels) {
-        $prefix = $Library.ServerRelativeUrl + '/' + $channel + '/'
-        [pscustomobject]@{ Name = $channel; Prefix = $prefix; Files = @(Get-ChannelFiles $allItems $prefix) }
+    $libraries = @($Library)
+    $groups = @(foreach ($one in $libraries) {
+        if ($libraries.Count -eq 1) { Get-ScanGroups $one $Channels ''; continue }
+        # Several libraries: one you cannot open (Preservation Hold Library often) is one BLOCKED row; the rest go on.
+        # Collected first, so a library that fails part way adds no groups next to its BLOCKED row.
+        try { $libraryGroups = @(Get-ScanGroups $one @(Get-ChannelFolderNames $one) ($one.Title + ' / ')); $libraryGroups }   # "Library / Folder"
+        catch {
+            $Rows.Add((New-ReportRow 'Scan' (Protect-PiiName $one.Title) '(library)' '' '' 'BLOCKED' '' '' ('Could not read this library: ' + (Protect-PiiText $_.Exception.Message))))
+        }
     })
-    $rootFiles = @(Get-RootFiles $allItems $Library.ServerRelativeUrl)
-    if ($rootFiles.Count -gt 0) {
-        $groups += [pscustomobject]@{ Name = $script:RootGroupName; Prefix = $Library.ServerRelativeUrl + '/'; Files = $rootFiles }
-    }
     $total = 0
     foreach ($group in $groups) { $total += $group.Files.Count }
     Write-Ui ('==== Scanning {0} files in {1} folders ====' -f $total, $groups.Count) 'Title'
     $meter = New-ScanMeter $total
+    $meter.NameWidth = Get-NameWidth @($groups | ForEach-Object { Protect-PiiName $_.Name })
     for ($c = 0; $c -lt $groups.Count; $c++) {
         $group = $groups[$c]
         $shownChannel = Protect-PiiName $group.Name   # the progress bar is on screen too
@@ -518,15 +557,14 @@ function Invoke-FileScan {
             $read = Invoke-OneFileScan $file $group.Name $group.Prefix $origin $MaxFileMB $Rows
             Write-Progress -Id 2 -Activity 'This file' -Completed
             Update-ScanMeter $meter $Rows $firstRow $read
-            Write-MeterLine $meter 'file'   # live counts, at most every few seconds
+            Write-MeterLine $meter 'file'   # the running total, at most every $LiveLineSeconds (a long folder does not look hung)
         }
-        Write-ChannelLine ($c + 1) $groups.Count $group.Name $before $meter 'file'
-        Write-MeterLine $meter 'file' -Force   # the running totals after each folder
-        Write-RuleLine
+        Write-ChannelLine $group.Name $before $meter 'file'
     }
     Write-Progress -Id 1 -Activity 'Scanning files' -Completed
-    $kind = 'Good'; if ($meter.Hits -gt 0) { $kind = 'Alert' }   # green only when nothing was found
-    Write-Ui ('Files done: ' + (Get-ScanMeterText $meter 'file')) $kind
+    # The folder rows form one table; the total closes it, under a rule.
+    Write-RuleLine
+    Write-MeterLine $meter 'file' -Force
     return $meter.Read
 }
 
@@ -546,5 +584,5 @@ function Test-TeamSite {
     return [bool]($groupId -and $groupId -ne [guid]::Empty)
 }
 
-Export-ModuleMember -Function Test-TeamSiteUrl, Get-ScanTarget, Read-ScanTarget, ConvertTo-FriendlyError, Connect-TeamSite, Get-TeamDocumentLibrary, Get-ChannelFolderNames,
+Export-ModuleMember -Function Test-TeamSiteUrl, Get-ScanTarget, Read-ScanTarget, ConvertTo-FriendlyError, Connect-TeamSite, Get-SiteDocumentLibraries, Get-ChannelFolderNames,
 Invoke-FileScan, Get-ScanTiming, Test-TeamSite

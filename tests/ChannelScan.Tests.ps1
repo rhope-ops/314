@@ -102,7 +102,8 @@ Reset-FakePnP @{
     "$library/General/$ssnFileName" = [System.Text.Encoding]::UTF8.GetBytes('no PII inside')
     "$library/Ops/scan #A.pdf"      = $Txt
 }
-$lib = Get-TeamDocumentLibrary
+$lib = @(Get-SiteDocumentLibraries)[0]
+Assert-Equal 'Documents' (@(Get-SiteDocumentLibraries | ForEach-Object { $_.Title }) -join '|') 'Libraries: only visible document libraries, not Style Library'
 Assert-Equal 'General Ops' (Get-ChannelFolderNames $lib) 'Channel folders without Forms'
 $rows = New-Object System.Collections.Generic.List[object]
 Assert-Equal 3 (Invoke-FileScan -Library $lib -Channels @('General', 'Ops') -SiteUrl $Sample.Site -MaxFileMB 25 -Rows $rows 6>$null) 'Files scanned'
@@ -144,6 +145,20 @@ Assert-Equal "https://tenant.example.com/sites/TeamA/_layouts/15/Doc.aspx?source
     (& $linkOf "$library/General/Roster $($Sample.Ssn).xlsx" $fileId) 'Office file named with PII: link by file ID'
 Assert-Equal 'https://tenant.example.com/sites/TeamA/Shared%20Documents/FY27/Plan%202.docx' `
     (& $linkOf "$library/FY27/Plan 2.docx" $fileId) 'Digits that are not PII: link to the file itself'
+
+# A site with several document libraries: every library is scanned, each group named "Library / Folder".
+Reset-FakePnP @{ "$library/General/notes.txt" = $Txt; '/sites/TeamA/Plans/top.txt' = $Txt }
+Set-FakeLibraries @('Shared Documents', 'Plans')
+$libs = @(Get-SiteDocumentLibraries)
+Assert-Equal 'Documents|Plans' (@($libs | ForEach-Object { $_.Title }) -join '|') 'Libraries: Documents first, then the others'
+$multiRows = New-Object System.Collections.Generic.List[object]
+Assert-Equal 2 (Invoke-FileScan -Library $libs -Channels @() -SiteUrl $Sample.Site -MaxFileMB 25 -Rows $multiRows 6>$null) 'Libraries: files of both scanned'
+Assert-Equal 'Documents / General|Plans / (top of the library)' (@($multiRows | Select-Object -ExpandProperty Channel -Unique | Sort-Object) -join '|') 'Libraries: groups named Library / Folder'
+Set-FakeLibraries @('Shared Documents', 'Plans', 'Preservation Hold Library')
+$blockedRows = New-Object System.Collections.Generic.List[object]
+$readCount = Invoke-FileScan -Library @(Get-SiteDocumentLibraries) -Channels @() -SiteUrl $Sample.Site -MaxFileMB 25 -Rows $blockedRows 6>$null
+Assert-Equal 2 $readCount 'Libraries: a library you cannot open does not stop the scan'
+Assert-Equal 'Preservation Hold Library' (@($blockedRows | Where-Object { $_.Detector -eq 'BLOCKED' }).Channel -join '|') 'Libraries: it is one BLOCKED row'
 
 # A label in a parent folder or in the channel name, the number in the file name: masked, reported, not in the link.
 Reset-FakePnP @{ "$library/General/CAC/$($Sample.DodId).docx" = $Txt; "$library/CAC/$($Sample.DodId).txt" = $Txt }
@@ -189,8 +204,16 @@ Reset-FakePnP @{}
 $liveMeter = @{ Total = 4; Done = 2; Read = 1; Skipped = 1; Hits = 2; HitItems = 1; Types = @{ 'SSN' = 1; 'Phone' = 1 }; LastLine = [TimeSpan]::Zero
     Clock = [pscustomobject]@{ Elapsed = [TimeSpan]::FromSeconds(20) } }
 $live = (Write-MeterLine $liveMeter 'file' -Force 6>&1 | ForEach-Object { [string]$_ }) -join ''
-$expected = '  >     2/    4 files  50% | read     1 | not scanned     1 | possible PII     2 | 00:20 used, about 00:20 left | SSN 1, Phone 1'
-Assert-Equal $expected $live 'Live line: fixed-width counts, time, then types worst first'
+$expected = '  Total | files     2/    4  50% | read     1 | not scanned     1 | possible PII     2 | 00:20 used, about 00:20 left | SSN 1, Phone 1'
+Assert-Equal $expected $live 'Live line: Total first, fixed-width counts, time, then types worst first'
+$folderMeter = $liveMeter.Clone(); $folderMeter.NameWidth = 12; $liveMeter.NameWidth = 12
+$row = (Write-ChannelLine 'General' @{ Done = 0; Read = 0; Skipped = 0; Hits = 0 } $folderMeter 'file' 6>&1 | ForEach-Object { [string]$_ }) -join ''
+$totalRow = (Write-MeterLine $liveMeter 'file' -Force 6>&1 | ForEach-Object { [string]$_ }) -join ''
+Assert-Equal $true ($row.StartsWith('  General      | files')) 'Folder row: the folder name first, padded to the name column'
+foreach ($column in @('| read', '| not scanned', '| possible PII')) {
+    Assert-Equal $totalRow.IndexOf($column) $row.IndexOf($column) "Folder row and total row line up at [$column]"
+}
+$liveMeter.NameWidth = 0
 $liveMeter.Done = 1234; $liveMeter.Read = 999; $liveMeter.Skipped = 12; $liveMeter.Hits = 0; $liveMeter.Types = @{}
 $wide = (Write-MeterLine $liveMeter 'file' -Force 6>&1 | ForEach-Object { [string]$_ }) -join ''
 Assert-Equal $live.IndexOf('| read') $wide.IndexOf('| read') 'Live line: columns stay in place when the counts grow'

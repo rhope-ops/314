@@ -33,6 +33,7 @@ function Reset-FakePnP {
     $global:FakePnP = @{
         Files       = $Files
         Folders     = @('General', 'Ops', 'Forms')
+        Libraries   = @('Shared Documents')                       # the visible document libraries (Get-PnPList)
         ListFails   = $false
         ConnectFails = $false                                     # the web login to a site fails (an error before the scan)
         SiteFails   = $false                                      # Get-PnPSite fails (the site's group cannot be read)
@@ -98,16 +99,31 @@ function Test-FakePnPCall {
 
 # Read the site: library, its root folder, its channel folders and its items.
 function global:Get-PnPList {
-    # Fake: the library exists only under its URL name.
-    [CmdletBinding()] param($Identity)
+    <#
+    .SYNOPSIS
+      Fake: the site's lists: its libraries (Set-FakeLibraries), a hidden library and SharePoint's Style Library.
+    #>
+    [CmdletBinding()] param()
     $global:FakePnP.Calls.Add('Get-PnPList')
-    if ($Identity -eq 'Shared Documents') { [pscustomobject]@{ Title = 'Documents' } }
+    foreach ($name in $global:FakePnP.Libraries) {
+        $title = $name; if ($name -eq 'Shared Documents') { $title = 'Documents' }
+        [pscustomobject]@{ Title = $title; BaseTemplate = 101; Hidden = $false; Url = '/sites/TeamA/' + $name }
+    }
+    [pscustomobject]@{ Title = 'Style Library'; BaseTemplate = 101; Hidden = $false; Url = '/sites/TeamA/Style Library' }
+    [pscustomobject]@{ Title = 'Hidden Files'; BaseTemplate = 101; Hidden = $true; Url = '/sites/TeamA/Hidden Files' }
+    [pscustomobject]@{ Title = 'Site Pages'; BaseTemplate = 119; Hidden = $false; Url = '/sites/TeamA/SitePages' }
+}
+
+function Set-FakeLibraries {
+    # Sets the visible document libraries of the fake site, by URL name (default: Shared Documents).
+    param([string[]]$Names)
+    $global:FakePnP.Libraries = $Names
 }
 
 function global:Get-PnPProperty {
     # Fake: the library's root folder.
     [CmdletBinding()] param($ClientObject, $Property)
-    [pscustomobject]@{ ServerRelativeUrl = '/sites/TeamA/Shared Documents' }
+    [pscustomobject]@{ ServerRelativeUrl = $ClientObject.Url }
 }
 
 function global:Get-PnPFolderItem {
@@ -129,6 +145,7 @@ function global:Get-PnPListItem {
     #>
     [CmdletBinding()] param($List, $PageSize, $Fields)
     if ($global:FakePnP.ListFails) { throw 'FAKE: list read refused' }
+    if ($List.Title -eq 'Preservation Hold Library') { throw 'Access denied.' }   # members often cannot open it
     @{ FileLeafRef = 'General'; FileRef = '/sites/TeamA/Shared Documents/General'; FSObjType = 1 }
     foreach ($path in $global:FakePnP.Files.Keys) {
         @{ FileLeafRef = ($path -split '/')[-1]; FileRef = $path; FSObjType = 0
