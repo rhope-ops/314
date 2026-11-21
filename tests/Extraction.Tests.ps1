@@ -317,3 +317,20 @@ Assert-Equal 'SSN' (@(Find-PiiInText $t3Read.Text) | Select-Object -First 1).Det
 $clock.Restart()
 $manySpaces = Get-TextFromBytes -Bytes (New-PdfBytes ('BT /F1 10 Tf (' + (' ' * 500000) + 'SSN ' + $Sample.Ssn + ') Tj ET')) -FileName 'sp.pdf'
 Assert-Equal $true ($clock.Elapsed.TotalSeconds -lt 30 -and $manySpaces.Text.Length -lt 100) 'PDF: a huge run of spaces is read in bounded time and collapsed'
+
+# ---- PDF review round 12 (2026-11-21) ----
+# A letter-spaced heading above body text in one text object: letter spacing is measured per line, so the body's
+# word gaps (0.33 em: "Tom" is 24 wide at 12 pt, the next word starts 28 after it) stay spaces.
+$heading = Get-GlyphRun 'RECALL ROSTER' 3.6
+$bodyRun = '(Tom) Tj 28 0 Td (Mims) Tj'
+$headRead = Get-TextFromBytes -Bytes (New-PdfBytes "BT /F1 12 Tf $heading 0 -14 Td $bodyRun ET" -Plain) -FileName 'hd.pdf'
+Assert-Equal $true ($headRead.Text -match 'Tom Mims') 'PDF: a letter-spaced heading does not join the words below it'
+# A /W list longer than the entry cap: read up to the cap, with a note, in bounded time.
+$clock.Restart()
+$bigCid = '<< /Type /Font /Subtype /CIDFontType2 /W [0 69999 500 70000 [' + ((1..2000 | ForEach-Object { '500' }) -join ' ') + ']] >>'
+$bigW = Get-TextFromBytes -Bytes (New-PdfBytes "BT /F1 12 Tf <0041> Tj ET" -Plain -FontDict $wFont -ToUnicode $wMap -Extra @('<< >>', '<< >>', $bigCid)) -FileName 'bw.pdf'
+Assert-Equal $true ($clock.Elapsed.TotalSeconds -lt 30 -and $bigW.Note -match 'could not be fully read') 'PDF: a /W list past the cap gives a note in bounded time'
+# A rotated Type3 font matrix (a = 0): the unit is the length of its first column (0.01 here).
+$t3Turned = $t3Font.Replace('/FontMatrix [0.01 0 0 0.01 0 0]', '/FontMatrix [0 0.01 -0.01 0 0 0]')
+$t3TurnedRead = Get-TextFromBytes -Bytes (New-PdfBytes "BT /F1 10 Tf $t3Run ET" -Plain -FontDict $t3Turned) -FileName 't3r.pdf'
+Assert-Equal 'SSN' (@(Find-PiiInText $t3TurnedRead.Text) | Select-Object -First 1).Detector 'PDF: a rotated Type3 font matrix still gives its unit'

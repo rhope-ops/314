@@ -31,6 +31,12 @@ $script:TimesWidths = @(250, 333, 408, 500, 500, 833, 778, 180, 333, 333, 500, 5
 # A /W array (a composite font's widths) is read for at most this many glyphs (a hostile array cannot fill the memory).
 $script:MaxWidthEntries = 65536
 
+# Per font: shown strings decoded and measured before (text and width in ems), up to this many each (speed).
+$script:MaxFontCache = 20000
+# Shown hex strings decoded before (speed): short tokens only, emptied when full.
+$script:ShownHex = New-Object 'System.Collections.Generic.Dictionary[string,string]'
+$script:MaxShownHex = 50000
+
 function Get-PdfFonts {
     <#
     .SYNOPSIS
@@ -92,7 +98,8 @@ function New-PdfFontRecord {
     #>
     param([string]$Dict, $Objects)
     $composite = $Dict -match '/Subtype\s*/Type0\b'
-    $record = @{ CMap = $null; Bytes = 1; Widths = @{}; DefaultWidth = -1.0; Standard = $null; Vertical = ($Dict -match '/Encoding\s*/Identity-V\b') }
+    $record = @{ CMap = $null; Bytes = 1; Widths = @{}; DefaultWidth = -1.0; Standard = $null; Vertical = ($Dict -match '/Encoding\s*/Identity-V\b')
+        TextCache = (New-Object 'System.Collections.Generic.Dictionary[string,string]'); EmCache = (New-Object 'System.Collections.Generic.Dictionary[string,double]') }
     if ($composite) { $record.Bytes = 2 }
     $unicode = [regex]::Match($Dict, '/ToUnicode\s+(\d+)\s+\d+\s+R')
     if ($unicode.Success -and $Objects.Contains($unicode.Groups[1].Value) -and $Objects[$unicode.Groups[1].Value].Stream) {
@@ -146,8 +153,13 @@ function Add-PdfSimpleWidths {
     if ($firstMatch.Success) { $first = [int]$firstMatch.Groups[1].Value }
     # Widths are in glyph space: thousandths of an em, or for a Type3 font in units of its /FontMatrix.
     $unit = 0.001
-    $matrix = [regex]::Match($Dict, '/FontMatrix\s*\[\s*(-?(?:\d+\.?\d*|\.\d+))')
-    if ($Dict -match '/Subtype\s*/Type3\b' -and $matrix.Success) { $unit = [Math]::Abs([double]::Parse($matrix.Groups[1].Value, [Globalization.CultureInfo]::InvariantCulture)) }
+    $matrix = [regex]::Match($Dict, '/FontMatrix\s*\[\s*(-?(?:\d+\.?\d*|\.\d+))\s+(-?(?:\d+\.?\d*|\.\d+))')
+    if ($Dict -match '/Subtype\s*/Type3\b' -and $matrix.Success) {
+        # The length of the matrix's first column: the glyph-space unit along the line, also for a rotated matrix.
+        $a = [double]::Parse($matrix.Groups[1].Value, [Globalization.CultureInfo]::InvariantCulture)
+        $b = [double]::Parse($matrix.Groups[2].Value, [Globalization.CultureInfo]::InvariantCulture)
+        $unit = [Math]::Sqrt($a * $a + $b * $b)
+    }
     $code = $first
     foreach ($number in [regex]::Matches((Get-PdfArrayText $Dict 'Widths' $Objects), '-?(?:\d+\.?\d*|\.\d+)')) {
         if ($code -gt 255) { break }
@@ -180,25 +192,35 @@ function Add-PdfCidWidths {
     $Record.DefaultWidth = 1.0
     $dw = [regex]::Match($cid, '/DW\s+(\d+(?:\.\d+)?)')
     if ($dw.Success) { $Record.DefaultWidth = [double]::Parse($dw.Groups[1].Value, [Globalization.CultureInfo]::InvariantCulture) / 1000 }
-    $tokens = @([regex]::Matches((Get-PdfArrayText $cid 'W' $Objects), '\[|\]|-?(?:\d+\.?\d*|\.\d+)') | ForEach-Object { $_.Value })
+    # Read token by token (a hostile /W can hold millions): the entry cap and the clock are checked in every loop.
+    $token = (Get-PdfRegex '\[|\]|-?(?:\d+\.?\d*|\.\d+)').Match((Get-PdfArrayText $cid 'W' $Objects))
+    if ($token.Success) { $token = $token.NextMatch() }   # the outer [
     $numbers = New-Object System.Collections.Generic.List[double]
-    $i = 1   # token 0 is the outer [
-    while ($i -lt $tokens.Count -and $Record.Widths.Count -lt $script:MaxWidthEntries) {
-        Assert-PdfTime
-        if ($tokens[$i] -eq '[') {
+    $count = 0
+    while ($token.Success) {
+        if ((++$count % 2000) -eq 0) { Assert-PdfTime }
+        if ($Record.Widths.Count -ge $script:MaxWidthEntries) { Add-PdfNote 'A font in this PDF could not be fully read: check by hand'; return }
+        if ($token.Value -eq '[') {
             # first [w1 w2 ...]: the number before the bracket is the first glyph.
             if ($numbers.Count -eq 0) { Add-PdfNote 'A font in this PDF could not be fully read: check by hand'; return }   # [ with no first glyph
-            $glyph = [int]$numbers[$numbers.Count - 1]; $numbers.Clear(); $i++
-            while ($i -lt $tokens.Count -and $tokens[$i] -ne ']') { $Record.Widths[$glyph] = [double]$tokens[$i] / 1000; $glyph++; $i++ }
+            $glyph = [int]$numbers[$numbers.Count - 1]; $numbers.Clear()
+            for ($token = $token.NextMatch(); $token.Success -and $token.Value -ne ']'; $token = $token.NextMatch()) {
+                if ((++$count % 2000) -eq 0) { Assert-PdfTime }
+                if ($Record.Widths.Count -ge $script:MaxWidthEntries) { Add-PdfNote 'A font in this PDF could not be fully read: check by hand'; return }
+                $Record.Widths[$glyph] = [double]$token.Value / 1000; $glyph++
+            }
         }
-        elseif ($tokens[$i] -ne ']') {
-            $numbers.Add([double]$tokens[$i])
+        elseif ($token.Value -ne ']') {
+            $numbers.Add([double]$token.Value)
             if ($numbers.Count -eq 3) {   # first last w
-                for ($g = [int]$numbers[0]; $g -le [int]$numbers[1] -and $Record.Widths.Count -lt $script:MaxWidthEntries; $g++) { $Record.Widths[$g] = $numbers[2] / 1000 }
+                for ($g = [int]$numbers[0]; $g -le [int]$numbers[1]; $g++) {
+                    if ($Record.Widths.Count -ge $script:MaxWidthEntries) { Add-PdfNote 'A font in this PDF could not be fully read: check by hand'; return }
+                    $Record.Widths[$g] = $numbers[2] / 1000
+                }
                 $numbers.Clear()
             }
         }
-        $i++
+        if ($token.Success) { $token = $token.NextMatch() }
     }
 }
 
@@ -218,6 +240,9 @@ function ConvertFrom-PdfGlyphs {
         if ($Raw.Length -gt 0) { Add-PdfNote 'A font in this PDF could not be read: check by hand' }
         return ''
     }
+    # A font record lives for one PDF, so a note its first decode added is already on that PDF.
+    $cache = $null; if ($Font.ContainsKey('TextCache')) { $cache = $Font.TextCache }
+    if ($cache -and $cache.ContainsKey($Raw)) { return $cache[$Raw] }
     $out = New-Object System.Text.StringBuilder
     $step = [Math]::Max(1, [int]$cmap.Bytes)
     for ($i = 0; $i + $step -le $Raw.Length; $i += $step) {
@@ -237,7 +262,42 @@ function ConvertFrom-PdfGlyphs {
         elseif ($step -eq 1) { [void]$out.Append($Raw[$i]) }
         elseif ($number -ne 0) { Add-PdfNote 'Some characters in this PDF could not be read (a font without them in its map): check by hand' }
     }
-    return $out.ToString()
+    $result = $out.ToString()
+    if ($cache -and $cache.Count -lt $script:MaxFontCache) { $cache[$Raw] = $result }
+    return $result
+}
+
+function Get-PdfShownRaw {
+    <#
+    .SYNOPSIS
+      The bytes of a shown string token: from a cache when decoded before (Chrome writes each glyph as its own <0024>), else decoded.
+    .PARAMETER Token
+      One PDF string token.
+    #>
+    param([string]$Token)
+    $raw = $null
+    if ($Token[0] -eq '<' -and $script:ShownHex.TryGetValue($Token, [ref]$raw)) { return $raw }
+    $raw = ConvertFrom-PdfString $Token
+    if ($Token[0] -eq '<' -and $Token.Length -le 66) {
+        if ($script:ShownHex.Count -ge $script:MaxShownHex) { $script:ShownHex.Clear() }
+        $script:ShownHex[$Token] = $raw
+    }
+    return $raw
+}
+
+function Get-PdfShownText {
+    <#
+    .SYNOPSIS
+      The text of shown bytes in a font: from the font's cache when decoded before (ConvertFrom-PdfGlyphs fills it).
+    .PARAMETER Raw
+      The bytes as Latin-1 text.
+    .PARAMETER Font
+      The font record, or $null.
+    #>
+    param([string]$Raw, $Font)
+    $text = $null
+    if ($Font -and $Font.TextCache -and $Font.TextCache.TryGetValue($Raw, [ref]$text)) { return $text }
+    return (ConvertFrom-PdfGlyphs $Raw $Font)
 }
 
 function Get-PdfShowWidth {
@@ -250,19 +310,28 @@ function Get-PdfShowWidth {
       The raw bytes as Latin-1 text.
     .PARAMETER Text
       The decoded text (for the estimate).
-    .PARAMETER State
-      The text state: Font, Size, CharSpace, WordSpace, Scale.
+    .PARAMETER Font
+      The font record, or $null.
+    .PARAMETER Size
+      The font size.
+    .PARAMETER CharSpace
+      Tc.
+    .PARAMETER WordSpace
+      Tw.
+    .PARAMETER Scale
+      Tz as a fraction.
     .OUTPUTS
       [double]
     #>
-    param([string]$Raw, [string]$Text, [hashtable]$State)
-    $font = $State.Font
+    param([string]$Raw, [string]$Text, $Font, [double]$Size, [double]$CharSpace, [double]$WordSpace, [double]$Scale)
+    $font = $Font
     $known = $font -and ($font.Widths.Count -gt 0 -or $font.DefaultWidth -ge 0 -or $font.Standard)
     $step = 1; if ($font) { $step = [Math]::Max(1, [int]$font.Bytes) }
     $glyphs = [Math]::Max(1, [int]($Raw.Length / $step))
     $spaces = 0; if ($step -eq 1) { $spaces = $Raw.Length - $Raw.Replace(' ', '').Length }   # no copy per character
     if ($font -and $font.Vertical) { $ems = [double]$glyphs }   # vertical writing: 1 em down per glyph (the /DW2 default)
     elseif (-not $known) { $ems = (Get-PdfTextWidth $Text 1.0) }
+    elseif ($font.ContainsKey('EmCache') -and $font.EmCache.ContainsKey($Raw)) { $ems = $font.EmCache[$Raw] }
     else {
         $ems = 0.0
         for ($i = 0; $i + $step -le $Raw.Length; $i += $step) {
@@ -273,8 +342,10 @@ function Get-PdfShowWidth {
             elseif ($font.DefaultWidth -ge 0) { $ems += $font.DefaultWidth }
             else { $ems += 0.5 }
         }
+        if ($font.ContainsKey('EmCache') -and $font.EmCache.Count -lt $script:MaxFontCache) { $font.EmCache[$Raw] = $ems }
     }
-    return (($ems * $State.Size + $State.CharSpace * $glyphs + $State.WordSpace * $spaces) * $State.Scale)
+    if ($font -and $font.Vertical) { return ($ems * $Size + $CharSpace * $glyphs + $WordSpace * $spaces) }   # Tz scales across, not down
+    return (($ems * $Size + $CharSpace * $glyphs + $WordSpace * $spaces) * $Scale)
 }
 
 function Get-PdfTextWidth {
@@ -301,4 +372,4 @@ function Get-PdfTextWidth {
     return ($ems * $Size)
 }
 
-Export-ModuleMember -Function Get-PdfFonts, Get-PdfFontTable, ConvertFrom-PdfGlyphs, Get-PdfShowWidth
+Export-ModuleMember -Function Get-PdfFonts, Get-PdfFontTable, ConvertFrom-PdfGlyphs, Get-PdfShowWidth, Get-PdfShownRaw, Get-PdfShownText

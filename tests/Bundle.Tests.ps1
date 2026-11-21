@@ -27,6 +27,10 @@ $filled = $filled.Replace("`$OutputFolder = (Join-Path ([Environment]::GetFolder
     "`$OutputFolder = '$bundleFolder'")
 Assert-Equal $true ($filled -ne $text) 'Settings filled in'
 Assert-Equal 0 ([regex]::Matches($filled, 'Import-Module|\$PSScriptRoot').Count) 'Bundle loads no module or file'
+# No compiled code (NIPRNet: no unapproved .exe, .dll or .jar): nothing compiled (Add-Type with code), no binary
+# loaded from a file or bytes, nothing started; only assemblies of .NET Framework itself, by name.
+$compiled = 'Add-Type\s+(?!-AssemblyName\b)|-TypeDefinition|-MemberDefinition|Assembly\]::Load|LoadFrom|LoadFile|Start-Process|\.(?:exe|dll|jar)\b'
+Assert-Equal 0 ([regex]::Matches($filled, $compiled, 'IgnoreCase').Count) 'Bundle compiles and loads no binary code'
 
 # Unload the modules the earlier test files imported, so the bundle can only use its own copies of the functions.
 Get-Module PiiDetectors, PiiMasking, TextExtract, XlsxWriter, Report, ScanMeter, ChannelScan | Remove-Module -Force
