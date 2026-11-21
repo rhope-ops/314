@@ -1,4 +1,62 @@
-# Ion: DoD365 PII Reporter
+# 33-332.Z · Privacy Act Management
+
+<!-- This top part mirrors the site page (index.html), for networks that block github.io (the PAM, 2026-11-21).
+     Change both together. -->
+
+## Ion · DoD365 PII Reporter
+
+Keep your eyes on the files in one Teams team or SharePoint site you can access. Ion checks them for Personally Identifiable Information (PII) and gives you a comprehensive report: an Excel workbook that summarizes and categorizes its findings. It only reads, and every value it finds is masked.
+
+### Key Facts
+
+| | |
+|---|---|
+| **Universal:** | Ion scans **everything** it can access. |
+| **Your access:** | uses your CAC sign-on to scan, and saves nothing between sessions. |
+| **Read-only:** | it makes no changes to your Teams or SharePoint content. |
+| **Data boundary:** | nothing leaves DoD365; the export is saved to your computer. |
+| **Verifiable:** | inspect the commented code yourself within a .txt before execution. |
+| **Accessible:** | paste and run via ISE; no download, no admin rights, no policy change. |
+
+Have concerns? Speak with your WCO.
+
+### Get the script
+
+| | |
+|---|---|
+| **[Copy the script](https://github.com/rhope-ops/33-332.Z/blob/main/paste/33332Z-pii-spot-check.ps1)** | Opens the script on GitHub. Press **Copy raw file** (the copy icon at the top right of the file), then in PowerShell ISE: **File > New**, **Ctrl+V**, **F5**. |
+| **[Open the script as .txt](https://raw.githubusercontent.com/rhope-ops/33-332.Z/main/paste/33332Z-pii-spot-check.ps1)** | Opens the script as plain text in your browser, to read it before you run it. **Ctrl+S** saves it as a .txt file. |
+
+The steps to run it are at the top of the script. If one link is blocked on your network, try the other.
+
+### How it works
+
+Sign in → Read files in memory → Find PII → **Mask it** → Report
+
+### What it looks for
+
+| Type | Found when | Shown as |
+|---|---|---|
+| SSN | 3-2-4 digits the SSA could issue | `***-**-1234` |
+| DoD ID | 10 digits after "DoD ID", "EDIPI" or "CAC" | `******7890` |
+| Date of birth | A date after "DOB" or "born" | `[date masked]` |
+| Payment card | 13 to 19 digits with a card network's prefix that pass the card check | `************1111` |
+| Passport | Letters and digits after "passport" | `*****567` |
+| Phone | A US 10-digit number | `***-***-0142` |
+| Personal e-mail | Any address not ending in .gov or .mil (Gmail, Yahoo and the like rank higher) | `***@domain` |
+| Home address | Number, street name and street type | `[address masked]` |
+| Name | After "Name:", "Spouse:", "NOK:" and similar | Initials |
+
+Not read: images, old Office files, encrypted files and files over 25 MB (each is listed in the workbook, to check by hand), and channel posts and chats (not checked at all).
+
+### If it finds PII
+
+> PII where it should not be is a potential or actual breach; report it to your servicing Privacy Manager/Monitor without delay.
+> <sub>AFI 33-332 para 3.1.2, as changed by AFI33-332_DAFGM2026-01, page 1, second paragraph.</sub>
+
+---
+
+# Details
 
 A read-only PowerShell script that a **member** runs to find files that may hold PII in one Microsoft Teams team or SharePoint site. It uses only your own access: owner rights are not needed, and a private or shared channel is scanned only if you are in it. It scans every visible document library of the one site you give (in a team, the Documents library with one folder per standard channel), every folder and the files at each library's top, with two progress bars (the whole scan, and the file in work) and live counts. At the end it shows the hits per PII type on screen and saves one Excel workbook: a Summary tab first, then one tab per PII type, worst first. **Every found value is masked** (for example `***-**-1234`), so the results are not a PII spill themselves.
 
@@ -16,7 +74,7 @@ A read-only PowerShell script that a **member** runs to find files that may hold
 | Private and shared channels | Run again with that channel's own site URL | Each one has its own SharePoint site |
 | 1:1 chats, group chats, meeting chats | No | Admin / Purview only |
 
-## What it looks for
+## Detection rules and confidence
 
 | Type | Rule | Confidence |
 |---|---|---|
