@@ -25,7 +25,7 @@
     src/PdfText.psm1, sha256 b5c60ae62610
     src/TextExtract.psm1, sha256 e29978d7b4fa
     src/XlsxWriter.psm1, sha256 e29becdc6a65
-    src/Report.psm1, sha256 bb4837c619f4
+    src/Report.psm1, sha256 48ae8c157137
     src/ScanMeter.psm1, sha256 2c2a5a750104
     src/ChannelScan.psm1, sha256 5703ccff41d9
     src/Find-ChannelPII.ps1, sha256 69beb710c1a1
@@ -3006,10 +3006,10 @@ $script:NotScannedGroups = [ordered]@{
 
 # What to do with PII found where it should not be: the breach steps of the rule source, AFI 33-332 para 3.1.2 as
 # changed by AFI33-332_DAFGM2026-01 (7 July 2026; edition: docs/DECISIONS.md).
-# The wording is the same on the site page (the PAM, 2026-11-20).
+# The wording is the README's "If it finds PII" section; scripts/build_site.py --check fails when they differ (the PAM, 2026-11-20).
 $script:BreachAdvice = 'PII where it should not be is a potential or actual breach; report it to your servicing Privacy ' +
-                       'Manager/Monitor without delay (AFI 33-332 para 3.1.2, as changed by AFI33-332_DAFGM2026-01, page 1, ' +
-                       'second paragraph).'
+                       'Manager/Monitor without delay (AFI 33-332 para 3.1.2, as changed by AFI33-332_DAFGM2026-01 (7 July 2026), ' +
+                       'page 1, second paragraph).'
 
 # =====================================================================================
 # Rows and summary
