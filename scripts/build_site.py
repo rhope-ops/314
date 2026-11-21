@@ -37,8 +37,10 @@ TOOL = 'src/Report.psm1'
 COMMAND = 'scripts/build_site.py --write'
 # The four shared sections, in README order (the PAM, 2026-11-20, README Source Preview v3).
 SECTIONS = ('intro', 'key-facts', 'looks-for', 'breach')
-# The site shows the first three columns of the README's "What it looks for" table (Confidence stays README only).
-SITE_COLUMNS = 3
+# The site shows the first three columns of the README's "What it looks for" table (Confidence stays README only);
+# their names must be these, as the site's hand-written table head says them (index.html <thead>).
+SITE_HEAD = ('Type', 'Found when', 'Shown as')
+SITE_COLUMNS = len(SITE_HEAD)
 # Where the tool keeps its breach text: one PowerShell string, written as single-quoted parts joined with "+".
 TOOL_VAR = re.compile(r"\$script:BreachAdvice\s*=\s*((?:'(?:[^']|'')*'\s*\+?\s*)+)")
 TOOL_PART = re.compile(r"'((?:[^']|'')*)'")
@@ -63,21 +65,62 @@ def readme_section(text, name):
 
 
 def inline(markdown):
-    """Turn one line of Markdown (text, **bold**, `code`) into escaped HTML; text inside `code` is never made bold."""
-    pieces = re.split(r'(`[^`]+`)', markdown)
+    """Turn one line of Markdown (text, **bold**, `code`) into escaped HTML; raise ValueError on any other Markdown mark.
+
+    Args:
+        markdown: one line of text; text inside `code` is kept as is and never made bold.
+    Returns:
+        The escaped HTML.
+    """
     out = []
-    for piece in pieces:
+    for piece in re.split(r'(`[^`]+`)', markdown):
         if piece.startswith('`') and piece.endswith('`') and len(piece) > 1:
             out.append('<code>' + html.escape(piece[1:-1], quote=False) + '</code>')
-        else:
-            out.append(re.sub(r'\*\*([^*]+)\*\*', r'<strong>\1</strong>', html.escape(piece, quote=False)))
+            continue
+        text = re.sub(r'\*\*([^*`]+)\*\*', r'<strong>\1</strong>', html.escape(piece, quote=False))
+        # An underscore inside a word is plain text on GitHub (AFI33-332_DAFGM2026-01), so only these marks are refused.
+        if re.search(r'[*`\\]', re.sub(r'<[^>]+>', '', text)):
+            raise ValueError(f'{README}: unsupported Markdown in a site section (only **bold** and `code`): {markdown}')
+        out.append(text)
     return ''.join(out)
 
 
-def table_rows(markdown):
-    """Return the body rows of a Markdown table as lists of cell texts (the header and rule rows dropped)."""
-    rows = [line.strip() for line in markdown.splitlines() if line.strip().startswith('|')]
-    return [[cell.strip() for cell in row.strip('|').split('|')] for row in rows[2:]]
+def split_row(line):
+    """Split one Markdown table row into cell texts; a "|" inside `code` stays in its cell.
+
+    Args:
+        line: one table row, for example "| SSN | 3-2-4 digits |".
+    Returns:
+        The cell texts, stripped.
+    """
+    cells, cell, in_code = [], '', False
+    for char in line.strip()[1:-1] if line.strip().endswith('|') else line.strip()[1:]:
+        if char == '`':
+            in_code = not in_code
+        if char == '|' and not in_code:
+            cells.append(cell.strip())
+            cell = ''
+        else:
+            cell += char
+    return cells + [cell.strip()]
+
+
+def table(markdown):
+    """Return a Markdown table's header cells and body rows; raise ValueError when a row has the wrong cell count.
+
+    Args:
+        markdown: text holding one table (lines that start with "|") and maybe other lines.
+    Returns:
+        A pair: the header cells, and the body rows as lists of cell texts.
+    """
+    lines = [line for line in markdown.splitlines() if line.strip().startswith('|')]
+    if len(lines) < 3:
+        raise ValueError(f'{README}: a site section needs a table with a header and at least one row')
+    head, rows = split_row(lines[0]), [split_row(line) for line in lines[2:]]
+    for row in rows:
+        if len(row) != len(head):
+            raise ValueError(f'{README}: a table row has {len(row)} cells, its header {len(head)}: {row}')
+    return head, rows
 
 
 def build_intro(markdown):
@@ -93,12 +136,12 @@ def build_key_facts(markdown):
     Returns:
         The HTML: a definition list (label, text) and a small paragraph.
     """
-    rows = table_rows(markdown)
-    if not rows or any(len(row) != 2 or not re.fullmatch(r'\*\*[^*]+:\*\*', row[0]) for row in rows):
+    head, rows = table(markdown)
+    if len(head) != 2 or any(not re.fullmatch(r'\*\*[^*]+:\*\*', row[0]) for row in rows):
         raise ValueError(f'{README}: site:key-facts rows must be "| **Label:** | text |"')
     items = ''.join(f'\n{INDENT_BLOCK}  <dt>{html.escape(row[0][2:-2])}</dt><dd>{inline(row[1])}</dd>' for row in rows)
-    closing = [line for line in markdown.splitlines() if line.strip() and not line.strip().startswith('|')]
-    tail = f'\n{INDENT_BLOCK}<p class="small mut">{inline(closing[-1].strip())}</p>' if closing else ''
+    closing = [line.strip() for line in markdown.splitlines() if line.strip() and not line.strip().startswith('|')]
+    tail = ''.join(f'\n{INDENT_BLOCK}<p class="small mut">{inline(line)}</p>' for line in closing)
     return f'{INDENT_BLOCK}<dl class="facts">{items}\n{INDENT_BLOCK}</dl>{tail}'
 
 
@@ -110,9 +153,9 @@ def build_looks_for(markdown):
     Returns:
         The HTML rows, one per line.
     """
-    rows = table_rows(markdown)
-    if not rows or any(len(row) < SITE_COLUMNS for row in rows):
-        raise ValueError(f'{README}: site:looks-for needs a table with at least {SITE_COLUMNS} columns')
+    head, rows = table(markdown)
+    if tuple(head[:SITE_COLUMNS]) != SITE_HEAD:
+        raise ValueError(f'{README}: site:looks-for must start with the columns {" | ".join(SITE_HEAD)} (the site\'s table head)')
     return '\n'.join(INDENT_ROW + '<tr>' + ''.join(f'<td>{inline(cell)}</td>' for cell in row[:SITE_COLUMNS]) + '</tr>'
                      for row in rows)
 
@@ -136,7 +179,7 @@ BUILDERS = {'intro': build_intro, 'key-facts': build_key_facts, 'looks-for': bui
 
 def tool_text(advice, citation):
     """Return the breach text the tool must show: the advice with its citation in brackets."""
-    return f'{advice.rstrip(".")} ({citation.rstrip(".")}).'
+    return f'{advice.removesuffix(".")} ({citation.removesuffix(".")}).'
 
 
 def block_pattern(name):
@@ -212,11 +255,11 @@ def self_test():
     Returns:
         0 when every case passes, else 1.
     """
-    readme = ('<!-- site:intro -->\nA *safe* tool.\n<!-- /site:intro -->\n'
-              '<!-- site:key-facts -->\n| Fact | |\n|---|---|\n| **Read-only:** | it changes `nothing`. |\n\nAsk & learn.\n'
+    readme = ('<!-- site:intro -->\nA safe_tool & more.\n<!-- /site:intro -->\n'
+              '<!-- site:key-facts -->\n| Fact | |\n|---|---|\n| **Read-only:** | it changes `nothing`. |\n\nFirst line.\nAsk & learn.\n'
               '<!-- /site:key-facts -->\n'
               '<!-- site:looks-for -->\n| Type | Found when | Shown as | Confidence |\n|---|---|---|---|\n'
-              '| SSN | 3-2-4 digits | `***-**-1234` | High |\n<!-- /site:looks-for -->\n'
+              '| SSN | 3-2-4 `a|b` digits | `***-**-1234` | High |\n<!-- /site:looks-for -->\n'
               '<!-- site:breach -->\nReport it now.\n\nRule para 1.\n<!-- /site:breach -->\n')
     marks = ''.join(f'<!-- >>> site:{name}: generated from {README} by {COMMAND} (do not edit) -->\nold\n'
                     f'<!-- <<< site:{name} -->\n' for name in SECTIONS)
@@ -225,7 +268,10 @@ def self_test():
              ('a stale site fails', 'stale', ['out of date'], False),
              ('a tool text that differs fails', 'tool', ['BreachAdvice differs'], True),
              ('a missing README section fails', 'section', ['no section'], True),
-             ('a key fact without a label fails', 'label', ['**Label:**'], True)]
+             ('a key fact without a label fails', 'label', ['**Label:**'], True),
+             ('a renamed site column fails', 'column', ['must start with the columns'], True),
+             ('a row with a wrong cell count fails', 'cells', ['cells, its header'], True),
+             ('unsupported Markdown fails', 'italic', ['unsupported Markdown'], True)]
     failed = 0
     for label, broken, expect, write in cases:
         with tempfile.TemporaryDirectory() as tmp:
@@ -233,6 +279,9 @@ def self_test():
             (root / 'src').mkdir()
             text = readme.replace('<!-- site:intro -->', '<!-- site:gone -->') if broken == 'section' else readme
             text = text.replace('**Read-only:**', 'Read-only') if broken == 'label' else text
+            text = text.replace('| Shown as |', '| Shown |') if broken == 'column' else text
+            text = text.replace('| High |', '| High | extra |') if broken == 'cells' else text
+            text = text.replace('Report it now.', 'Report it *now*.') if broken == 'italic' else text
             (root / README).write_text(text, encoding='utf-8')
             (root / SITE).write_text(marks, encoding='utf-8')
             (root / TOOL).write_text(tool.replace('now', 'later') if broken == 'tool' else tool, encoding='utf-8')
@@ -241,7 +290,8 @@ def self_test():
             if label == 'a fresh build passes':
                 built = (root / SITE).read_text(encoding='utf-8')
                 ok = ok and '<dt>Read-only:</dt><dd>it changes <code>nothing</code>.</dd>' in built and 'Ask &amp; learn.' in built
-                ok = ok and '<td>3-2-4 digits</td><td><code>***-**-1234</code></td></tr>' in built and '>High<' not in built
+                ok = ok and '<td>3-2-4 <code>a|b</code> digits</td><td><code>***-**-1234</code></td></tr>' in built
+                ok = ok and '>High<' not in built and 'First line.</p>' in built
             failed += not ok
             print(('ok   ' if ok else 'FAIL ') + label + ('' if ok else f': {found}'))
     print('SITE TEST PASS' if not failed else 'SITE TEST FAIL')
