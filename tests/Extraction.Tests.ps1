@@ -366,3 +366,10 @@ Assert-Equal $true ((@(Find-PiiInText $unclosed.Text | ForEach-Object { $_.Detec
 $initials = (Get-GlyphRun 'ROSTER LIST' 3.6) + " 0 -14 Td (Y) Tj 10.272 0 Td (N) Tj 12.264 0 Td ($($Sample.Ssn)) Tj"
 $initialsRead = Get-TextFromBytes -Bytes (New-PdfBytes "BT /F1 12 Tf $initials ET" -Plain) -FileName 'in.pdf'
 Assert-Equal $true (@(Find-PiiInText $initialsRead.Text | ForEach-Object { $_.Detector }) -contains 'SSN') 'PDF: a word gap after initials under a spaced heading stays a space'
+# ---- PDF review round 16 (2026-11-21) ----
+# An unclosed [ before a later, closed one: its text is read, with a note; its lines stay apart.
+$twoArrays = Get-TextFromBytes -Bytes (New-PdfBytes "BT /F1 12 Tf [(SSN: $($Sample.Ssn)) TJ ET BT /F1 12 Tf [(ok)] TJ ET" -Plain) -FileName 'ta.pdf'
+$twoFound = @(Find-PiiInText $twoArrays.Text | ForEach-Object { $_.Detector }) -contains 'SSN'
+Assert-Equal $true ($twoFound -and $twoArrays.Note -match 'unclosed') 'PDF: an unclosed [ before a closed one is read, with a note'
+$moves = Get-TextFromBytes -Bytes (New-PdfBytes "BT /F1 12 Tf [(Name) TJ 0 -14 Td (SSN: $($Sample.Ssn)) Tj 0 -14 Td (2024) Tj ET" -Plain) -FileName 'mv.pdf'
+Assert-Equal $true (@(Find-PiiInText $moves.Text | ForEach-Object { $_.Detector }) -contains 'SSN') 'PDF: moves after an unclosed [ still break lines'

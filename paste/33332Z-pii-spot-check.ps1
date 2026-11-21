@@ -22,7 +22,7 @@
     src/PdfCore.psm1, sha256 da11bdba883c
     src/PdfObjects.psm1, sha256 a629a982d95b
     src/PdfFonts.psm1, sha256 604c4d61b80a
-    src/PdfText.psm1, sha256 b6f1a8707056
+    src/PdfText.psm1, sha256 dcf88aa7cc1f
     src/TextExtract.psm1, sha256 e29978d7b4fa
     src/XlsxWriter.psm1, sha256 e29becdc6a65
     src/Report.psm1, sha256 48ae8c157137
@@ -44,13 +44,13 @@
     line  1114  Module PdfObjects.psm1
     line  1461  Module PdfFonts.psm1
     line  1882  Module PdfText.psm1
-    line  2440  Module TextExtract.psm1
-    line  2699  Module XlsxWriter.psm1
-    line  2970  Module Report.psm1
-    line  3468  Module ScanMeter.psm1
-    line  3733  Module ChannelScan.psm1
-    line  4319  Body of Find-ChannelPII.ps1
-    line  4420  Clean-up
+    line  2443  Module TextExtract.psm1
+    line  2702  Module XlsxWriter.psm1
+    line  2973  Module Report.psm1
+    line  3471  Module ScanMeter.psm1
+    line  3736  Module ChannelScan.psm1
+    line  4322  Body of Find-ChannelPII.ps1
+    line  4423  Clean-up
 #>
 
 # ==== Settings ==== (optional: edit the values between the quotes; empty = the script asks)
@@ -2012,7 +2012,7 @@ function Read-PdfTextObject {
             if ($t -ceq 'ID') { $next = Skip-PdfInlineImage $Content $next $ImageEnd; $inImage = $false; $walk = $true; break }   # else: its keys
             continue
         }
-        if ($t -eq '[') { $array = New-Object System.Collections.Generic.List[string]; continue }
+        if ($t -eq '[') { Complete-PdfOpenArray $array $State; $array = New-Object System.Collections.Generic.List[string]; continue }
         if ($t -eq ']') { if ($null -ne $array) { $stack.Add($array) }; $array = $null; continue }
         if ($first -eq '(' -or $first -eq '<' -or $first -eq '/' -or ($first -ge '0' -and $first -le '9') -or $first -eq '-' -or $first -eq '+' -or $first -eq '.') {
             if ($null -eq $array) { $stack.Add($t); continue }
@@ -2021,7 +2021,7 @@ function Read-PdfTextObject {
             $array.Add($t); continue
         }
         # Only text operators change the text; drawing operators just drop their operands.
-        if ($null -ne $array) { continue }   # an operator inside an open [ ] (damaged): the array goes on, as before
+        if ($null -ne $array) { Complete-PdfOpenArray $array $State; $array = $null }   # an operator in an open [ ] (damaged)
         if ($t -ceq 'Td') { Add-PdfMove $stack $State }   # the most common operator: straight to its handler (speed)
         elseif ($script:TextOperators.Contains($t)) { Invoke-PdfTextOperator $t $stack $State $Fonts }
         $stack.Clear()
@@ -2037,15 +2037,15 @@ function Read-PdfTextObject {
 function Complete-PdfOpenArray {
     <#
     .SYNOPSIS
-      At the end of a stream, a [ never closed (it took in the rest of the stream): its strings are shown, with a
-      note, so no text is lost (review r15).
+      A [ not closed before the next operator, the next [ or the stream's end (damaged): its strings are shown where
+      it stops, with a note, so no text is lost (reviews r15, r16).
     .PARAMETER Array
       The open array, or $null.
     .PARAMETER State
       The text state.
     #>
     param($Array, [hashtable]$State)
-    if ($null -eq $Array -or $Array.Count -eq 0) { return }
+    if ($null -eq $Array -or -not @($Array | Where-Object { $_[0] -eq '(' -or $_[0] -eq '<' }).Count) { return }   # no strings: nothing lost
     Add-PdfNote 'Part of this PDF is damaged (an unclosed [ ]): check by hand'
     Add-PdfArrayPieces $Array $State
 }
@@ -2089,7 +2089,10 @@ function Invoke-PdfTextOperator {
         'Tc' { $State.CharSpace = ConvertTo-PdfNumber $last }
         'Tw' { $State.WordSpace = ConvertTo-PdfNumber $last }
         'Tz' { $State.Scale = (ConvertTo-PdfNumber $last) / 100 }
-        'TJ' { if ($last -is [System.Collections.Generic.List[string]]) { Add-PdfArrayPieces $last $State } }
+        'TJ' {
+            if ($last -is [System.Collections.Generic.List[string]]) { Add-PdfArrayPieces $last $State }
+            elseif ($last -is [string] -and $last.Length -ge 2 -and ($last[0] -eq '(' -or $last[0] -eq '<')) { Add-PdfArrayPieces @($last) $State }   # a bare string (damaged)
+        }
         'Td' { Add-PdfMove $Stack $State }
         'TD' { $pieces.Add("`n"); $State.Shown.Clear() }
         'T*' { $pieces.Add("`n"); $State.Shown.Clear() }
