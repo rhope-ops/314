@@ -1,3 +1,5 @@
+![33-332.Z: Privacy Act Management](https://repository-images.githubusercontent.com/1465745904/63428ac3-60d0-44c2-be58-475984d11817)
+
 # Ion: DoD365 PII Reporter
 
 A read-only PowerShell script that a **member** runs to find files that may hold PII in one Microsoft Teams team or SharePoint site. It uses only your own access: owner rights are not needed, and a private or shared channel is scanned only if you are in it. It scans every folder of the site's Documents library (in a team, one folder per standard channel) and the files at its top, with two progress bars (the whole scan, and the file in work) and live counts. At the end it shows the hits per PII type on screen and saves one Excel workbook: a Summary tab first, then one tab per PII type, worst first. **Every found value is masked** (for example `***-**-1234`), so the results are not a PII spill themselves.
