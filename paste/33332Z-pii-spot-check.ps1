@@ -22,7 +22,7 @@
     src/PdfCore.psm1, sha256 da11bdba883c
     src/PdfObjects.psm1, sha256 a629a982d95b
     src/PdfFonts.psm1, sha256 604c4d61b80a
-    src/PdfText.psm1, sha256 dcf88aa7cc1f
+    src/PdfText.psm1, sha256 c512cb54693d
     src/TextExtract.psm1, sha256 e29978d7b4fa
     src/XlsxWriter.psm1, sha256 e29becdc6a65
     src/Report.psm1, sha256 48ae8c157137
@@ -44,13 +44,13 @@
     line  1114  Module PdfObjects.psm1
     line  1461  Module PdfFonts.psm1
     line  1882  Module PdfText.psm1
-    line  2443  Module TextExtract.psm1
-    line  2702  Module XlsxWriter.psm1
-    line  2973  Module Report.psm1
-    line  3471  Module ScanMeter.psm1
-    line  3736  Module ChannelScan.psm1
-    line  4322  Body of Find-ChannelPII.ps1
-    line  4423  Clean-up
+    line  2450  Module TextExtract.psm1
+    line  2709  Module XlsxWriter.psm1
+    line  2980  Module Report.psm1
+    line  3478  Module ScanMeter.psm1
+    line  3743  Module ChannelScan.psm1
+    line  4329  Body of Find-ChannelPII.ps1
+    line  4430  Clean-up
 #>
 
 # ==== Settings ==== (optional: edit the values between the quotes; empty = the script asks)
@@ -1922,6 +1922,10 @@ $script:WalkTokens = 5000
 # Entries one [ ] array may hold (a TJ line has tens to thousands); more makes the PDF NOT SCANNED.
 $script:MaxArrayItems = 100000
 
+# Keywords that are values, not operators, inside an array (a marked-content property list: [(lbl) true]).
+$script:ArrayValues = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::Ordinal)
+foreach ($value in @('true', 'false', 'null')) { [void]$script:ArrayValues.Add($value) }
+
 # The operators that change the text (Invoke-PdfTextOperator); every other operator only drops its operands.
 $script:TextOperators = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::Ordinal)
 foreach ($operator in @('Tf', 'Tc', 'Tw', 'Tz', 'TJ', 'Tj', "'", '"', 'Td', 'TD', 'T*', 'Tm', 'ET')) { [void]$script:TextOperators.Add($operator) }
@@ -2005,8 +2009,7 @@ function Read-PdfTextObject {
         $t = $token.Value
         if ($token.Index -gt $next -and $Content.IndexOf('(', $next, $token.Index - $next) -ge 0) { Assert-PdfGap $Content $next $token.Index }
         $next = $token.Index + $token.Length
-        $first = $t[0]
-        if ($first -eq '%') { continue }   # a comment
+        $first = $t[0]; if ($first -eq '%') { continue }   # a comment
         if ($t -ceq 'BI') { $inImage = $true; $stack.Clear(); continue }
         if ($inImage) {
             if ($t -ceq 'ID') { $next = Skip-PdfInlineImage $Content $next $ImageEnd; $inImage = $false; $walk = $true; break }   # else: its keys
@@ -2014,7 +2017,8 @@ function Read-PdfTextObject {
         }
         if ($t -eq '[') { Complete-PdfOpenArray $array $State; $array = New-Object System.Collections.Generic.List[string]; continue }
         if ($t -eq ']') { if ($null -ne $array) { $stack.Add($array) }; $array = $null; continue }
-        if ($first -eq '(' -or $first -eq '<' -or $first -eq '/' -or ($first -ge '0' -and $first -le '9') -or $first -eq '-' -or $first -eq '+' -or $first -eq '.') {
+        if ($first -eq '(' -or $first -eq '<' -or $first -eq '/' -or ($first -ge '0' -and $first -le '9') -or $first -eq '-' -or $first -eq '+' -or $first -eq '.' -or
+            ($null -ne $array -and $script:ArrayValues.Contains($t))) {   # true, false and null are values in an array
             if ($null -eq $array) { $stack.Add($t); continue }
             # No real TJ array is this long: a hostile one would hold gigabytes, so the PDF is reported (r14).
             if ($array.Count -ge $script:MaxArrayItems) { throw (New-Object System.FormatException (Get-PdfStringError)) }
@@ -2045,7 +2049,10 @@ function Complete-PdfOpenArray {
       The text state.
     #>
     param($Array, [hashtable]$State)
-    if ($null -eq $Array -or -not @($Array | Where-Object { $_[0] -eq '(' -or $_[0] -eq '<' }).Count) { return }   # no strings: nothing lost
+    if ($null -eq $Array) { return }
+    $strings = $false
+    foreach ($item in $Array) { if ($item[0] -eq '(' -or $item[0] -eq '<') { $strings = $true; break } }
+    if (-not $strings) { return }   # no strings: nothing lost
     Add-PdfNote 'Part of this PDF is damaged (an unclosed [ ]): check by hand'
     Add-PdfArrayPieces $Array $State
 }
@@ -2091,7 +2098,7 @@ function Invoke-PdfTextOperator {
         'Tz' { $State.Scale = (ConvertTo-PdfNumber $last) / 100 }
         'TJ' {
             if ($last -is [System.Collections.Generic.List[string]]) { Add-PdfArrayPieces $last $State }
-            elseif ($last -is [string] -and $last.Length -ge 2 -and ($last[0] -eq '(' -or $last[0] -eq '<')) { Add-PdfArrayPieces @($last) $State }   # a bare string (damaged)
+            else { Add-PdfArrayPieces @($Stack | Where-Object { $_ -is [string] -and $_.Length -ge 2 -and ($_[0] -eq '(' -or $_[0] -eq '<') }) $State }   # bare strings (damaged): every one
         }
         'Td' { Add-PdfMove $Stack $State }
         'TD' { $pieces.Add("`n"); $State.Shown.Clear() }

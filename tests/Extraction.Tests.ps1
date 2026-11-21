@@ -373,3 +373,10 @@ $twoFound = @(Find-PiiInText $twoArrays.Text | ForEach-Object { $_.Detector }) -
 Assert-Equal $true ($twoFound -and $twoArrays.Note -match 'unclosed') 'PDF: an unclosed [ before a closed one is read, with a note'
 $moves = Get-TextFromBytes -Bytes (New-PdfBytes "BT /F1 12 Tf [(Name) TJ 0 -14 Td (SSN: $($Sample.Ssn)) Tj 0 -14 Td (2024) Tj ET" -Plain) -FileName 'mv.pdf'
 Assert-Equal $true (@(Find-PiiInText $moves.Text | ForEach-Object { $_.Detector }) -contains 'SSN') 'PDF: moves after an unclosed [ still break lines'
+# ---- PDF review round 17 (2026-11-21) ----
+# An empty [ closed by an operator: every string that follows is read by the bare TJ.
+$emptyOpen = Get-TextFromBytes -Bytes (New-PdfBytes "BT /F1 12 Tf [ 0 Tc (SSN: $($Sample.Ssn)) ( end)] TJ ET" -Plain) -FileName 'eo.pdf'
+Assert-Equal $true (@(Find-PiiInText $emptyOpen.Text | ForEach-Object { $_.Detector }) -contains 'SSN') 'PDF: strings after an empty unclosed [ are all read'
+# A marked-content property list with true in an array: well formed, so no note and no extra text.
+$property = Get-TextFromBytes -Bytes (New-PdfBytes "/P << /A [(lbl) true] >> BDC BT /F1 12 Tf (Body) Tj ET EMC" -Plain) -FileName 'pl.pdf'
+Assert-Equal 'Body|' ($property.Text.Trim() + '|' + $property.Note) 'PDF: true inside an array is a value, not an operator'
