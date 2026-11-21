@@ -44,6 +44,16 @@ SITE_COLUMNS = len(SITE_HEAD)
 # Where the tool keeps its breach text: one PowerShell string, written as single-quoted parts joined with "+".
 TOOL_VAR = re.compile(r"\$script:BreachAdvice\s*=\s*((?:'(?:[^']|'')*'\s*\+?\s*)+)")
 TOOL_PART = re.compile(r"'((?:[^']|'')*)'")
+# Markdown that GitHub renders but this builder does not: a site section that holds any of it fails the check, so the
+# site never shows text that the README shows differently. An underscore inside a word is plain text on GitHub
+# (AFI33-332_DAFGM2026-01), so only an underscore at a word's edge is refused.
+UNSUPPORTED = ((r'[*`\\]', 'a lone * or ` or \\'), (r'(?<![A-Za-z0-9])_|_(?![A-Za-z0-9])', 'an _emphasis_ mark'),
+               (r'~~', 'strikethrough'), (r'[\[\]<>]', 'a link, an HTML tag or a quote mark'),
+               (r'&(#\d+|#x[0-9A-Fa-f]+|[A-Za-z]+);', 'an HTML entity'), (r'https?://|www\.', 'a bare web address'))
+# A line that starts a list, a heading or a quote in Markdown.
+BLOCK_START = r'\s*([-+*]\s|#|>|\d+[.)]\s)'
+# A table's delimiter row (GFM): cells of dashes with optional alignment colons.
+DELIMITER_ROW = r'\|(\s*:?-+:?\s*\|)+'
 # HTML indents inside the generated blocks, matching the hand-written page around them.
 INDENT_BLOCK = '        '
 INDENT_ROW = '              '
@@ -64,8 +74,20 @@ def readme_section(text, name):
     return match.group(1).strip()
 
 
+def refuse_marks(markdown):
+    """Raise ValueError when plain text (outside `code`, **bold** marks removed) holds Markdown GitHub would render.
+
+    Args:
+        markdown: one line of text, without its `code` spans.
+    """
+    text = re.sub(r'\*\*([^*`]+)\*\*', r'\1', markdown)
+    for pattern, what in UNSUPPORTED:
+        if re.search(pattern, text):
+            raise ValueError(f'{README}: unsupported Markdown ({what}) in a site section; only **bold** and `code`: {markdown}')
+
+
 def inline(markdown):
-    """Turn one line of Markdown (text, **bold**, `code`) into escaped HTML; raise ValueError on any other Markdown mark.
+    """Turn one line of Markdown (text, **bold**, `code`) into escaped HTML; raise ValueError on any other Markdown.
 
     Args:
         markdown: one line of text; text inside `code` is kept as is and never made bold.
@@ -77,55 +99,71 @@ def inline(markdown):
         if piece.startswith('`') and piece.endswith('`') and len(piece) > 1:
             out.append('<code>' + html.escape(piece[1:-1], quote=False) + '</code>')
             continue
-        text = re.sub(r'\*\*([^*`]+)\*\*', r'<strong>\1</strong>', html.escape(piece, quote=False))
-        # An underscore inside a word is plain text on GitHub (AFI33-332_DAFGM2026-01), so only these marks are refused.
-        if re.search(r'[*`\\]', re.sub(r'<[^>]+>', '', text)):
-            raise ValueError(f'{README}: unsupported Markdown in a site section (only **bold** and `code`): {markdown}')
-        out.append(text)
+        refuse_marks(piece)
+        out.append(re.sub(r'\*\*([^*`]+)\*\*', r'<strong>\1</strong>', html.escape(piece, quote=False)))
     return ''.join(out)
 
 
-def split_row(line):
-    """Split one Markdown table row into cell texts; a "|" inside `code` stays in its cell.
+def paragraphs(markdown):
+    """Return the paragraphs of plain Markdown text (blank lines split them; lines inside one are joined).
 
     Args:
-        line: one table row, for example "| SSN | 3-2-4 digits |".
+        markdown: text without a table.
+    Returns:
+        The paragraphs, each on one line; raise ValueError when a line starts a list, heading or quote.
+    """
+    for line in markdown.splitlines():
+        if re.match(BLOCK_START, line):
+            raise ValueError(f'{README}: a list, heading or quote is not supported in a site section: {line}')
+    return [' '.join(part.split()) for part in re.split(r'\n\s*\n', markdown) if part.strip()]
+
+
+def split_row(line):
+    """Split one Markdown table row into cell texts; raise ValueError on an escaped pipe.
+
+    Args:
+        line: one table row, for example "| SSN | 3-2-4 digits |". GitHub splits on every "|", even inside `code`.
     Returns:
         The cell texts, stripped.
     """
-    cells, cell, in_code = [], '', False
-    for char in line.strip()[1:-1] if line.strip().endswith('|') else line.strip()[1:]:
-        if char == '`':
-            in_code = not in_code
-        if char == '|' and not in_code:
-            cells.append(cell.strip())
-            cell = ''
-        else:
-            cell += char
-    return cells + [cell.strip()]
+    if '\\|' in line:
+        raise ValueError(f'{README}: an escaped "|" is not supported in a site table: {line}')
+    return [cell.strip() for cell in line.strip()[1:-1].split('|')]
 
 
 def table(markdown):
-    """Return a Markdown table's header cells and body rows; raise ValueError when a row has the wrong cell count.
+    """Return a section's table (header cells and body rows) and the text after it.
 
     Args:
-        markdown: text holding one table (lines that start with "|") and maybe other lines.
+        markdown: the section: a table first (every line starts and ends with "|", the second line is the
+            delimiter row), then optional plain text after a blank line.
     Returns:
-        A pair: the header cells, and the body rows as lists of cell texts.
+        A triple: the header cells, the body rows as lists of cell texts, and the text after the table.
+    Raises:
+        ValueError: when the table is missing, malformed, or a row's cell count differs from the header's.
     """
-    lines = [line for line in markdown.splitlines() if line.strip().startswith('|')]
-    if len(lines) < 3:
-        raise ValueError(f'{README}: a site section needs a table with a header and at least one row')
-    head, rows = split_row(lines[0]), [split_row(line) for line in lines[2:]]
+    lines = markdown.splitlines()
+    end = next((n for n, line in enumerate(lines) if not line.strip().startswith('|')), len(lines))
+    rows_text, rest = lines[:end], '\n'.join(lines[end:])
+    if len(rows_text) < 3 or any(not line.strip().endswith('|') for line in rows_text):
+        raise ValueError(f'{README}: a site section must start with a table: every row starts and ends with "|"')
+    if not re.fullmatch(DELIMITER_ROW, rows_text[1].strip()):
+        raise ValueError(f'{README}: the second table line must be the delimiter row, such as |---|---|')
+    if '|' in rest or (rest.strip() and not rest.startswith('\n')):
+        raise ValueError(f'{README}: text after a site table needs a blank line, and no other table rows')
+    head, rows = split_row(rows_text[0]), [split_row(line) for line in rows_text[2:]]
     for row in rows:
         if len(row) != len(head):
             raise ValueError(f'{README}: a table row has {len(row)} cells, its header {len(head)}: {row}')
-    return head, rows
+    return head, rows, rest
 
 
 def build_intro(markdown):
     """Return the site's intro paragraph."""
-    return f'{INDENT_BLOCK}<p>{inline(" ".join(markdown.split()))}</p>'
+    parts = paragraphs(markdown)
+    if len(parts) != 1:
+        raise ValueError(f'{README}: site:intro must be one paragraph')
+    return f'{INDENT_BLOCK}<p>{inline(parts[0])}</p>'
 
 
 def build_key_facts(markdown):
@@ -136,12 +174,11 @@ def build_key_facts(markdown):
     Returns:
         The HTML: a definition list (label, text) and a small paragraph.
     """
-    head, rows = table(markdown)
+    head, rows, rest = table(markdown)
     if len(head) != 2 or any(not re.fullmatch(r'\*\*[^*]+:\*\*', row[0]) for row in rows):
         raise ValueError(f'{README}: site:key-facts rows must be "| **Label:** | text |"')
-    items = ''.join(f'\n{INDENT_BLOCK}  <dt>{html.escape(row[0][2:-2])}</dt><dd>{inline(row[1])}</dd>' for row in rows)
-    closing = [line.strip() for line in markdown.splitlines() if line.strip() and not line.strip().startswith('|')]
-    tail = ''.join(f'\n{INDENT_BLOCK}<p class="small mut">{inline(line)}</p>' for line in closing)
+    items = ''.join(f'\n{INDENT_BLOCK}  <dt>{inline(row[0][2:-2])}</dt><dd>{inline(row[1])}</dd>' for row in rows)
+    tail = ''.join(f'\n{INDENT_BLOCK}<p class="small mut">{inline(part)}</p>' for part in paragraphs(rest))
     return f'{INDENT_BLOCK}<dl class="facts">{items}\n{INDENT_BLOCK}</dl>{tail}'
 
 
@@ -153,7 +190,9 @@ def build_looks_for(markdown):
     Returns:
         The HTML rows, one per line.
     """
-    head, rows = table(markdown)
+    head, rows, rest = table(markdown)
+    if rest.strip():
+        raise ValueError(f'{README}: site:looks-for holds only its table')
     if tuple(head[:SITE_COLUMNS]) != SITE_HEAD:
         raise ValueError(f'{README}: site:looks-for must start with the columns {" | ".join(SITE_HEAD)} (the site\'s table head)')
     return '\n'.join(INDENT_ROW + '<tr>' + ''.join(f'<td>{inline(cell)}</td>' for cell in row[:SITE_COLUMNS]) + '</tr>'
@@ -162,7 +201,7 @@ def build_looks_for(markdown):
 
 def breach_parts(markdown):
     """Return the breach advice and its citation; raise ValueError unless the section has exactly these two paragraphs."""
-    parts = [' '.join(part.split()) for part in markdown.split('\n\n') if part.strip()]
+    parts = paragraphs(markdown)
     if len(parts) != 2:
         raise ValueError(f'{README}: site:breach must hold the advice, a blank line, then its citation')
     return parts[0], parts[1]
@@ -259,7 +298,7 @@ def self_test():
               '<!-- site:key-facts -->\n| Fact | |\n|---|---|\n| **Read-only:** | it changes `nothing`. |\n\nFirst line.\nAsk & learn.\n'
               '<!-- /site:key-facts -->\n'
               '<!-- site:looks-for -->\n| Type | Found when | Shown as | Confidence |\n|---|---|---|---|\n'
-              '| SSN | 3-2-4 `a|b` digits | `***-**-1234` | High |\n<!-- /site:looks-for -->\n'
+              '| SSN | 3-2-4 digits | `***-**-1234` | High |\n<!-- /site:looks-for -->\n'
               '<!-- site:breach -->\nReport it now.\n\nRule para 1.\n<!-- /site:breach -->\n')
     marks = ''.join(f'<!-- >>> site:{name}: generated from {README} by {COMMAND} (do not edit) -->\nold\n'
                     f'<!-- <<< site:{name} -->\n' for name in SECTIONS)
@@ -271,7 +310,11 @@ def self_test():
              ('a key fact without a label fails', 'label', ['**Label:**'], True),
              ('a renamed site column fails', 'column', ['must start with the columns'], True),
              ('a row with a wrong cell count fails', 'cells', ['cells, its header'], True),
-             ('unsupported Markdown fails', 'italic', ['unsupported Markdown'], True)]
+             ('unsupported Markdown fails', 'italic', ['unsupported Markdown'], True),
+             ('a link fails', 'link', ['unsupported Markdown (a link'], True),
+             ('a "|" inside code fails, as GitHub splits the cell there', 'pipe', ['cells, its header'], True),
+             ('a table without its delimiter row fails', 'delimiter', ['delimiter row'], True),
+             ('a list in a section fails', 'list', ['list, heading or quote'], True)]
     failed = 0
     for label, broken, expect, write in cases:
         with tempfile.TemporaryDirectory() as tmp:
@@ -282,6 +325,10 @@ def self_test():
             text = text.replace('| Shown as |', '| Shown |') if broken == 'column' else text
             text = text.replace('| High |', '| High | extra |') if broken == 'cells' else text
             text = text.replace('Report it now.', 'Report it *now*.') if broken == 'italic' else text
+            text = text.replace('Rule para 1.', 'Rule [para 1](x).') if broken == 'link' else text
+            text = text.replace('| 3-2-4 digits |', '| 3-2-4 `a|b` digits |') if broken == 'pipe' else text
+            text = text.replace('|---|---|---|---|\n', '| a | b | c | d |\n') if broken == 'delimiter' else text
+            text = text.replace('First line.', '- First line.') if broken == 'list' else text
             (root / README).write_text(text, encoding='utf-8')
             (root / SITE).write_text(marks, encoding='utf-8')
             (root / TOOL).write_text(tool.replace('now', 'later') if broken == 'tool' else tool, encoding='utf-8')
@@ -290,8 +337,8 @@ def self_test():
             if label == 'a fresh build passes':
                 built = (root / SITE).read_text(encoding='utf-8')
                 ok = ok and '<dt>Read-only:</dt><dd>it changes <code>nothing</code>.</dd>' in built and 'Ask &amp; learn.' in built
-                ok = ok and '<td>3-2-4 <code>a|b</code> digits</td><td><code>***-**-1234</code></td></tr>' in built
-                ok = ok and '>High<' not in built and 'First line.</p>' in built
+                ok = ok and '<td>3-2-4 digits</td><td><code>***-**-1234</code></td></tr>' in built
+                ok = ok and '>High<' not in built and 'First line. Ask &amp; learn.</p>' in built
             failed += not ok
             print(('ok   ' if ok else 'FAIL ') + label + ('' if ok else f': {found}'))
     print('SITE TEST PASS' if not failed else 'SITE TEST FAIL')
