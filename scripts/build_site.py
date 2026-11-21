@@ -50,15 +50,21 @@ TOOL_PART = re.compile(r"'((?:[^']|'')*)'")
 # inside a word is plain text on GitHub (AFI33-332_DAFGM2026-01) and is allowed.
 PLAIN_TEXT = r"[A-Za-z0-9 .,;:'\"()\-/?!%+&\u2018\u2019\u201c\u201d\u2013\u2014\u2026]*"
 IN_WORD_UNDERSCORE = r'(?<=[A-Za-z0-9])_(?=[A-Za-z0-9])'
-# Strong text GitHub renders, in the one form this builder allows: "**" after the line start or a space, before a
-# non-space; the closing "**" after a non-space, before the line end, a space or . , ; : ! ? ).
-BOLD = r'(?:(?<=^)|(?<=\s))\*\*(?=[^\s*`])([^*`]*?[^\s*`])\*\*(?=$|[\s.,;:!?)])'
+# Strong text GitHub renders, in the forms this builder allows: "**" after the line start, a space, "(", a quote or
+# "-", before a non-space; the closing "**" after a non-space, before the line end, a space, punctuation, a quote or
+# "-". ("**x:**y" stays refused: GitHub cannot close it before a letter.)
+BOLD = (r'(?:(?<=^)|(?<=[\s("\'“‘-]))\*\*(?=[^\s*`])([^*`]*?[^\s*`])\*\*'
+        r'(?=$|[\s.,;:!?)"\'”’-])')
 # Rendered by GitHub although every character is on the allow list: HTML entities (also with digits, &frac12;),
-# emoji codes (:warning:), and web addresses of any scheme or case (ftp://, HTTP://, WWW.).
-ENTITY_OR_ADDRESS = r'&(#\d+|#x[0-9A-Fa-f]+|[A-Za-z][A-Za-z0-9]*);|:[A-Za-z0-9_+-]+:|[A-Za-z][A-Za-z0-9+.-]*://|(?i:www\.)'
+# emoji codes (:warning:; a name that starts with a letter, not right after a letter or digit, so 09:00-17:00 and
+# 1:2:3 pass), and web addresses of any scheme or case (ftp://, HTTP://, WWW.).
+ENTITY_OR_ADDRESS = (r'&(#\d+|#x[0-9A-Fa-f]+|[A-Za-z][A-Za-z0-9]*);|(?<![A-Za-z0-9]):[A-Za-z_+][A-Za-z0-9_+-]*:'
+                     r'|[A-Za-z][A-Za-z0-9+.-]*://|(?i:www\.)')
 # A line that starts a list (also an empty item: "+" or "1." alone), is indented (an indented code block, or a
 # continuation GitHub may read differently), ends with a hard break, or underlines a heading ("===" or "---").
 LIST_START = r'([-+]|\d+[.)])(\s|$)'
+# Inside a paragraph, only a bullet or "1." starts a list on GitHub ("2026. That year." stays text).
+LIST_INTERRUPT = r'([-+]|1[.)])(\s|$)'
 INDENTED = r'[ \t]'
 SETEXT_LINE = r'\s*(=+|-+)\s*'
 HARD_BREAK = r'.*(  |\\)$'
@@ -122,8 +128,10 @@ def paragraphs(markdown):
     Returns:
         The paragraphs, each on one line; raise ValueError when a line starts a list, heading or quote.
     """
-    for line in markdown.splitlines():
-        if re.match(LIST_START, line) or re.match(INDENTED, line) or re.fullmatch(SETEXT_LINE, line) or re.fullmatch(HARD_BREAK, line):
+    lines = markdown.splitlines()
+    for number, line in enumerate(lines):
+        starts = number == 0 or not lines[number - 1].strip()
+        if re.match(LIST_START if starts else LIST_INTERRUPT, line) or re.match(INDENTED, line) or re.fullmatch(SETEXT_LINE, line) or re.fullmatch(HARD_BREAK, line):
             raise ValueError(f'{README}: a list, an indented line, a heading underline or a hard line break is not supported '
                              f'in a site section: {line}')
     return [' '.join(part.split()) for part in re.split(r'\n\s*\n', markdown) if part.strip()]
@@ -333,6 +341,9 @@ TEST_CASES = (('a fresh build passes', None, None, [], True),
               ('an e-mail address fails', ('Rule para 1.', 'Rule para 1, ask a@b.example.'), None, [UNSUPPORTED_WORDS], True),
               ('an entity with digits fails', ('Rule para 1.', 'Rule para &frac12;.'), None, [UNSUPPORTED_WORDS], True),
               ('an emoji code fails', ('Report it now.', 'Report it now :warning:'), None, [UNSUPPORTED_WORDS], True),
+              ('plain times, ratios and bold in brackets or quotes pass',
+               ('A safe_tool & more.', 'A safe_tool (**Microsoft Purview**), "**Stop**", **PII**-free, 09:00-17:00, 10:30:45, 1:2:3,\n'
+                '2026. That year.'), None, [], True),
               ('a web address of another scheme fails', ('Rule para 1.', 'Rule para 1, see ftp://x.example'), None,
                [UNSUPPORTED_WORDS], True))
 # What the fresh build must write: an escaped "&", code kept, the Confidence column left out, two lines joined.
