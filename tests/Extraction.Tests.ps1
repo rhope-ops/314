@@ -380,3 +380,10 @@ Assert-Equal $true (@(Find-PiiInText $emptyOpen.Text | ForEach-Object { $_.Detec
 # A marked-content property list with true in an array: well formed, so no note and no extra text.
 $property = Get-TextFromBytes -Bytes (New-PdfBytes "/P << /A [(lbl) true] >> BDC BT /F1 12 Tf (Body) Tj ET EMC" -Plain) -FileName 'pl.pdf'
 Assert-Equal 'Body|' ($property.Text.Trim() + '|' + $property.Note) 'PDF: true inside an array is a value, not an operator'
+# ---- PDF review round 18 (2026-11-21) ----
+# Stray strings or arrays next to a show operator's own operand: every one is read, with a note.
+foreach ($stray in @("[(SSN: $($Sample.Ssn))] (x) TJ", "(SSN: $($Sample.Ssn)) [(x)] TJ", "[(SSN: $($Sample.Ssn))] [(x)] TJ", "(SSN: $($Sample.Ssn)) (x) Tj")) {
+    $strayRead = Get-TextFromBytes -Bytes (New-PdfBytes "BT /F1 12 Tf $stray ET" -Plain) -FileName 'st.pdf'
+    $strayFound = @(Find-PiiInText $strayRead.Text | ForEach-Object { $_.Detector }) -contains 'SSN'
+    Assert-Equal $true ($strayFound -and $strayRead.Note -match 'stray') ('PDF: stray operands read, with a note: ' + $stray.Substring($stray.Length - 2))
+}
