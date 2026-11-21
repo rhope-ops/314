@@ -465,6 +465,8 @@ function Invoke-OneFileScan {
         $Rows.Add((New-ReportRow 'File' $Channel $item $link $modified 'NOT SCANNED' '' '' $reason)); return 0
     }
     if ($text.Status -ne 'OK') { $Rows.Add((New-ReportRow 'File' $Channel $item $link $modified 'NOT SCANNED' '' '' (Protect-PiiText $text.Reason))); return 0 }
+    # A file read in part (a PDF over a cap, damaged, or with attachments): a "check by hand" row next to its hits.
+    if ($text.Note) { $Rows.Add((New-ReportRow 'File' $Channel $item $link $modified 'NOT SCANNED' '' '' (Protect-PiiText $text.Note))) }
     Write-FileStep $size 'Checking for PII' 80
     $clock.Restart()
     foreach ($hit in @(Find-PiiInText $text.Text)) {
