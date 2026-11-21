@@ -357,3 +357,12 @@ Assert-Equal $true (@(Find-PiiInText $openArray.Text | ForEach-Object { $_.Detec
 $shortRuns = (Get-GlyphRun 'SSN:' 3.6) + ' 0 -14 Td ' + (Get-GlyphRun '1234' 3.6)
 $shortRead = Get-TextFromBytes -Bytes (New-PdfBytes "BT /F1 12 Tf $shortRuns ET" -Plain) -FileName 'sr.pdf'
 Assert-Equal $true ($shortRead.Text -match 'SSN:' -and $shortRead.Text -match '1234') 'PDF: short letter-spaced lines keep their words'
+
+# ---- PDF review round 15 (2026-11-21) ----
+# An unclosed [ takes in the rest of the stream: its strings are still read, with a note.
+$unclosed = Get-TextFromBytes -Bytes (New-PdfBytes "BT /F1 12 Tf (Roster) Tj ET BT /F1 12 Tf [(x) TJ ET BT /F1 12 Tf (SSN: $($Sample.Ssn)) Tj ET" -Plain) -FileName 'uc.pdf'
+Assert-Equal $true ((@(Find-PiiInText $unclosed.Text | ForEach-Object { $_.Detector }) -contains 'SSN') -and $unclosed.Note -match 'unclosed') 'PDF: text after an unclosed [ is read, with a note'
+# Two initials and a word gap under a letter-spaced heading: the word gap stays a space.
+$initials = (Get-GlyphRun 'ROSTER LIST' 3.6) + " 0 -14 Td (Y) Tj 10.272 0 Td (N) Tj 12.264 0 Td ($($Sample.Ssn)) Tj"
+$initialsRead = Get-TextFromBytes -Bytes (New-PdfBytes "BT /F1 12 Tf $initials ET" -Plain) -FileName 'in.pdf'
+Assert-Equal $true (@(Find-PiiInText $initialsRead.Text | ForEach-Object { $_.Detector }) -contains 'SSN') 'PDF: a word gap after initials under a spaced heading stays a space'
