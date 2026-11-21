@@ -100,7 +100,14 @@ function Get-ArchiveParts {
 }
 
 function Split-MimeEntity {
-    # A MIME entity (a message or one part) as its headers (unfolded, names in lower case) and its body text.
+    <#
+    .SYNOPSIS
+      A MIME entity (a message or one part) as its headers (unfolded, names in lower case) and its body text.
+    .PARAMETER Text
+      The entity's text (Latin-1 characters, one per byte).
+    .OUTPUTS
+      [hashtable] Headers, Body.
+    #>
     param([string]$Text)
     $cut = [regex]::Match($Text, '\r?\n\r?\n')
     $head = $Text; $body = ''
@@ -149,7 +156,15 @@ function ConvertFrom-TransferEncoding {
 }
 
 function ConvertFrom-EncodedWords {
-    # A header with RFC 2047 encoded words (=?utf-8?B?...?= or =?utf-8?Q?...?=) as plain text.
+    <#
+    .SYNOPSIS
+      A header with RFC 2047 encoded words (=?utf-8?B?...?= or =?utf-8?Q?...?=) as plain text; an unknown
+      character set falls back to Latin-1.
+    .PARAMETER Value
+      The header value.
+    .OUTPUTS
+      [string]
+    #>
     param([string]$Value)
     $evaluator = [System.Text.RegularExpressions.MatchEvaluator] {
         param($m)

@@ -19,6 +19,9 @@ Set-StrictMode -Version 2.0
 # Seconds one WinRT step (decode, read) may take; frames read from one multi-page TIFF.
 $script:OcrStepMilliseconds = 30000
 $script:MaxImageFrames = 30
+# A scanned PDF (no text layer): its JPEG page images are read, at most this many (Get-ScanPagesText).
+$script:MaxScanPages = 30
+$script:ScanLatin1 = [System.Text.Encoding]::GetEncoding(28591)
 
 $script:OcrMissingReason = 'Image: Windows OCR is not available on this computer (no OCR language?): check by hand'
 $script:OcrFailedReason = 'Image: its text could not be read (damaged, or a format Windows cannot open): check by hand'
@@ -30,7 +33,11 @@ $script:Ocr = @{ Checked = $false; Engine = $null; AsTask = $null }
 $script:OcrOverride = $null
 
 function Initialize-Ocr {
-    # Finds the WinRT OCR engine once; leaves Engine $null when it is not there.
+    <#
+    .SYNOPSIS
+      Finds the Windows OCR engine (WinRT, built into Windows 10/11) once per run; leaves Engine $null when it is not
+      there, so every image then gets $OcrMissingReason.
+    #>
     if ($script:Ocr.Checked) { return }
     $script:Ocr.Checked = $true
     try {
@@ -120,4 +127,28 @@ function Get-ImageText {
     finally { $memory.Dispose() }
 }
 
-Export-ModuleMember -Function Get-ImageText
+function Get-ScanPagesText {
+    <#
+    .SYNOPSIS
+      The text of a scanned PDF (JPEG page images, no text layer) read with Windows OCR, page by page, at most
+      $MaxScanPages pages; more pages give a note, OCR that is not available a reason.
+    .PARAMETER Images
+      The JPEG image streams (Latin-1 text).
+    .PARAMETER Note
+      Notes already made for this PDF.
+    .OUTPUTS
+      [hashtable] Text, Reason, Note.
+    #>
+    param([string[]]$Images, [string]$Note)
+    $pages = New-Object System.Collections.Generic.List[string]
+    $notes = @($Note | Where-Object { $_ })
+    for ($i = 0; $i -lt [Math]::Min($Images.Count, $script:MaxScanPages); $i++) {
+        $read = Get-ImageText ($script:ScanLatin1.GetBytes($Images[$i]))
+        if ($read.Reason) { return @{ Text = ''; Reason = 'Scanned PDF: ' + $read.Reason; Note = '' } }
+        $pages.Add($read.Text)
+    }
+    if ($Images.Count -gt $script:MaxScanPages) { $notes += "Scanned PDF: only the first $script:MaxScanPages page images were read: check by hand" }
+    return @{ Text = ($pages -join "`n"); Reason = ''; Note = ($notes -join '; ') }
+}
+
+Export-ModuleMember -Function Get-ImageText, Get-ScanPagesText

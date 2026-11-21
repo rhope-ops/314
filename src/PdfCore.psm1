@@ -29,7 +29,8 @@ $script:MaxRangeTarget = 66
 
 # Limits, so one damaged or hostile PDF cannot stall the scan (fresh review, 2026-11-20): the time for one PDF, the
 # time for one regex search, the size one stream may inflate to, and the inflated size of one PDF in all.
-$script:PdfSecondsLimit = 30
+# 120 s: a 76-page table-heavy PDF took 18 s on PowerShell 7 (fresh review, 2026-11-21); Windows PowerShell 5.1 is slower.
+$script:PdfSecondsLimit = 120
 $script:PdfRegexTimeout = [TimeSpan]::FromSeconds(2)
 $script:MaxStreamBytes = 16MB
 $script:MaxInflatedBytes = 64MB
@@ -120,6 +121,30 @@ function Expand-PdfStream {
     return $script:Latin1.GetString($output.ToArray())
 }
 
+function Test-PdfUnpackCap {
+    # True when a stream being decoded by hand (LZW, RunLength) reached the cap of one stream or of the whole PDF.
+    param([long]$Length)
+    return ($Length -ge $script:MaxStreamBytes -or $script:PdfBudget.Inflated + $Length -ge $script:MaxInflatedBytes)
+}
+
+function Close-PdfUnpack {
+    <#
+    .SYNOPSIS
+      Ends a stream decoded by hand: its size counts toward the PDF's unpack total (as Flate output does), and a
+      stream stopped at a cap gets a "check by hand" note.
+    .PARAMETER Out
+      The StringBuilder with the decoded bytes.
+    .PARAMETER Whole
+      The stream ended by itself (not at a cap).
+    .OUTPUTS
+      [string] the decoded bytes as Latin-1 text.
+    #>
+    param($Out, [switch]$Whole)
+    $script:PdfBudget.Inflated += $Out.Length
+    if (-not $Whole) { Add-PdfNote 'Part of this PDF is too large to unpack: check by hand' }
+    return $Out.ToString()
+}
+
 function Expand-LzwStream {
     <#
     .SYNOPSIS
@@ -148,19 +173,19 @@ function Expand-LzwStream {
             $code = [int](($bits -shr $count) -band ((1 -shl $width) - 1))
             $bits = $bits -band ((1L -shl $count) - 1)
             if ($code -eq 256) { & $reset; $width = 9; $previous = $null; continue }
-            if ($code -eq 257) { return $out.ToString() }
+            if ($code -eq 257) { return (Close-PdfUnpack $out -Whole) }
             if ($code -lt $table.Count) { $entry = $table[$code] }
             elseif ($code -eq $table.Count -and $null -ne $previous) { $entry = $previous + $previous[0] }
-            else { Add-PdfNote 'Part of this PDF is damaged: check by hand'; return $out.ToString() }
+            else { Add-PdfNote 'Part of this PDF is damaged: check by hand'; return (Close-PdfUnpack $out -Whole) }
             [void]$out.Append($entry)
-            if ($out.Length -ge $script:MaxStreamBytes) { Add-PdfNote 'Part of this PDF is too large to unpack: check by hand'; return $out.ToString() }
+            if (Test-PdfUnpackCap $out.Length) { return (Close-PdfUnpack $out) }
             if ($null -ne $previous -and $table.Count -lt 4096) { $table.Add($previous + $entry[0]) }
             $previous = $entry
             $limit = $table.Count; if ($EarlyChange) { $limit++ }
             if ($limit -ge (1 -shl $width) -and $width -lt 12) { $width++ }
         }
     }
-    return $out.ToString()
+    return (Close-PdfUnpack $out -Whole)
 }
 
 function Expand-RunLengthStream {
@@ -183,9 +208,9 @@ function Expand-RunLengthStream {
         if ($length -lt 128) { $take = [Math]::Min($length + 1, $Raw.Length - $i - 1); [void]$out.Append($Raw, $i + 1, $take); $i += 1 + $take }
         elseif ($i + 1 -lt $Raw.Length) { [void]$out.Append($Raw[$i + 1], 257 - $length); $i += 2 }
         else { break }
-        if ($out.Length -ge $script:MaxStreamBytes) { Add-PdfNote 'Part of this PDF is too large to unpack: check by hand'; break }
+        if (Test-PdfUnpackCap $out.Length) { return (Close-PdfUnpack $out) }
     }
-    return $out.ToString()
+    return (Close-PdfUnpack $out -Whole)
 }
 
 function Read-PdfStream {
@@ -228,7 +253,7 @@ function ConvertFrom-Ascii85 {
     #>
     param([string]$Text)
     $end = $Text.IndexOf('~>'); if ($end -ge 0) { $Text = $Text.Substring(0, $end) }
-    $Text = ($Text -replace '\s', '') -replace 'z', '!!!!!'
+    $Text = ($Text -replace '\s', '') -creplace 'z', '!!!!!'   # -creplace: only a small z (a capital Z is data)
     $out = New-Object System.Text.StringBuilder
     for ($i = 0; $i -lt $Text.Length; $i += 5) {
         if (($i % 100000) -eq 0) { Assert-PdfTime }

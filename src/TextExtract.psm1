@@ -324,7 +324,7 @@ function Add-ContainerParts {
     .PARAMETER Bytes
       The container bytes.
     .PARAMETER Extension
-      .zip or .eml.
+      The container's extension: zip or eml, with its point.
     .PARAMETER Depth
       How many containers the container sits in.
     #>

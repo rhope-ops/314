@@ -24,3 +24,4 @@ Title: 33-332.Z · <task> · <date>. Read AGENTS.md first.
    reader (src/PdfText.psm1). Teams-link lookup waits on the PAM's test snippet result.
 10. Approved plan 2026-11-20 (next): Ion round 3 readers, docs/reviews/2026-11-20-ion-round3-plan.md.
 11. Approved plan 2026-11-21 (next): network drives, docs/reviews/2026-11-21-ion-network-drive-plan.md.
+12. Backlog 2026-11-21: file editor and dates in the report, docs/reviews/2026-11-21-ion-editor-item.md.
