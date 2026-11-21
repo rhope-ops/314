@@ -28,10 +28,9 @@ $script:PdfTokenPattern = (Get-PdfStringPattern) + '|%[^\r\n]*|\[|\]|/[^\s/\[\](
 # A TJ gap wider than this (thousandths of a text unit) is a space between words.
 $script:PdfWordGap = 250
 
-# A same-line Td move, marked in a text block until the block ends (Complete-PdfTextBlock): a space between words,
-# or nothing in a block drawn one glyph at a time (at least this share of its shows are one glyph each).
-$script:SameLineMove = [char]0xE000
-$script:GlyphBlockShare = 0.6
+# A same-line Td move leaves a word gap when it starts the next piece more than this share of the font size past
+# the estimated end of the text before it (Add-PdfMove); a smaller move (kerning, glyph by glyph) joins the pieces.
+$script:WordGapEms = 0.25
 
 # The end of an inline image's bytes (BI <keys> ID <bytes> EI): white space, EI, then a delimiter or the end. After a
 # BI operator (a token, never the word BI in a string) the reader steps over the bytes to here, so image bytes never
@@ -142,8 +141,8 @@ function Convert-PdfContentToText {
     <#
     .SYNOPSIS
       The text a content stream shows: Tj, TJ, ' and " strings in the current font; a line break at each line move
-      and text block end; a space at a wide TJ gap and at a same-line Td move, except in a block drawn one glyph at a
-      time (Chrome does this), where those moves join the glyphs (Complete-PdfTextBlock).
+      and text block end; a space at a wide TJ gap and at a same-line Td move that leaves a gap (Add-PdfMove), so
+      text placed piece by piece (Chrome splits at kerning pairs and draws glyph by glyph) joins again.
     .PARAMETER Content
       The (inflated) content stream.
     .PARAMETER Fonts
@@ -152,7 +151,7 @@ function Convert-PdfContentToText {
       [string]
     #>
     param([string]$Content, [hashtable]$Fonts)
-    $state = @{ Out = (New-Object System.Text.StringBuilder); Block = (New-Object System.Text.StringBuilder); Shows = 0; Single = 0; Font = $null }
+    $state = @{ Out = (New-Object System.Text.StringBuilder); Block = (New-Object System.Text.StringBuilder); Font = $null; Size = 12.0; Advance = 0.0 }
     $stack = New-Object System.Collections.Generic.List[object]
     $array = $null
     $count = 0
@@ -195,7 +194,7 @@ function Invoke-PdfTextOperator {
     .PARAMETER Stack
       Its operands.
     .PARAMETER State
-      Out, Block (the text block in work), Shows, Single (shows of one glyph), Font.
+      Out, Block (the text block in work), Font, Size (font size), Advance (estimated width shown since the line's start).
     .PARAMETER Fonts
       The font table.
     #>
@@ -204,35 +203,84 @@ function Invoke-PdfTextOperator {
     $shown = $null   # the string a Tj, ' or " shows: only a string token counts
     if ($Operator -cin @('Tj', "'", '"') -and $last -is [string] -and $last.Length -ge 2 -and ($last[0] -eq '(' -or $last[0] -eq '<')) {
         $shown = ConvertFrom-PdfGlyphs (ConvertFrom-PdfString $last) $State.Font
-        $State.Shows++; if ($shown.Length -eq 1) { $State.Single++ }
+        $State.Advance += Get-PdfTextWidth $shown $State.Size
     }
     $block = $State.Block
     switch -CaseSensitive ($Operator) {
-        'Tf' { if ($Stack.Count -ge 2) { $State.Font = $Fonts[([string]$Stack[$Stack.Count - 2]).TrimStart('/')] } }
+        'Tf' { if ($Stack.Count -ge 2) { $State.Font = $Fonts[([string]$Stack[$Stack.Count - 2]).TrimStart('/')]; $State.Size = [Math]::Abs((ConvertTo-PdfNumber $last)) } }
         'Tj' { [void]$block.Append($shown) }
-        "'" { [void]$block.Append("`n" + $shown) }
-        '"' { [void]$block.Append("`n" + $shown) }
-        'TJ' { if ($last -is [System.Collections.Generic.List[string]]) { $State.Shows++; [void]$block.Append((Convert-PdfArrayToText $last $State.Font)) } }
-        'Td' { if ($Stack.Count -ge 2 -and (ConvertTo-PdfNumber $last) -ne 0) { [void]$block.Append("`n") } else { [void]$block.Append($script:SameLineMove) } }
-        'TD' { [void]$block.Append("`n") }
-        'T*' { [void]$block.Append("`n") }
-        'Tm' { [void]$block.Append("`n") }
+        "'" { [void]$block.Append("`n" + $shown); $State.Advance = Get-PdfTextWidth $shown $State.Size }
+        '"' { [void]$block.Append("`n" + $shown); $State.Advance = Get-PdfTextWidth $shown $State.Size }
+        'TJ' {
+            if ($last -is [System.Collections.Generic.List[string]]) {
+                $text = Convert-PdfArrayToText $last $State.Font
+                [void]$block.Append($text); $State.Advance += Get-PdfTextWidth $text $State.Size
+            }
+        }
+        'Td' { Add-PdfMove $Stack $State }
+        'TD' { [void]$block.Append("`n"); $State.Advance = 0.0 }
+        'T*' { [void]$block.Append("`n"); $State.Advance = 0.0 }
+        'Tm' { [void]$block.Append("`n"); $State.Advance = 0.0 }
         'ET' { Complete-PdfTextBlock $State }
     }
+}
+
+function Get-PdfTextWidth {
+    <#
+    .SYNOPSIS
+      The estimated width of shown text, in text space units: average glyph widths (Helvetica-like, in ems) times
+      the font size. Digits and common number punctuation have their usual widths, so the gap after a number piece
+      is measured well.
+    .PARAMETER Text
+      The shown text.
+    .PARAMETER Size
+      The font size.
+    .OUTPUTS
+      [double]
+    #>
+    param([string]$Text, [double]$Size)
+    $ems = 0.0
+    foreach ($c in $Text.ToCharArray()) {
+        if ([char]::IsDigit($c)) { $ems += 0.556 }
+        elseif ($c -eq ' ' -or $c -eq '.' -or $c -eq ',' -or $c -eq ':' -or $c -eq ';') { $ems += 0.278 }
+        elseif ($c -eq '-' -or $c -eq '(' -or $c -eq ')' -or $c -eq '/') { $ems += 0.333 }
+        elseif ([char]::IsUpper($c)) { $ems += 0.667 }
+        else { $ems += 0.5 }
+    }
+    return ($ems * $Size)
+}
+
+function Add-PdfMove {
+    <#
+    .SYNOPSIS
+      A Td move: down or up starts a new line; along the line, a space only where the move leaves a gap after the
+      text shown since the line's start (more than $WordGapEms of the font size), else the pieces join.
+    .PARAMETER Stack
+      The operands (tx ty).
+    .PARAMETER State
+      The text state.
+    #>
+    param($Stack, [hashtable]$State)
+    if ($Stack.Count -lt 2) { return }
+    $tx = ConvertTo-PdfNumber $Stack[$Stack.Count - 2]
+    $ty = ConvertTo-PdfNumber $Stack[$Stack.Count - 1]
+    if ($ty -ne 0) { [void]$State.Block.Append("`n") }
+    elseif ($tx -lt 0 -or $tx - $State.Advance -gt $script:WordGapEms * [Math]::Max(1.0, $State.Size)) { [void]$State.Block.Append(' ') }
+    $State.Advance = 0.0
 }
 
 function Complete-PdfTextBlock {
     <#
     .SYNOPSIS
-      Ends a text block: its same-line moves become spaces, or nothing when most of its shows were one glyph each
-      (a block drawn glyph by glyph: "S S N" would hide an SSN from the detectors); then a line break.
+      Ends a text block: symbol-font characters back to their plain ones, other private-use characters a space and a
+      note; then a line break.
     .PARAMETER State
       The text state of Convert-PdfContentToText.
     #>
     param([hashtable]$State)
-    $gap = ' '
-    if ($State.Shows -gt 0 -and $State.Single / $State.Shows -ge $script:GlyphBlockShare) { $gap = '' }
-    $text = $State.Block.ToString().Replace([string]$script:SameLineMove, $gap)
+    $text = $State.Block.ToString()
+    # Microsoft symbol fonts map their characters to U+F020-U+F0FF (Word's bullet is U+F0B7): back to U+0020-U+00FF.
+    $text = [regex]::Replace($text, '[\uF020-\uF0FF]', [System.Text.RegularExpressions.MatchEvaluator] { param($m) [string][char]([int]$m.Value[0] - 0xF000) })
     # A font can map a glyph to a private-use character (U+E000-U+F8FF): it has no meaning (Chrome does this for some
     # punctuation), so it becomes a space and the PDF gets a note.
     if ($text -match '[\uE000-\uF8FF]') {
@@ -241,7 +289,7 @@ function Complete-PdfTextBlock {
     }
     [void]$State.Out.Append($text).Append("`n")
     [void]$State.Block.Clear()
-    $State.Shows = 0; $State.Single = 0
+    $State.Advance = 0.0
 }
 
 function Skip-PdfInlineImage {
@@ -366,7 +414,7 @@ function Get-PdfLooseText {
     foreach ($obj in $loose) {
         if (-not $obj.Stream -or $Read.Contains($obj) -or $obj.Dict -match '/Type\s*/(?:ObjStm|XRef)\b') { continue }
         $start = $obj.Stream.TrimStart()
-        if ($start.StartsWith('<') -or $obj.Stream -notmatch '\bBT\b' -or $obj.Stream -notmatch '\bT[Jj]\b') { continue }
+        if ($start.StartsWith('<') -or $obj.Stream -notmatch '\bBT\b' -or $obj.Stream -notmatch '\bT[Jj]\b|\)\s*[''"]') { continue }
         try { Convert-PdfContentToText $obj.Stream $Fonts }
         catch {
             if ($_.Exception -is [System.FormatException] -and $_.Exception.Message -eq (Get-PdfStringError)) {

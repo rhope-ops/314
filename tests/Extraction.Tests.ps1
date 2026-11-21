@@ -223,7 +223,9 @@ Assert-Equal 'OK|SSN' ($wrapped.Status + '|' + (@(Find-PiiInText $wrapped.Text) 
 
 # ---- PDF review round 7 (2026-11-21) ----
 # Text drawn one glyph at a time (Chrome): the glyphs join; a normal block keeps its word spaces.
-$glyphs1 = (("SSN: $($Sample.Ssn)").ToCharArray() | ForEach-Object { "($_) Tj 7 0 Td" }) -join ' '
+# Each glyph moved by its real width at 12 pt, as a PDF writer does (Helvetica: S 8.0, N 8.7, digits 6.7, - 4.0, : and space 3.3).
+$advance = @{ 'S' = 8.0; 'N' = 8.7; '-' = 4.0; ':' = 3.3; ' ' = 3.3 }
+$glyphs1 = (("SSN: $($Sample.Ssn)").ToCharArray() | ForEach-Object { $w = 6.7; if ($advance.ContainsKey([string]$_)) { $w = $advance[[string]$_] }; "($_) Tj $w 0 Td" }) -join ' '
 $glyphRead = Get-TextFromBytes -Bytes (New-PdfBytes "BT /F1 12 Tf $glyphs1 ET" -Plain) -FileName 'g1.pdf'
 Assert-Equal 'SSN' (@(Find-PiiInText $glyphRead.Text) | Select-Object -First 1).Detector 'PDF: text drawn glyph by glyph joins'
 $words = Get-TextFromBytes -Bytes (New-PdfBytes 'BT /F1 12 Tf (Member) Tj 60 0 Td (roster) Tj ET' -Plain) -FileName 'w2.pdf'
@@ -240,3 +242,12 @@ Assert-Equal 'SSN' (@(Find-PiiInText (Get-TextFromBytes -Bytes $twoNotes -FileNa
 # A glyph mapped to a private-use character: a space, and a note.
 $pua = New-PdfBytes 'BT /F1 12 Tf <0041E0010042> Tj ET' -Plain -ToUnicode 'begincmap 1 beginbfrange <0000> <FFFF> <0000> endbfrange endcmap'
 Assert-Equal $true ((Get-TextFromBytes -Bytes $pua -FileName 'p.pdf').Note -match 'Some characters in this PDF could not be read') 'PDF: private-use characters give a note'
+
+# ---- PDF review round 8 (2026-11-21) ----
+# Chrome splits a run at a kerning pair (its own space glyphs inside the strings): the pieces join again.
+$kerned = Get-TextFromBytes -Bytes (New-PdfBytes "BT /F1 16 Tf (SSN: 21) Tj 38.2 0 Td (1-45-671) Tj 66.7 0 Td (1) Tj ET" -Plain) -FileName 'k.pdf'
+Assert-Equal ('SSN: 21' + '1-45-671' + '1') $kerned.Text.Trim() 'PDF: pieces split at kerning pairs join again'   # built from parts
+# Word's bullet (Symbol font, U+F0B7) is a plain character: no needless note.
+$bullet = New-PdfBytes 'BT /F1 12 Tf <F0B70020004D> Tj ET' -Plain -ToUnicode 'begincmap 1 beginbfrange <0000> <FFFF> <0000> endbfrange endcmap'
+$bulletRead = Get-TextFromBytes -Bytes $bullet -FileName 'b.pdf'
+Assert-Equal "|$([char]0xB7) M" ($bulletRead.Note + '|' + $bulletRead.Text.Trim()) 'PDF: a Word bullet reads as a plain character, no note'
