@@ -4,6 +4,7 @@ A record, read on demand: a decision binds the task or thing it names. A decisio
 
 | Date | Decision | By | Replaces |
 |---|---|---|---|
+| 2026-11-21 | Ion PDF speed (question dialog): make the PowerShell PDF reader leaner (no per-token overhead; measured before and after) and use parallel workers for network drives; no compiled (Add-Type) helper. The per-page unpack limit stays 16 MB (worst-case memory about 1 GB). Scope: the tool. | the PAM | — |
 | 2026-11-21 | README top mirrors the site page (Ion text, Key Facts, How it works, What it looks for, If it finds PII), because github.io may be blocked; the Copy and Open buttons become two links: the script on github.com (its Copy raw file button) and the raw .txt. The page and the README change together. Scope: README and the site. | the PAM | — |
 | 2026-11-21 | Ion network drives (question dialog): a pasted X:\<folder> or UNC path, all subfolders, read-only under the person's Windows logon; parallel reading that scales with the load (2 to start, 1 to 8 workers, by speed, CPU and errors); SharePoint stays one file at a time. Plan: docs/reviews/2026-11-21-ion-network-drive-plan.md. Scope: the tool. | the PAM | — |
 | 2026-11-20 | Site page Key Facts, the PAM's text: Universal, Your access, Read-only, Data boundary, Verifiable, Accessible (labels in one column, values at one indent; stacked on phones). Scope: the site. | the PAM | Key Facts rows of 2026-11-20 |
