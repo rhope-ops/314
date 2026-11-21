@@ -47,7 +47,7 @@ Sign in → Read files in memory → Find PII → **Mask it** → Report
 | Home address | Number, street name and street type | `[address masked]` |
 | Name | After "Name:", "Spouse:", "NOK:" and similar | Initials |
 
-Not read: images, old Office files, encrypted files and files over 25 MB (each is listed in the workbook, to check by hand), and channel posts and chats (not checked at all).
+Not read: encrypted files, files over 25 MB, and images when Windows has no OCR language (each is listed in the workbook, to check by hand), and channel posts and chats (not checked at all).
 
 ### If it finds PII
 
@@ -68,8 +68,12 @@ A read-only PowerShell script that a **member** runs to find files that may hold
 |---|---|---|
 | Files in standard channels (Shared tab, formerly Files), or in every visible document library of a SharePoint site (every folder and its top; Site Assets and Preservation Hold Library included; not Style Library, Form Templates or subsites; a library you cannot open is one BLOCKED row) | Yes | Your own CAC sign-in to that one site |
 | .docx .xlsx .pptx (and macro versions), .txt .csv .md .log .json .xml .html | Yes | Text read in memory; nothing saved to disk |
-| PDF: page text and filled-in form fields | Yes | A scanned PDF (no text), an encrypted PDF or an unusual font encoding is listed as **NOT SCANNED** |
-| Images, legacy .doc/.xls/.ppt, files over 25 MB | No | Listed as **NOT SCANNED**: check them by hand |
+| .odt .ods .odp (OpenDocument), .vsdx (Visio), .rtf | Yes | Text read in memory |
+| PDF: page text, form fields, comments | Yes | A scanned PDF is read with Windows OCR (first 30 pages); an encrypted PDF is listed as **NOT SCANNED** |
+| Images: .jpg .png .tif .bmp .gif | Yes, with Windows OCR | Uses the OCR built into Windows 10/11; without an OCR language each image is **NOT SCANNED** |
+| Old .doc .xls .ppt and Outlook .msg | In part | Text runs read; numbers in an old .xls are not, so it gets a note to check by hand |
+| .zip and .eml (e-mail) | Yes | Each file inside is read with its own reader and named `file.zip/inner/file`; a zip in a zip in a zip is not opened |
+| Files over 25 MB | No | Listed as **NOT SCANNED**: check them by hand |
 | Channel posts and replies | No | One sign-in only (the PAM, 2026-11-20). Reading posts needs a Microsoft Graph permission (ChannelMessage.Read.All) that a tenant admin must approve; ask your privacy or cybersecurity office for a Microsoft Purview content search |
 | Private and shared channels | Run again with that channel's own site URL | Each one has its own SharePoint site |
 | 1:1 chats, group chats, meeting chats | No | Admin / Purview only |
