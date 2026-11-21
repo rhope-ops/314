@@ -26,11 +26,12 @@ $script:MaxArchiveBytes = 200MB
 $script:MaxMimeDepth = 5
 
 # Bytes as characters one to one, so a message can be cut with string functions and decoded part by part.
-$script:Latin1 = [System.Text.Encoding]::GetEncoding(28591)
+$script:MimeLatin1 = [System.Text.Encoding]::GetEncoding(28591)
 
 function New-Part {
     # One part of a container: a file to read (Bytes), text already read (Text), or a reason it was not read.
-    param([string]$Name, [byte[]]$Bytes = $null, [string]$Text = $null, [string]$Reason = '')
+    # $Text is not typed: [string] would turn "no text" ($null) into '' and a file would look like empty text.
+    param([string]$Name, [byte[]]$Bytes = $null, $Text = $null, [string]$Reason = '')
     [pscustomobject]@{ Name = $Name; Bytes = $Bytes; Text = $Text; Reason = $Reason }
 }
 
@@ -141,9 +142,9 @@ function ConvertFrom-TransferEncoding {
         'quoted-printable' {
             $soft = $Body -replace '=\r?\n', ''
             $evaluator = [System.Text.RegularExpressions.MatchEvaluator] { param($m) [string][char][Convert]::ToInt32($m.Groups[1].Value, 16) }
-            return , $script:Latin1.GetBytes([regex]::Replace($soft, '=([0-9A-Fa-f]{2})', $evaluator))
+            return , $script:MimeLatin1.GetBytes([regex]::Replace($soft, '=([0-9A-Fa-f]{2})', $evaluator))
         }
-        default { return , $script:Latin1.GetBytes($Body) }
+        default { return , $script:MimeLatin1.GetBytes($Body) }
     }
 }
 
@@ -155,7 +156,7 @@ function ConvertFrom-EncodedWords {
         $bytes = $null
         if ($m.Groups[2].Value -ieq 'B') { $bytes = ConvertFrom-TransferEncoding $m.Groups[3].Value 'base64' }
         else { $bytes = ConvertFrom-TransferEncoding ($m.Groups[3].Value -replace '_', ' ') 'quoted-printable' }
-        try { return [System.Text.Encoding]::GetEncoding($m.Groups[1].Value).GetString($bytes) } catch { return $script:Latin1.GetString($bytes) }
+        try { return [System.Text.Encoding]::GetEncoding($m.Groups[1].Value).GetString($bytes) } catch { return $script:MimeLatin1.GetString($bytes) }
     }
     return [regex]::Replace($Value, '=\?([^?]+)\?([BbQq])\?([^?]*)\?=', $evaluator)
 }
@@ -193,7 +194,7 @@ function Get-MimeParts {
         $charset = Get-HeaderParameter $type 'charset'
         $decoded = $null
         try { if ($charset) { $decoded = [System.Text.Encoding]::GetEncoding($charset).GetString($bytes) } } catch { Write-Verbose 'Unknown charset: read as Latin-1.' }
-        if ($null -eq $decoded) { $decoded = $script:Latin1.GetString($bytes) }
+        if ($null -eq $decoded) { $decoded = $script:MimeLatin1.GetString($bytes) }
         $name = '(message text)'; if ($type -match '(?i)text/html') { $name = '(message text).html' }
         New-Part $name -Text $decoded
         return
@@ -213,7 +214,7 @@ function Get-EmailParts {
       [pscustomobject] parts (New-Part).
     #>
     param([byte[]]$Bytes)
-    $text = $script:Latin1.GetString($Bytes)
+    $text = $script:MimeLatin1.GetString($Bytes)
     $entity = Split-MimeEntity $text
     $lines = foreach ($name in @('subject', 'from', 'to', 'cc', 'date')) {
         if ($entity.Headers.ContainsKey($name)) { (Get-Culture).TextInfo.ToTitleCase($name) + ': ' + (ConvertFrom-EncodedWords $entity.Headers[$name]) }

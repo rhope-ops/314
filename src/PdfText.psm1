@@ -7,7 +7,8 @@ PdfText.psm1 - the text of a PDF file, in memory, with .NET only (no module; the
   Inputs:      the file bytes.
   Outputs:     a hashtable with Text and Reason (Get-PdfText).
   How to run:  imported by Find-ChannelPII.ps1 (used by TextExtract.psm1); not run on its own.
-  Depends on:  PdfCore.psm1 (limits, stream filters, ToUnicode maps), imported first by Find-ChannelPII.ps1.
+  Depends on:  PdfCore.psm1 (limits, stream filters, ToUnicode maps) and OcrText.psm1 (scanned pages), imported first
+               by Find-ChannelPII.ps1.
   Run target:  Windows PowerShell 5.1 (also PowerShell 7); .NET System.IO.Compression only.
   Network:     none.
   Writes:      none. Bytes stay in memory; nothing is saved to disk.
@@ -37,6 +38,10 @@ $script:PdfWordGap = 250
 $script:InlineImagePattern = '(?s)\bBI\b.*?\bID\s.*?\sEI\b'
 
 $script:PdfNoTextReason = 'No text in this PDF (a scanned image?): check by hand'
+
+# A scanned PDF (no text layer): its JPEG page images are read with Windows OCR, at most this many (OcrText.psm1).
+$script:MaxScanPages = 30
+$script:PdfScanImages = @()
 $script:PdfSlowReason = 'This PDF is too large or damaged to read in time: check by hand'
 $script:PdfPartReason = 'Part of this PDF could not be read (a damaged or unusual string): check by hand'
 $script:PdfStringError = 'PDF string not read'
@@ -69,8 +74,14 @@ function Get-PdfObjects {
         $body = $Text.Substring($start, $stop - $start)
         $stream = $null
         $parts = $split.Match($body)
-        if ($parts.Success) { $body = $parts.Groups[1].Value; $stream = Read-PdfStream $body $parts.Groups[2].Value }
-        $objects[$heads[$h].Groups[1].Value] = @{ Dict = $body; Stream = $stream }
+        $image = $null
+        if ($parts.Success) {
+            $body = $parts.Groups[1].Value
+            $stream = Read-PdfStream $body $parts.Groups[2].Value
+            # A JPEG page image (a scanned page): kept as it is, for OCR when the PDF has no text (Get-PdfScanText).
+            if ($body -match '/Subtype\s*/Image\b' -and $body -match '/Filter\s*\[?\s*/DCTDecode\s*\]?') { $image = $parts.Groups[2].Value }
+        }
+        $objects[$heads[$h].Groups[1].Value] = @{ Dict = $body; Stream = $stream; Image = $image }
     }
     foreach ($packed in @($objects.Values | Where-Object { $_.Dict -match '/Type\s*/ObjStm' -and $_.Stream })) { Add-PackedObjects $objects $packed }
     return $objects
@@ -97,7 +108,7 @@ function Add-PackedObjects {
         $end = $Packed.Stream.Length
         if (2 * $k + 3 -lt $pairs.Count) { $end = $first + [int]$pairs[2 * $k + 3] }
         if ($start -ge $end -or $end -gt $Packed.Stream.Length) { continue }
-        if (-not $Objects.Contains($pairs[2 * $k])) { $Objects[$pairs[2 * $k]] = @{ Dict = $Packed.Stream.Substring($start, $end - $start); Stream = $null } }
+        if (-not $Objects.Contains($pairs[2 * $k])) { $Objects[$pairs[2 * $k]] = @{ Dict = $Packed.Stream.Substring($start, $end - $start); Stream = $null; Image = $null } }
     }
 }
 
@@ -349,6 +360,7 @@ function Get-PdfText {
         return @{ Text = ''; Reason = 'Not a valid PDF (damaged, or another type with a .pdf name): check by hand' }
     }
     if ($text -match '/Encrypt\s*(?:\d+\s+\d+\s+R|<<)') { return @{ Text = ''; Reason = $script:PdfEncryptedReason } }
+    $script:PdfScanImages = @()   # this PDF's own scanned pages only
     Start-PdfBudget
     try { $all = Get-PdfAllText $text }
     catch {
@@ -362,10 +374,37 @@ function Get-PdfText {
     finally { $notes = @(Stop-PdfBudget) }
     $note = (@($notes) -join '; ')
     if (-not $all.Trim()) {
+        if ($script:PdfScanImages.Count -gt 0) { return (Get-PdfScanText $script:PdfScanImages $note) }
         $reason = $script:PdfNoTextReason; if ($note) { $reason = $note }
         return @{ Text = ''; Reason = $reason; Note = '' }
     }
     return @{ Text = $all; Reason = ''; Note = $note }
+}
+
+function Get-PdfScanText {
+    <#
+    .SYNOPSIS
+      The text of a scanned PDF (JPEG page images, no text layer) read with Windows OCR, page by page, at most
+      $MaxScanPages pages; more pages, or OCR that is not available, give a reason or a note.
+    .PARAMETER Images
+      The JPEG image streams (Latin-1 text).
+    .PARAMETER Note
+      Notes already made for this PDF.
+    .OUTPUTS
+      [hashtable] Text, Reason, Note.
+    #>
+    param([string[]]$Images, [string]$Note)
+    $pages = New-Object System.Collections.Generic.List[string]
+    $notes = @($Note | Where-Object { $_ })
+    for ($i = 0; $i -lt [Math]::Min($Images.Count, $script:MaxScanPages); $i++) {
+        $read = Get-ImageText ($script:PdfLatin1.GetBytes($Images[$i]))
+        if ($read.Reason) { return @{ Text = ''; Reason = 'Scanned PDF: ' + $read.Reason; Note = '' } }
+        $pages.Add($read.Text)
+    }
+    if ($Images.Count -gt $script:MaxScanPages) { $notes += "Scanned PDF: only the first $script:MaxScanPages page images were read: check by hand" }
+    $text = $pages -join "`n"
+    if (-not $text.Trim()) { return @{ Text = ''; Reason = $script:PdfNoTextReason; Note = '' } }
+    return @{ Text = $text; Reason = ''; Note = ($notes -join '; ') }
 }
 
 function Get-PdfAllText {
@@ -380,6 +419,7 @@ function Get-PdfAllText {
     #>
     param([string]$Text)
     $objects = Get-PdfObjects $Text
+    $script:PdfScanImages = @($objects.Values | Where-Object { $_.Image } | ForEach-Object { $_.Image })
     Assert-PdfTime
     $allFonts = Get-PdfFonts $objects
     Assert-PdfTime

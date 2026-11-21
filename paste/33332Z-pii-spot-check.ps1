@@ -19,14 +19,17 @@
   Built from these files; to change it, change them and rebuild with: python3 scripts/build_paste.py
     src/PiiDetectors.psm1, sha256 ea19831b4d68
     src/PiiMasking.psm1, sha256 752c251a94b2
+    src/OcrText.psm1, sha256 d368901142b2
+    src/OleText.psm1, sha256 0b1924bcf524
+    src/ContainerText.psm1, sha256 8eaea68a94a8
     src/PdfCore.psm1, sha256 3a56882953a5
-    src/PdfText.psm1, sha256 fc7951a28d31
-    src/TextExtract.psm1, sha256 e29978d7b4fa
+    src/PdfText.psm1, sha256 8130ae89da52
+    src/TextExtract.psm1, sha256 50a98f7e5dcf
     src/XlsxWriter.psm1, sha256 e29becdc6a65
-    src/Report.psm1, sha256 cd8bd1e538f7
+    src/Report.psm1, sha256 18a323b5faa5
     src/ScanMeter.psm1, sha256 2c2a5a750104
-    src/ChannelScan.psm1, sha256 5703ccff41d9
-    src/Find-ChannelPII.ps1, sha256 4faab4ef9809
+    src/ChannelScan.psm1, sha256 53282c6052ad
+    src/Find-ChannelPII.ps1, sha256 cde67bc22552
 
   Read-only: it never changes, moves or deletes anything in Teams or SharePoint. Every value found is masked.
   Run target: Windows PowerShell 5.1 with PnP.PowerShell 1.12.0; no admin rights, no file to unblock.
@@ -35,18 +38,21 @@
   Credentials: your own CAC sign-in in the PnP sign-in window; nothing is stored.
 
   Contents (line numbers of this file):
-    line    52  Settings
-    line    63  Module PiiDetectors.psm1
-    line   551  Module PiiMasking.psm1
-    line   751  Module PdfCore.psm1
-    line  1009  Module PdfText.psm1
-    line  1418  Module TextExtract.psm1
-    line  1677  Module XlsxWriter.psm1
-    line  1948  Module Report.psm1
-    line  2445  Module ScanMeter.psm1
-    line  2710  Module ChannelScan.psm1
-    line  3296  Body of Find-ChannelPII.ps1
-    line  3397  Clean-up
+    line    58  Settings
+    line    69  Module PiiDetectors.psm1
+    line   557  Module PiiMasking.psm1
+    line   757  Module OcrText.psm1
+    line   879  Module OleText.psm1
+    line   983  Module ContainerText.psm1
+    line  1208  Module PdfCore.psm1
+    line  1466  Module PdfText.psm1
+    line  1915  Module TextExtract.psm1
+    line  2268  Module XlsxWriter.psm1
+    line  2539  Module Report.psm1
+    line  3041  Module ScanMeter.psm1
+    line  3306  Module ChannelScan.psm1
+    line  3924  Body of Find-ChannelPII.ps1
+    line  4025  Clean-up
 #>
 
 # ==== Settings ==== (optional: edit the values between the quotes; empty = the script asks)
@@ -748,6 +754,457 @@ function Protect-PiiName {
     return [regex]::Replace($result, $script:EmailLocalPartPattern, '***')
 }
 
+# ==== Module OcrText.psm1 ====
+<#
+OcrText.psm1 - text in images with Windows' built-in OCR (Windows.Media.Ocr), in memory, without a module.
+
+  Purpose:     Reads the text of .jpg, .png, .tif, .bmp and .gif files and of scanned PDF pages, so the detectors can
+               check them (the PAM, 2026-11-20: round 3 readers). Uses the OCR engine of Windows 10/11 through
+               WinRT from Windows PowerShell 5.1; where it is missing (no OCR language, another OS), every image
+               gets a "check by hand" reason instead.
+  Inputs:      image bytes.
+  Outputs:     a hashtable with Text, Reason (empty when the text was read) and Note (pages not read).
+  How to run:  imported by Find-ChannelPII.ps1 (used by PdfText.psm1 and TextExtract.psm1); not run on its own.
+  Run target:  Windows PowerShell 5.1 on Windows 10/11 (WinRT OCR); elsewhere images get a reason.
+  Network:     none (the OCR engine runs on the computer).
+  Writes:      none. Bytes stay in memory; nothing is saved to disk.
+  Credentials: none.
+#>
+
+
+# Seconds one WinRT step (decode, read) may take; frames read from one multi-page TIFF.
+$script:OcrStepMilliseconds = 30000
+$script:MaxImageFrames = 30
+
+$script:OcrMissingReason = 'Image: Windows OCR is not available on this computer (no OCR language?): check by hand'
+$script:OcrFailedReason = 'Image: its text could not be read (damaged, or a format Windows cannot open): check by hand'
+
+# The engine, found once per run: Checked, Engine, AsTask (the generic AsTask method) and the reason when missing.
+$script:Ocr = @{ Checked = $false; Engine = $null; AsTask = $null }
+
+# Tests (Linux, no WinRT) put a scriptblock here: param([byte[]]) -> hashtable Text, Reason.
+$script:OcrOverride = $null
+
+function Initialize-Ocr {
+    # Finds the WinRT OCR engine once; leaves Engine $null when it is not there.
+    if ($script:Ocr.Checked) { return }
+    $script:Ocr.Checked = $true
+    try {
+        Add-Type -AssemblyName System.Runtime.WindowsRuntime
+        $null = [Windows.Media.Ocr.OcrEngine, Windows.Foundation, ContentType = WindowsRuntime]
+        $null = [Windows.Graphics.Imaging.BitmapDecoder, Windows.Graphics, ContentType = WindowsRuntime]
+        $null = [Windows.Storage.Streams.IRandomAccessStream, Windows.Storage.Streams, ContentType = WindowsRuntime]
+        $script:Ocr.AsTask = @([System.WindowsRuntimeSystemExtensions].GetMethods() | Where-Object {
+            $_.Name -eq 'AsTask' -and $_.GetParameters().Count -eq 1 -and $_.GetParameters()[0].ParameterType.Name -eq 'IAsyncOperation`1' })[0]
+        $script:Ocr.Engine = [Windows.Media.Ocr.OcrEngine]::TryCreateFromUserProfileLanguages()
+    }
+    catch { $script:Ocr.Engine = $null }   # no WinRT here: every image gets $OcrMissingReason
+}
+
+function Wait-WinRt {
+    <#
+    .SYNOPSIS
+      Waits for one WinRT async operation and returns its result; throws when it takes longer than the step limit.
+    .PARAMETER Operation
+      The IAsyncOperation.
+    .PARAMETER Type
+      Its result type.
+    #>
+    param($Operation, [type]$Type)
+    $task = $script:Ocr.AsTask.MakeGenericMethod($Type).Invoke($null, @($Operation))
+    if (-not $task.Wait($script:OcrStepMilliseconds)) { throw (New-Object System.TimeoutException 'OCR step') }
+    return $task.Result
+}
+
+function Read-OcrBitmap {
+    <#
+    .SYNOPSIS
+      The text of one decoded frame, its lines joined with line breaks; scaled down first when it is larger than
+      the engine reads (OcrEngine.MaxImageDimension).
+    .PARAMETER Frame
+      A BitmapDecoder or BitmapFrame.
+    .OUTPUTS
+      [string]
+    #>
+    param($Frame)
+    $max = [Windows.Media.Ocr.OcrEngine]::MaxImageDimension
+    $width = [double]$Frame.PixelWidth; $height = [double]$Frame.PixelHeight
+    if ($width -gt $max -or $height -gt $max) {
+        $scale = [Math]::Min($max / $width, $max / $height)
+        $transform = New-Object Windows.Graphics.Imaging.BitmapTransform
+        $transform.ScaledWidth = [uint32][Math]::Floor($width * $scale)
+        $transform.ScaledHeight = [uint32][Math]::Floor($height * $scale)
+        $bitmap = Wait-WinRt ($Frame.GetSoftwareBitmapAsync([Windows.Graphics.Imaging.BitmapPixelFormat]::Bgra8,
+            [Windows.Graphics.Imaging.BitmapAlphaMode]::Premultiplied, $transform,
+            [Windows.Graphics.Imaging.ExifOrientationMode]::RespectExifOrientation,
+            [Windows.Graphics.Imaging.ColorManagementMode]::DoNotColorManage)) ([Windows.Graphics.Imaging.SoftwareBitmap])
+    }
+    else { $bitmap = Wait-WinRt ($Frame.GetSoftwareBitmapAsync()) ([Windows.Graphics.Imaging.SoftwareBitmap]) }
+    $result = Wait-WinRt ($script:Ocr.Engine.RecognizeAsync($bitmap)) ([Windows.Media.Ocr.OcrResult])
+    return (@($result.Lines | ForEach-Object { $_.Text }) -join "`n")
+}
+
+function Get-ImageText {
+    <#
+    .SYNOPSIS
+      The text in one image (every frame of a multi-page TIFF, up to $MaxImageFrames), or why it could not be read.
+      An image without text is read and gives empty text.
+    .PARAMETER Bytes
+      The image bytes (JPEG, PNG, TIFF, BMP or GIF).
+    .OUTPUTS
+      [hashtable] Text, Reason, Note.
+    #>
+    param([byte[]]$Bytes)
+    if ($script:OcrOverride) { return (& $script:OcrOverride $Bytes) }
+    Initialize-Ocr
+    if (-not $script:Ocr.Engine) { return @{ Text = ''; Reason = $script:OcrMissingReason } }
+    $memory = New-Object System.IO.MemoryStream(, $Bytes)
+    try {
+        $stream = [System.IO.WindowsRuntimeStreamExtensions]::AsRandomAccessStream($memory)
+        $decoder = Wait-WinRt ([Windows.Graphics.Imaging.BitmapDecoder]::CreateAsync($stream)) ([Windows.Graphics.Imaging.BitmapDecoder])
+        $pages = New-Object System.Collections.Generic.List[string]
+        $count = [Math]::Min([int]$decoder.FrameCount, $script:MaxImageFrames)
+        for ($i = 0; $i -lt $count; $i++) {
+            $frame = Wait-WinRt ($decoder.GetFrameAsync([uint32]$i)) ([Windows.Graphics.Imaging.BitmapFrame])
+            $pages.Add((Read-OcrBitmap $frame))
+        }
+        $note = ''
+        if ([int]$decoder.FrameCount -gt $script:MaxImageFrames) { $note = "Only the first $script:MaxImageFrames pages of this image were read: check by hand" }
+        return @{ Text = ($pages -join "`n"); Reason = ''; Note = $note }
+    }
+    catch { return @{ Text = ''; Reason = $script:OcrFailedReason } }
+    finally { $memory.Dispose() }
+}
+
+# ==== Module OleText.psm1 ====
+<#
+OleText.psm1 - text from old binary Office files (.doc, .xls, .ppt) and Outlook messages (.msg), in memory.
+
+  Purpose:     These files are OLE compound files, not zips. Their text is stored as runs of UTF-16 or 8-bit
+               characters, which this module pulls out (the PAM, 2026-11-20: round 3 readers). Partial for .xls:
+               numbers kept as binary values are not read, and the report says so for each .xls. Encrypted files
+               are found and named.
+  Inputs:      the file bytes.
+  Outputs:     a hashtable with Text, Reason (not read, and why) and Note (read in part).
+  How to run:  imported by Find-ChannelPII.ps1 (used by TextExtract.psm1); not run on its own.
+  Run target:  Windows PowerShell 5.1 (also PowerShell 7); .NET only.
+  Network:     none.
+  Writes:      none. Bytes stay in memory; nothing is saved to disk.
+  Credentials: none.
+#>
+
+
+# Bytes as characters one to one, so a binary file can be searched with regular expressions.
+$script:OleLatin1 = [System.Text.Encoding]::GetEncoding(28591)
+
+# First bytes of an OLE compound file (MS-CFB).
+$script:OleSignature = [byte[]](0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1)
+
+# Text runs: at least 4 UTF-16LE characters, or at least 6 printable 8-bit characters (shorter runs are mostly
+# noise from the binary structure).
+$script:Utf16RunPattern = '(?:[\x09\x0A\x0D\x20-\x7E\xA0-\xFF]\x00){4,}'
+$script:AnsiRunPattern = '[\x09\x0A\x0D\x20-\x7E]{6,}'
+
+# Stream names that only an encrypted file has (UTF-16LE in the directory): an encrypted Office 2007+ file, and an
+# encrypted PowerPoint 97-2003 file.
+$script:EncryptedStreamNames = @('EncryptedPackage', 'EncryptedSummary')
+
+# An old .xls keeps numbers as binary values, not text: a number typed into a cell (an SSN without dashes) is not
+# read, so every .xls gets this note. Old .doc, .ppt and .msg files keep their text as text.
+$script:XlsNote = 'Old Excel file: numbers stored as values are not read: check by hand'
+
+function Test-OleSignature {
+    # True when the bytes start like an OLE compound file.
+    param([byte[]]$Bytes)
+    if ($null -eq $Bytes -or $Bytes.Length -lt 8) { return $false }
+    for ($i = 0; $i -lt 8; $i++) { if ($Bytes[$i] -ne $script:OleSignature[$i]) { return $false } }
+    return $true
+}
+
+function Test-OleEncrypted {
+    <#
+    .SYNOPSIS
+      True when an OLE file is encrypted: an encryption stream name in its directory, a Word file whose FIB says
+      fEncrypted, or an Excel workbook with a FILEPASS record right after its first BOF record.
+    .PARAMETER Text
+      The file bytes as Latin-1 text.
+    .PARAMETER Bytes
+      The file bytes.
+    .OUTPUTS
+      [bool]
+    #>
+    param([string]$Text, [byte[]]$Bytes)
+    foreach ($name in $script:EncryptedStreamNames) {
+        $utf16 = -join @($name.ToCharArray() | ForEach-Object { [string]$_ + [char]0 })
+        if ($Text.IndexOf($utf16, [StringComparison]::Ordinal) -ge 0) { return $true }
+    }
+    # Streams start on 512-byte sectors. Word: the FIB starts with wIdent 0xA5EC; flag bit 0x0100 at offset 0x0A.
+    # Excel: a BIFF8 BOF record (09 08 10 00) followed by FILEPASS (2F 00).
+    for ($at = 512; $at + 32 -le $Bytes.Length; $at += 512) {
+        if ($Bytes[$at] -eq 0xEC -and $Bytes[$at + 1] -eq 0xA5) { return (($Bytes[$at + 0x0B] -band 0x01) -ne 0) }
+        if ($Bytes[$at] -eq 0x09 -and $Bytes[$at + 1] -eq 0x08 -and $Bytes[$at + 2] -eq 0x10 -and $Bytes[$at + 3] -eq 0x00) {
+            $next = $at + 4 + 16
+            return ($next + 2 -le $Bytes.Length -and $Bytes[$next] -eq 0x2F -and $Bytes[$next + 1] -eq 0x00)
+        }
+    }
+    return $false
+}
+
+function Get-OleText {
+    <#
+    .SYNOPSIS
+      The text runs of an old Office or Outlook file (an .xls with a note: its numbers are not read); a reason when
+      the file is not an OLE file, is encrypted, or holds no text run.
+    .PARAMETER Bytes
+      The file bytes.
+    .PARAMETER Extension
+      The file extension (.doc, .xls, .ppt or .msg).
+    .OUTPUTS
+      [hashtable] Text, Reason, Note.
+    #>
+    param([byte[]]$Bytes, [string]$Extension)
+    if (-not (Test-OleSignature $Bytes)) {
+        return @{ Text = ''; Reason = 'Not a valid old Office or Outlook file (damaged, or another type with its name): check by hand'; Note = '' }
+    }
+    $text = $script:OleLatin1.GetString($Bytes)
+    if (Test-OleEncrypted $text $Bytes) {
+        return @{ Text = ''; Reason = 'Encrypted, password-protected or labelled with encryption: check by hand'; Note = '' }
+    }
+    $runs = New-Object System.Collections.Generic.List[string]
+    foreach ($run in [regex]::Matches($text, $script:Utf16RunPattern)) {
+        $runs.Add([System.Text.Encoding]::Unicode.GetString($script:OleLatin1.GetBytes($run.Value)))
+    }
+    foreach ($run in [regex]::Matches($text, $script:AnsiRunPattern)) { $runs.Add($run.Value) }
+    if ($runs.Count -eq 0) { return @{ Text = ''; Reason = 'No readable text in this old Office or Outlook file: check by hand'; Note = '' } }
+    $note = ''; if ($Extension -eq '.xls') { $note = $script:XlsNote }
+    return @{ Text = ($runs -join "`n"); Reason = ''; Note = $note }
+}
+
+# ==== Module ContainerText.psm1 ====
+<#
+ContainerText.psm1 - unpacks files that hold other files: zip archives and e-mails (.eml), in memory.
+
+  Purpose:     The parts of a .zip (each file inside) and of an .eml (its headers and text, and each attachment),
+               so TextExtract.psm1 reads each part with its own reader and the report names it as
+               "archive.zip/inner/file" (the PAM, 2026-11-20: round 3 readers). Limits on the number of files and
+               the unpacked size guard against zip bombs; a part over a limit gets a reason instead of its bytes.
+  Inputs:      the file bytes.
+  Outputs:     parts: Name, and Bytes (a file to read), Text (text already read) or Reason (not read, and why).
+  How to run:  imported by Find-ChannelPII.ps1 (used by TextExtract.psm1); not run on its own.
+  Run target:  Windows PowerShell 5.1 (also PowerShell 7); .NET System.IO.Compression only.
+  Network:     none.
+  Writes:      none. Bytes stay in memory; nothing is saved to disk.
+  Credentials: none.
+#>
+
+Add-Type -AssemblyName System.IO.Compression
+
+# Zip limits: files read from one archive, the size of one unpacked file, and of all of them together.
+$script:MaxArchiveEntries = 2000
+$script:MaxEntryBytes = 25MB
+$script:MaxArchiveBytes = 200MB
+
+# An e-mail's MIME parts nest at most this deep (a hostile message cannot recurse without end).
+$script:MaxMimeDepth = 5
+
+# Bytes as characters one to one, so a message can be cut with string functions and decoded part by part.
+$script:MimeLatin1 = [System.Text.Encoding]::GetEncoding(28591)
+
+function New-Part {
+    # One part of a container: a file to read (Bytes), text already read (Text), or a reason it was not read.
+    # $Text is not typed: [string] would turn "no text" ($null) into '' and a file would look like empty text.
+    param([string]$Name, [byte[]]$Bytes = $null, $Text = $null, [string]$Reason = '')
+    [pscustomobject]@{ Name = $Name; Bytes = $Bytes; Text = $Text; Reason = $Reason }
+}
+
+function Read-LimitedStream {
+    <#
+    .SYNOPSIS
+      Reads a stream into memory up to a limit; $null when it holds more (a zip can state a false size).
+    .PARAMETER Stream
+      The open stream (disposed here).
+    .PARAMETER Limit
+      The most bytes to accept.
+    .OUTPUTS
+      [byte[]] or $null.
+    #>
+    param($Stream, [long]$Limit)
+    $memory = New-Object System.IO.MemoryStream
+    $buffer = New-Object byte[] 65536
+    try {
+        while ($true) {
+            $read = $Stream.Read($buffer, 0, $buffer.Length)
+            if ($read -le 0) { break }
+            if ($memory.Length + $read -gt $Limit) { return $null }
+            $memory.Write($buffer, 0, $read)
+        }
+        return , $memory.ToArray()
+    }
+    finally { $Stream.Dispose(); $memory.Dispose() }
+}
+
+function Get-ArchiveParts {
+    <#
+    .SYNOPSIS
+      The files inside a zip archive, each as a part to read. Folders are skipped; a file that is too large, past
+      the file limit or cannot be unpacked (encrypted, damaged) is a part with a reason.
+    .PARAMETER Bytes
+      The archive bytes.
+    .OUTPUTS
+      [pscustomobject] parts (New-Part).
+    #>
+    param([byte[]]$Bytes)
+    $memory = New-Object System.IO.MemoryStream(, $Bytes)
+    $zip = New-Object System.IO.Compression.ZipArchive($memory, [System.IO.Compression.ZipArchiveMode]::Read)
+    try {
+        $count = 0
+        $total = 0L
+        foreach ($entry in $zip.Entries) {
+            if (-not $entry.Name) { continue }   # a folder
+            $count++
+            if ($count -gt $script:MaxArchiveEntries) {
+                New-Part '(more files)' -Reason "More than $script:MaxArchiveEntries files in this archive: the rest is not scanned: check by hand"
+                break
+            }
+            if ($entry.Length -gt $script:MaxEntryBytes -or $total + $entry.Length -gt $script:MaxArchiveBytes) {
+                New-Part $entry.FullName -Reason 'Too large to unpack in memory: check by hand'
+                continue
+            }
+            $data = $null
+            try { $data = Read-LimitedStream $entry.Open() $script:MaxEntryBytes }
+            catch { New-Part $entry.FullName -Reason 'Could not unpack this file (encrypted or damaged?): check by hand'; continue }
+            if ($null -eq $data) { New-Part $entry.FullName -Reason 'Too large to unpack in memory: check by hand'; continue }
+            $total += $data.Length
+            New-Part $entry.FullName -Bytes $data
+        }
+    }
+    finally { $zip.Dispose(); $memory.Dispose() }
+}
+
+function Split-MimeEntity {
+    # A MIME entity (a message or one part) as its headers (unfolded, names in lower case) and its body text.
+    param([string]$Text)
+    $cut = [regex]::Match($Text, '\r?\n\r?\n')
+    $head = $Text; $body = ''
+    if ($cut.Success) { $head = $Text.Substring(0, $cut.Index); $body = $Text.Substring($cut.Index + $cut.Length) }
+    $headers = @{}
+    foreach ($line in (($head -replace '\r?\n[ \t]+', ' ') -split '\r?\n')) {
+        $colon = $line.IndexOf(':')
+        if ($colon -gt 0) { $headers[$line.Substring(0, $colon).Trim().ToLower()] = $line.Substring($colon + 1).Trim() }
+    }
+    return @{ Headers = $headers; Body = $body }
+}
+
+function Get-HeaderParameter {
+    # One parameter of a header value (boundary, charset, name, filename), quoted or not; empty when absent.
+    param([string]$Value, [string]$Name)
+    $match = [regex]::Match($Value, '(?i)\b' + $Name + '\*?\s*=\s*(?:"([^"]*)"|([^;\s]+))')
+    if (-not $match.Success) { return '' }
+    return ($match.Groups[1].Value + $match.Groups[2].Value)
+}
+
+function ConvertFrom-TransferEncoding {
+    <#
+    .SYNOPSIS
+      The bytes of a MIME body: base64 and quoted-printable undone; 7bit, 8bit and binary taken as they are.
+    .PARAMETER Body
+      The body text (Latin-1 characters, one per byte).
+    .PARAMETER Encoding
+      The Content-Transfer-Encoding value.
+    .OUTPUTS
+      [byte[]]
+    #>
+    param([string]$Body, [string]$Encoding)
+    switch -Regex ($Encoding.ToLower()) {
+        'base64' {
+            $clean = $Body -replace '[^A-Za-z0-9+/=]', ''
+            $clean = $clean.Substring(0, $clean.Length - ($clean.Length % 4))
+            return , [Convert]::FromBase64String($clean)
+        }
+        'quoted-printable' {
+            $soft = $Body -replace '=\r?\n', ''
+            $evaluator = [System.Text.RegularExpressions.MatchEvaluator] { param($m) [string][char][Convert]::ToInt32($m.Groups[1].Value, 16) }
+            return , $script:MimeLatin1.GetBytes([regex]::Replace($soft, '=([0-9A-Fa-f]{2})', $evaluator))
+        }
+        default { return , $script:MimeLatin1.GetBytes($Body) }
+    }
+}
+
+function ConvertFrom-EncodedWords {
+    # A header with RFC 2047 encoded words (=?utf-8?B?...?= or =?utf-8?Q?...?=) as plain text.
+    param([string]$Value)
+    $evaluator = [System.Text.RegularExpressions.MatchEvaluator] {
+        param($m)
+        $bytes = $null
+        if ($m.Groups[2].Value -ieq 'B') { $bytes = ConvertFrom-TransferEncoding $m.Groups[3].Value 'base64' }
+        else { $bytes = ConvertFrom-TransferEncoding ($m.Groups[3].Value -replace '_', ' ') 'quoted-printable' }
+        try { return [System.Text.Encoding]::GetEncoding($m.Groups[1].Value).GetString($bytes) } catch { return $script:MimeLatin1.GetString($bytes) }
+    }
+    return [regex]::Replace($Value, '=\?([^?]+)\?([BbQq])\?([^?]*)\?=', $evaluator)
+}
+
+function Get-MimeParts {
+    <#
+    .SYNOPSIS
+      The text and the attachments of one MIME entity, depth first: a text part becomes text, an attachment (a file
+      name, or a type that is not text) becomes a file to read.
+    .PARAMETER Text
+      The entity (Latin-1 characters, one per byte).
+    .PARAMETER Depth
+      How deep this entity sits (multipart inside multipart).
+    .OUTPUTS
+      [pscustomobject] parts (New-Part).
+    #>
+    param([string]$Text, [int]$Depth)
+    $entity = Split-MimeEntity $Text
+    $type = [string]$entity.Headers['content-type']
+    $encoding = [string]$entity.Headers['content-transfer-encoding']
+    if ($type -match '(?i)^\s*multipart/') {
+        $boundary = Get-HeaderParameter $type 'boundary'
+        if (-not $boundary -or $Depth -ge $script:MaxMimeDepth) { return }
+        $pieces = $entity.Body -split ('(?m)^--' + [regex]::Escape($boundary) + '(?:--)?[ \t]*\r?$')
+        for ($i = 1; $i -lt $pieces.Count; $i++) {   # piece 0 is the preamble
+            $piece = $pieces[$i] -replace '^\r?\n', ''
+            if ($piece.Trim()) { Get-MimeParts $piece ($Depth + 1) }
+        }
+        return
+    }
+    $file = Get-HeaderParameter ([string]$entity.Headers['content-disposition']) 'filename'
+    if (-not $file) { $file = Get-HeaderParameter $type 'name' }
+    $bytes = ConvertFrom-TransferEncoding $entity.Body $encoding
+    if (-not $file -and ($type -eq '' -or $type -match '(?i)^\s*text/')) {
+        $charset = Get-HeaderParameter $type 'charset'
+        $decoded = $null
+        try { if ($charset) { $decoded = [System.Text.Encoding]::GetEncoding($charset).GetString($bytes) } } catch { Write-Verbose 'Unknown charset: read as Latin-1.' }
+        if ($null -eq $decoded) { $decoded = $script:MimeLatin1.GetString($bytes) }
+        $name = '(message text)'; if ($type -match '(?i)text/html') { $name = '(message text).html' }
+        New-Part $name -Text $decoded
+        return
+    }
+    if (-not $file) { $file = 'attachment' }
+    New-Part (ConvertFrom-EncodedWords $file) -Bytes $bytes
+}
+
+function Get-EmailParts {
+    <#
+    .SYNOPSIS
+      The parts of an e-mail (.eml, RFC 5322 with MIME): its main headers as text (Subject, From, To, Cc, Date), its
+      text bodies, and each attachment as a file to read.
+    .PARAMETER Bytes
+      The message bytes.
+    .OUTPUTS
+      [pscustomobject] parts (New-Part).
+    #>
+    param([byte[]]$Bytes)
+    $text = $script:MimeLatin1.GetString($Bytes)
+    $entity = Split-MimeEntity $text
+    $lines = foreach ($name in @('subject', 'from', 'to', 'cc', 'date')) {
+        if ($entity.Headers.ContainsKey($name)) { (Get-Culture).TextInfo.ToTitleCase($name) + ': ' + (ConvertFrom-EncodedWords $entity.Headers[$name]) }
+    }
+    New-Part '(message headers)' -Text (@($lines) -join "`n")
+    Get-MimeParts $text 0
+}
+
 # ==== Module PdfCore.psm1 ====
 <#
 PdfCore.psm1 - the base of the PDF reader: its time and size limits, stream filters and ToUnicode font maps.
@@ -1016,7 +1473,8 @@ PdfText.psm1 - the text of a PDF file, in memory, with .NET only (no module; the
   Inputs:      the file bytes.
   Outputs:     a hashtable with Text and Reason (Get-PdfText).
   How to run:  imported by Find-ChannelPII.ps1 (used by TextExtract.psm1); not run on its own.
-  Depends on:  PdfCore.psm1 (limits, stream filters, ToUnicode maps), imported first by Find-ChannelPII.ps1.
+  Depends on:  PdfCore.psm1 (limits, stream filters, ToUnicode maps) and OcrText.psm1 (scanned pages), imported first
+               by Find-ChannelPII.ps1.
   Run target:  Windows PowerShell 5.1 (also PowerShell 7); .NET System.IO.Compression only.
   Network:     none.
   Writes:      none. Bytes stay in memory; nothing is saved to disk.
@@ -1045,6 +1503,10 @@ $script:PdfWordGap = 250
 $script:InlineImagePattern = '(?s)\bBI\b.*?\bID\s.*?\sEI\b'
 
 $script:PdfNoTextReason = 'No text in this PDF (a scanned image?): check by hand'
+
+# A scanned PDF (no text layer): its JPEG page images are read with Windows OCR, at most this many (OcrText.psm1).
+$script:MaxScanPages = 30
+$script:PdfScanImages = @()
 $script:PdfSlowReason = 'This PDF is too large or damaged to read in time: check by hand'
 $script:PdfPartReason = 'Part of this PDF could not be read (a damaged or unusual string): check by hand'
 $script:PdfStringError = 'PDF string not read'
@@ -1077,8 +1539,14 @@ function Get-PdfObjects {
         $body = $Text.Substring($start, $stop - $start)
         $stream = $null
         $parts = $split.Match($body)
-        if ($parts.Success) { $body = $parts.Groups[1].Value; $stream = Read-PdfStream $body $parts.Groups[2].Value }
-        $objects[$heads[$h].Groups[1].Value] = @{ Dict = $body; Stream = $stream }
+        $image = $null
+        if ($parts.Success) {
+            $body = $parts.Groups[1].Value
+            $stream = Read-PdfStream $body $parts.Groups[2].Value
+            # A JPEG page image (a scanned page): kept as it is, for OCR when the PDF has no text (Get-PdfScanText).
+            if ($body -match '/Subtype\s*/Image\b' -and $body -match '/Filter\s*\[?\s*/DCTDecode\s*\]?') { $image = $parts.Groups[2].Value }
+        }
+        $objects[$heads[$h].Groups[1].Value] = @{ Dict = $body; Stream = $stream; Image = $image }
     }
     foreach ($packed in @($objects.Values | Where-Object { $_.Dict -match '/Type\s*/ObjStm' -and $_.Stream })) { Add-PackedObjects $objects $packed }
     return $objects
@@ -1105,7 +1573,7 @@ function Add-PackedObjects {
         $end = $Packed.Stream.Length
         if (2 * $k + 3 -lt $pairs.Count) { $end = $first + [int]$pairs[2 * $k + 3] }
         if ($start -ge $end -or $end -gt $Packed.Stream.Length) { continue }
-        if (-not $Objects.Contains($pairs[2 * $k])) { $Objects[$pairs[2 * $k]] = @{ Dict = $Packed.Stream.Substring($start, $end - $start); Stream = $null } }
+        if (-not $Objects.Contains($pairs[2 * $k])) { $Objects[$pairs[2 * $k]] = @{ Dict = $Packed.Stream.Substring($start, $end - $start); Stream = $null; Image = $null } }
     }
 }
 
@@ -1357,6 +1825,7 @@ function Get-PdfText {
         return @{ Text = ''; Reason = 'Not a valid PDF (damaged, or another type with a .pdf name): check by hand' }
     }
     if ($text -match '/Encrypt\s*(?:\d+\s+\d+\s+R|<<)') { return @{ Text = ''; Reason = $script:PdfEncryptedReason } }
+    $script:PdfScanImages = @()   # this PDF's own scanned pages only
     Start-PdfBudget
     try { $all = Get-PdfAllText $text }
     catch {
@@ -1370,10 +1839,37 @@ function Get-PdfText {
     finally { $notes = @(Stop-PdfBudget) }
     $note = (@($notes) -join '; ')
     if (-not $all.Trim()) {
+        if ($script:PdfScanImages.Count -gt 0) { return (Get-PdfScanText $script:PdfScanImages $note) }
         $reason = $script:PdfNoTextReason; if ($note) { $reason = $note }
         return @{ Text = ''; Reason = $reason; Note = '' }
     }
     return @{ Text = $all; Reason = ''; Note = $note }
+}
+
+function Get-PdfScanText {
+    <#
+    .SYNOPSIS
+      The text of a scanned PDF (JPEG page images, no text layer) read with Windows OCR, page by page, at most
+      $MaxScanPages pages; more pages, or OCR that is not available, give a reason or a note.
+    .PARAMETER Images
+      The JPEG image streams (Latin-1 text).
+    .PARAMETER Note
+      Notes already made for this PDF.
+    .OUTPUTS
+      [hashtable] Text, Reason, Note.
+    #>
+    param([string[]]$Images, [string]$Note)
+    $pages = New-Object System.Collections.Generic.List[string]
+    $notes = @($Note | Where-Object { $_ })
+    for ($i = 0; $i -lt [Math]::Min($Images.Count, $script:MaxScanPages); $i++) {
+        $read = Get-ImageText ($script:PdfLatin1.GetBytes($Images[$i]))
+        if ($read.Reason) { return @{ Text = ''; Reason = 'Scanned PDF: ' + $read.Reason; Note = '' } }
+        $pages.Add($read.Text)
+    }
+    if ($Images.Count -gt $script:MaxScanPages) { $notes += "Scanned PDF: only the first $script:MaxScanPages page images were read: check by hand" }
+    $text = $pages -join "`n"
+    if (-not $text.Trim()) { return @{ Text = ''; Reason = $script:PdfNoTextReason; Note = '' } }
+    return @{ Text = $text; Reason = ''; Note = ($notes -join '; ') }
 }
 
 function Get-PdfAllText {
@@ -1388,6 +1884,7 @@ function Get-PdfAllText {
     #>
     param([string]$Text)
     $objects = Get-PdfObjects $Text
+    $script:PdfScanImages = @($objects.Values | Where-Object { $_.Image } | ForEach-Object { $_.Image })
     Assert-PdfTime
     $allFonts = Get-PdfFonts $objects
     Assert-PdfTime
@@ -1419,14 +1916,15 @@ function Get-PdfAllText {
 <#
 TextExtract.psm1 - turns file bytes into plain text, in memory.
 
-  Purpose:     Plain text from Word, Excel and PowerPoint files (.docx/.xlsx/.pptx and macro versions),
-               PDF (page text and form fields; the PAM, 2026-11-20), text files and HTML. Other types (images,
-               legacy .doc/.xls/.ppt, scripts and anything else), encrypted files and PDFs without text are
-               reported as NOT SCANNED, so a person checks them by hand.
+  Purpose:     Plain text from Word, Excel and PowerPoint files (.docx/.xlsx/.pptx and macro versions), PDF,
+               OpenDocument, Visio, RTF, text and HTML; images (OCR), old .doc/.xls/.ppt and .msg; and each file
+               inside a .zip or an .eml (the PAM, 2026-11-20). Other types (scripts and anything else), encrypted
+               files and files that cannot be read are reported as NOT SCANNED, so a person checks them by hand.
   Inputs:      file bytes and the file name (for its extension).
-  Outputs:     an object with Status ('OK' or 'NOT SCANNED'), Reason and Text.
+  Outputs:     an object with Status ('OK' or 'NOT SCANNED'), Reason, Text, Note and Parts (Get-TextFromBytes).
   How to run:  imported by Find-ChannelPII.ps1; not run on its own.
-  Depends on:  PdfText.psm1 (Get-PdfText), imported first by Find-ChannelPII.ps1.
+  Depends on:  PdfText.psm1 (Get-PdfText), OcrText.psm1 (Get-ImageText), OleText.psm1 (Get-OleText) and
+               ContainerText.psm1 (Get-ArchiveParts, Get-EmailParts), imported first by Find-ChannelPII.ps1.
   Run target:  Windows PowerShell 5.1 (also PowerShell 7); .NET System.IO.Compression only.
   Network:     none.
   Writes:      none. Bytes stay in memory; nothing is saved to disk.
@@ -1455,7 +1953,19 @@ $script:OfficeParts = @{
     '.xlsm' = '^xl/(worksheets/sheet\d+|comments\d*)\.xml$'
     '.pptx' = '^ppt/(slides/slide\d+|notesSlides/notesSlide\d+|comments/comment\d+)\.xml$'
     '.pptm' = '^ppt/(slides/slide\d+|notesSlides/notesSlide\d+|comments/comment\d+)\.xml$'
+    # OpenDocument (ODF: a zip with content.xml) and Visio (pages in visio/pages); the PAM, 2026-11-20: round 3.
+    '.odt' = '^content\.xml$'
+    '.ods' = '^content\.xml$'
+    '.odp' = '^content\.xml$'
+    '.vsdx' = '^visio/pages/page\d+\.xml$'
 }
+
+# Images, read with Windows OCR (OcrText.psm1); old binary Office and Outlook files (OleText.psm1); files that
+# hold other files (ContainerText.psm1): their parts are read one by one, at most $MaxContainerDepth levels deep.
+$script:ImageExtensions = @('.jpg', '.jpeg', '.png', '.tif', '.tiff', '.bmp', '.gif')
+$script:OleExtensions = @('.doc', '.xls', '.ppt', '.msg')
+$script:ContainerExtensions = @('.zip', '.eml')
+$script:MaxContainerDepth = 2
 
 # First bytes of a zip (every .docx/.xlsx/.pptx) and of an OLE compound file. Office saves a file in OLE form when it
 # is encrypted: a password, or a sensitivity label (CUI) with encryption; an old .doc/.xls/.ppt renamed is OLE too.
@@ -1520,7 +2030,9 @@ function Convert-XmlToText {
     # false positives (a 9-digit bookmark number read as an SSN), so their text is dropped (the PAM, 2026-11-20).
     $text = $Xml -replace '(?s)<w:instrText\b[^>]*?(?:/>|>.*?</w:instrText>)', ''
     $text = $text -replace '<w:tab/>|<w:br/>|<a:br/>', ' '
-    $text = $text -replace '</w:p>|</a:p>|</row>', "`n"
+    $text = $text -replace '<text:(?:s|tab|line-break)\b[^>]*/>', ' '
+    $text = $text -replace '</w:p>|</a:p>|</row>|</text:p>|</text:h>|</table:table-row>|</Text>', "`n"
+    $text = $text -replace '</table:table-cell>', $script:CellBreak   # ODF cells: never joined into one number
     $text = $text -replace '</si>|</c>|</w:tc>|</a:tc>', ' '
     $text = $text -replace '<[^>]+>', ''
     return [System.Net.WebUtility]::HtmlDecode($text)
@@ -1591,6 +2103,38 @@ function Get-ZipPartText {
     finally { $zip.Dispose(); $memory.Dispose() }
 }
 
+function Convert-RtfToText {
+    <#
+    .SYNOPSIS
+      Rich text (.rtf) as plain text: groups that hold no page text (font and colour tables, pictures, \*
+      destinations) dropped; \par, \line and \tab as breaks; \'hh and \uN characters decoded; other control
+      words and braces removed.
+    .PARAMETER Rtf
+      The RTF text.
+    .OUTPUTS
+      [string]
+    #>
+    param([string]$Rtf)
+    # Drop whole groups that are not page text, with the groups nested in them (a balancing group counts the braces).
+    $skip = '\{\\(?:\*|fonttbl|colortbl|stylesheet|pict|themedata|colorschememapping|datastore|latentstyles)' +
+        '(?>[^{}]+|\{(?<d>)|\}(?<-d>))*(?(d)(?!))\}'
+    $Rtf = (New-Object System.Text.RegularExpressions.Regex($skip, 'None', [TimeSpan]::FromSeconds(10))).Replace($Rtf, '')
+    $text = $Rtf -replace '\\(?:par|line|row|sect|page)\b ?', "`n" -replace '\\(?:tab|cell)\b ?', ' '
+    # \uN (with its fallback character, \'hh or ?, dropped) and \'hh in one pass, so a fallback is never decoded twice.
+    $out = New-Object System.Text.StringBuilder
+    $at = 0
+    foreach ($m in [regex]::Matches($text, '\\u(-?\d+) ?(?:\\''[0-9A-Fa-f]{2}|\?)?|\\''([0-9A-Fa-f]{2})')) {
+        [void]$out.Append($text, $at, $m.Index - $at)
+        if ($m.Groups[1].Success) { [void]$out.Append([char](([int]$m.Groups[1].Value) -band 0xFFFF)) }
+        else { [void]$out.Append([char][Convert]::ToInt32($m.Groups[2].Value, 16)) }
+        $at = $m.Index + $m.Length
+    }
+    [void]$out.Append($text, $at, $text.Length - $at)
+    $text = $out.ToString()
+    $text = $text -replace '\\[A-Za-z]+-?\d* ?', '' -replace '\\([{}\\])', '$1' -replace '[{}]', ''
+    return $text
+}
+
 function Get-PlainText {
     <#
     .SYNOPSIS
@@ -1631,31 +2175,37 @@ function Test-SupportedFile {
     param([string]$FileName)
     $extension = [System.IO.Path]::GetExtension($FileName).ToLower()
     return ($script:PlainTextExtensions -contains $extension) -or ($script:HtmlExtensions -contains $extension) -or
-        $script:OfficeParts.ContainsKey($extension) -or $extension -eq '.pdf'
+        $script:OfficeParts.ContainsKey($extension) -or $extension -in @('.pdf', '.rtf') -or $script:ImageExtensions -contains $extension -or
+        $script:OleExtensions -contains $extension -or $script:ContainerExtensions -contains $extension
 }
 
 function Get-TextFromBytes {
     <#
     .SYNOPSIS
-      Returns the text of one file, or why it was not scanned.
+      Returns the text of one file, or why it was not scanned. A zip or an e-mail gives Parts: the result of each
+      file inside it (read the same way, up to $MaxContainerDepth levels deep).
     .PARAMETER Bytes
       The file bytes.
     .PARAMETER FileName
       The file name; only its extension is used.
+    .PARAMETER Depth
+      How many containers this file sits in (0 for a file in the library).
     .OUTPUTS
-      [pscustomobject] Status ('OK' or 'NOT SCANNED'), Reason, Text, Note (a part of a read file that was not read).
+      [pscustomobject] Status ('OK' or 'NOT SCANNED'), Reason, Text, Note (a part of a read file that was not read),
+      Parts (the results of the files inside, each with a Name; empty for other files).
     #>
-    param([byte[]]$Bytes, [string]$FileName)
+    param([byte[]]$Bytes, [string]$FileName, [int]$Depth = 0)
     $extension = [System.IO.Path]::GetExtension($FileName).ToLower()
-    $result = [pscustomobject]@{ Status = 'OK'; Reason = ''; Text = ''; Note = '' }
+    $result = [pscustomobject]@{ Status = 'OK'; Reason = ''; Text = ''; Note = ''; Parts = (New-Object System.Collections.Generic.List[object]) }
     try {
+        $read = $null   # a reader's hashtable (Text, Reason, Note) for the types that give one
         if ($script:PlainTextExtensions -contains $extension) { $result.Text = Get-PlainText $Bytes }
         elseif ($script:HtmlExtensions -contains $extension) { $result.Text = Convert-HtmlToText (Get-PlainText $Bytes) }
-        elseif ($extension -eq '.pdf') {
-            $pdf = Get-PdfText $Bytes
-            if ($pdf.Reason) { $result.Status = 'NOT SCANNED'; $result.Reason = $pdf.Reason }
-            else { $result.Text = $pdf.Text; $result.Note = $pdf.Note }
-        }
+        elseif ($extension -eq '.rtf') { $result.Text = Convert-RtfToText (Get-PlainText $Bytes) }
+        elseif ($extension -eq '.pdf') { $read = Get-PdfText $Bytes }
+        elseif ($script:ImageExtensions -contains $extension) { $read = Get-ImageText $Bytes }
+        elseif ($script:OleExtensions -contains $extension) { $read = Get-OleText $Bytes $extension }
+        elseif ($script:ContainerExtensions -contains $extension) { Add-ContainerParts $result $Bytes $extension $Depth }
         elseif ($script:OfficeParts.ContainsKey($extension)) {
             $notZip = Get-NotZipReason $Bytes
             if ($notZip) { $result.Status = 'NOT SCANNED'; $result.Reason = $notZip }
@@ -1665,6 +2215,10 @@ function Get-TextFromBytes {
             $result.Status = 'NOT SCANNED'
             $result.Reason = "File type '$extension' is not read by this script: check by hand"
         }
+        if ($read) {
+            if ($read.Reason) { $result.Status = 'NOT SCANNED'; $result.Reason = $read.Reason }
+            else { $result.Text = $read.Text; if ($read.ContainsKey('Note')) { $result.Note = $read.Note } }
+        }
     }
     catch {
         # A damaged or protected file must not stop the scan: report it and go on.
@@ -1672,6 +2226,43 @@ function Get-TextFromBytes {
         $result.Reason = 'Could not read the file (damaged or protected?): ' + $_.Exception.Message
     }
     return $result
+}
+
+function Add-ContainerParts {
+    <#
+    .SYNOPSIS
+      Reads each file in a zip or e-mail into $Result.Parts, named "inner/path" (a part's own parts are flattened
+      as "inner.zip/file"). A container deeper than $MaxContainerDepth is not opened: NOT SCANNED with a reason.
+    .PARAMETER Result
+      The container's result (Get-TextFromBytes).
+    .PARAMETER Bytes
+      The container bytes.
+    .PARAMETER Extension
+      .zip or .eml.
+    .PARAMETER Depth
+      How many containers the container sits in.
+    #>
+    param($Result, [byte[]]$Bytes, [string]$Extension, [int]$Depth)
+    if ($Depth -ge $script:MaxContainerDepth) {
+        $Result.Status = 'NOT SCANNED'; $Result.Reason = 'An archive or e-mail inside another: open it and check by hand'
+        return
+    }
+    $parts = if ($Extension -eq '.zip') { @(Get-ArchiveParts $Bytes) } else { @(Get-EmailParts $Bytes) }
+    foreach ($part in $parts) {
+        if ($part.Reason) { $one = [pscustomobject]@{ Status = 'NOT SCANNED'; Reason = $part.Reason; Text = ''; Note = ''; Parts = (New-Object System.Collections.Generic.List[object]) } }
+        elseif ($null -ne $part.Text) {
+            $text = $part.Text; if ($part.Name -like '*.html') { $text = Convert-HtmlToText $text }
+            $one = [pscustomobject]@{ Status = 'OK'; Reason = ''; Text = $text; Note = ''; Parts = (New-Object System.Collections.Generic.List[object]) }
+        }
+        else { $one = Get-TextFromBytes -Bytes $part.Bytes -FileName $part.Name -Depth ($Depth + 1) }
+        $one | Add-Member -NotePropertyName Name -NotePropertyValue ([string]$part.Name) -Force
+        $Result.Parts.Add($one)
+        $inners = @(); if ($null -ne $one.Parts -and $one.Parts.Count -gt 0) { $inners = $one.Parts.ToArray() }
+        foreach ($inner in $inners) {
+            $inner.Name = $part.Name + '/' + $inner.Name
+            $Result.Parts.Add($inner)
+        }
+    }
 }
 
 # ==== Module XlsxWriter.psm1 ====
@@ -2001,6 +2592,11 @@ $script:NotScannedGroups = [ordered]@{
     '^Download failed' = 'Download failed'
     '^Not a valid (Office file|PDF)|^Could not read|too large or damaged to read in time|^Part of this PDF|could not be fully read' = 'Damaged or not readable'
     '^Files attached inside this PDF' = 'PDF attachments'
+    '^Image: Windows OCR|^Scanned PDF: Image: Windows OCR' = 'Images: OCR not available'
+    '^Image:|^Scanned PDF' = 'Images and scans not fully read'
+    '^Old Excel file' = 'Old Excel: numbers not read'
+    'old Office or Outlook' = 'Old Office or Outlook not readable'
+    '^An archive or e-mail inside another|in this archive|Too large to unpack|Could not unpack' = 'Archives: files not unpacked'
 }
 
 
@@ -3181,8 +3777,40 @@ function Invoke-OneFileScan {
     foreach ($hit in @(Find-PiiInText $text.Text)) {
         $Rows.Add((New-ReportRow 'File' $Channel $item $link $modified $hit.Detector $hit.Confidence $hit.MaskedValue $hit.Context))
     }
+    # No @() here: @() around an empty generic list property fails in PowerShell ("Argument types do not match").
+    if ($null -ne $text.Parts) { foreach ($part in $text.Parts) { Add-PartRows $part $Channel $item $link $modified $Rows } }
     $script:Timing.Check += $clock.Elapsed
     return 1
+}
+
+function Add-PartRows {
+    <#
+    .SYNOPSIS
+      The rows of one file inside a zip or an e-mail, named "<file>/<inner path>" (PII in the name masked): its
+      hits, a hit for PII in its name, and a NOT SCANNED row when it was not read or read only in part.
+    .PARAMETER Part
+      One result of Get-TextFromBytes Parts (with its Name).
+    .PARAMETER Channel
+      The channel name as the report shows it.
+    .PARAMETER Item
+      The container file as the report shows it.
+    .PARAMETER Link
+      The container file's link (an inner file has no link of its own).
+    .PARAMETER Modified
+      The container file's change time.
+    .PARAMETER Rows
+      The list that receives the rows.
+    #>
+    param($Part, [string]$Channel, [string]$Item, [string]$Link, [string]$Modified, $Rows)
+    $name = $Item + '/' + (Protect-PiiName $Part.Name)
+    foreach ($hit in @(Find-PiiInText $Part.Name)) {
+        $Rows.Add((New-ReportRow 'File name' $Channel $name $Link $Modified $hit.Detector $hit.Confidence $hit.MaskedValue 'In the name of a file inside it'))
+    }
+    if ($Part.Status -ne 'OK') { $Rows.Add((New-ReportRow 'File' $Channel $name $Link $Modified 'NOT SCANNED' '' '' (Protect-PiiText $Part.Reason))); return }
+    if ($Part.Note) { $Rows.Add((New-ReportRow 'File' $Channel $name $Link $Modified 'NOT SCANNED' '' '' (Protect-PiiText $Part.Note))) }
+    foreach ($hit in @(Find-PiiInText $Part.Text)) {
+        $Rows.Add((New-ReportRow 'File' $Channel $name $Link $Modified $hit.Detector $hit.Confidence $hit.MaskedValue $hit.Context))
+    }
 }
 
 function Get-ScanTiming {

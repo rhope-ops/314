@@ -54,6 +54,11 @@ $script:NotScannedGroups = [ordered]@{
     '^Download failed' = 'Download failed'
     '^Not a valid (Office file|PDF)|^Could not read|too large or damaged to read in time|^Part of this PDF|could not be fully read' = 'Damaged or not readable'
     '^Files attached inside this PDF' = 'PDF attachments'
+    '^Image: Windows OCR|^Scanned PDF: Image: Windows OCR' = 'Images: OCR not available'
+    '^Image:|^Scanned PDF' = 'Images and scans not fully read'
+    '^Old Excel file' = 'Old Excel: numbers not read'
+    'old Office or Outlook' = 'Old Office or Outlook not readable'
+    '^An archive or e-mail inside another|in this archive|Too large to unpack|Could not unpack' = 'Archives: files not unpacked'
 }
 
 

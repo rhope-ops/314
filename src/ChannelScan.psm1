@@ -472,8 +472,40 @@ function Invoke-OneFileScan {
     foreach ($hit in @(Find-PiiInText $text.Text)) {
         $Rows.Add((New-ReportRow 'File' $Channel $item $link $modified $hit.Detector $hit.Confidence $hit.MaskedValue $hit.Context))
     }
+    # No @() here: @() around an empty generic list property fails in PowerShell ("Argument types do not match").
+    if ($null -ne $text.Parts) { foreach ($part in $text.Parts) { Add-PartRows $part $Channel $item $link $modified $Rows } }
     $script:Timing.Check += $clock.Elapsed
     return 1
+}
+
+function Add-PartRows {
+    <#
+    .SYNOPSIS
+      The rows of one file inside a zip or an e-mail, named "<file>/<inner path>" (PII in the name masked): its
+      hits, a hit for PII in its name, and a NOT SCANNED row when it was not read or read only in part.
+    .PARAMETER Part
+      One result of Get-TextFromBytes Parts (with its Name).
+    .PARAMETER Channel
+      The channel name as the report shows it.
+    .PARAMETER Item
+      The container file as the report shows it.
+    .PARAMETER Link
+      The container file's link (an inner file has no link of its own).
+    .PARAMETER Modified
+      The container file's change time.
+    .PARAMETER Rows
+      The list that receives the rows.
+    #>
+    param($Part, [string]$Channel, [string]$Item, [string]$Link, [string]$Modified, $Rows)
+    $name = $Item + '/' + (Protect-PiiName $Part.Name)
+    foreach ($hit in @(Find-PiiInText $Part.Name)) {
+        $Rows.Add((New-ReportRow 'File name' $Channel $name $Link $Modified $hit.Detector $hit.Confidence $hit.MaskedValue 'In the name of a file inside it'))
+    }
+    if ($Part.Status -ne 'OK') { $Rows.Add((New-ReportRow 'File' $Channel $name $Link $Modified 'NOT SCANNED' '' '' (Protect-PiiText $Part.Reason))); return }
+    if ($Part.Note) { $Rows.Add((New-ReportRow 'File' $Channel $name $Link $Modified 'NOT SCANNED' '' '' (Protect-PiiText $Part.Note))) }
+    foreach ($hit in @(Find-PiiInText $Part.Text)) {
+        $Rows.Add((New-ReportRow 'File' $Channel $name $Link $Modified $hit.Detector $hit.Confidence $hit.MaskedValue $hit.Context))
+    }
 }
 
 function Get-ScanTiming {
