@@ -226,18 +226,18 @@ function Get-TextFromBytes {
     .PARAMETER FileName
       The file name; only its extension is used.
     .OUTPUTS
-      [pscustomobject] Status ('OK' or 'NOT SCANNED'), Reason, Text.
+      [pscustomobject] Status ('OK' or 'NOT SCANNED'), Reason, Text, Note (a part of a read file that was not read).
     #>
     param([byte[]]$Bytes, [string]$FileName)
     $extension = [System.IO.Path]::GetExtension($FileName).ToLower()
-    $result = [pscustomobject]@{ Status = 'OK'; Reason = ''; Text = '' }
+    $result = [pscustomobject]@{ Status = 'OK'; Reason = ''; Text = ''; Note = '' }
     try {
         if ($script:PlainTextExtensions -contains $extension) { $result.Text = Get-PlainText $Bytes }
         elseif ($script:HtmlExtensions -contains $extension) { $result.Text = Convert-HtmlToText (Get-PlainText $Bytes) }
         elseif ($extension -eq '.pdf') {
             $pdf = Get-PdfText $Bytes
             if ($pdf.Reason) { $result.Status = 'NOT SCANNED'; $result.Reason = $pdf.Reason }
-            else { $result.Text = $pdf.Text }
+            else { $result.Text = $pdf.Text; $result.Note = $pdf.Note }
         }
         elseif ($script:OfficeParts.ContainsKey($extension)) {
             $notZip = Get-NotZipReason $Bytes
