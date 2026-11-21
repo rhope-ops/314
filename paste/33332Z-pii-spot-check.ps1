@@ -21,8 +21,8 @@
     src/PiiMasking.psm1, sha256 752c251a94b2
     src/PdfCore.psm1, sha256 da11bdba883c
     src/PdfObjects.psm1, sha256 2a1f0acd8070
-    src/PdfFonts.psm1, sha256 808c3fb6579c
-    src/PdfText.psm1, sha256 87005f1c38ba
+    src/PdfFonts.psm1, sha256 9fe64d277005
+    src/PdfText.psm1, sha256 6954266a8917
     src/TextExtract.psm1, sha256 e29978d7b4fa
     src/XlsxWriter.psm1, sha256 e29becdc6a65
     src/Report.psm1, sha256 bb4837c619f4
@@ -43,14 +43,14 @@
     line   755  Module PdfCore.psm1
     line  1114  Module PdfObjects.psm1
     line  1455  Module PdfFonts.psm1
-    line  1750  Module PdfText.psm1
-    line  2140  Module TextExtract.psm1
-    line  2399  Module XlsxWriter.psm1
-    line  2670  Module Report.psm1
-    line  3168  Module ScanMeter.psm1
-    line  3433  Module ChannelScan.psm1
-    line  4019  Body of Find-ChannelPII.ps1
-    line  4120  Clean-up
+    line  1758  Module PdfText.psm1
+    line  2168  Module TextExtract.psm1
+    line  2427  Module XlsxWriter.psm1
+    line  2698  Module Report.psm1
+    line  3196  Module ScanMeter.psm1
+    line  3461  Module ChannelScan.psm1
+    line  4047  Body of Find-ChannelPII.ps1
+    line  4148  Clean-up
 #>
 
 # ==== Settings ==== (optional: edit the values between the quotes; empty = the script asks)
@@ -1541,11 +1541,12 @@ function New-PdfFontRecord {
     .PARAMETER Objects
       Output of Get-PdfObjects.
     .OUTPUTS
-      [hashtable] CMap, Bytes, Widths (code -> ems), DefaultWidth (ems, or -1), Standard (a width table, or $null).
+      [hashtable] CMap, Bytes, Widths (code -> ems), DefaultWidth (ems, or -1), Standard (a width table, or $null),
+      Vertical (vertical writing: each glyph advances 1 em down).
     #>
     param([string]$Dict, $Objects)
     $composite = $Dict -match '/Subtype\s*/Type0\b'
-    $record = @{ CMap = $null; Bytes = 1; Widths = @{}; DefaultWidth = -1.0; Standard = $null }
+    $record = @{ CMap = $null; Bytes = 1; Widths = @{}; DefaultWidth = -1.0; Standard = $null; Vertical = ($Dict -match '/Encoding\s*/Identity-V\b') }
     if ($composite) { $record.Bytes = 2 }
     $unicode = [regex]::Match($Dict, '/ToUnicode\s+(\d+)\s+\d+\s+R')
     if ($unicode.Success -and $Objects.Contains($unicode.Groups[1].Value) -and $Objects[$unicode.Groups[1].Value].Stream) {
@@ -1597,10 +1598,14 @@ function Add-PdfSimpleWidths {
     $first = 0
     $firstMatch = [regex]::Match($Dict, '/FirstChar\s+(\d+)')
     if ($firstMatch.Success) { $first = [int]$firstMatch.Groups[1].Value }
+    # Widths are in glyph space: thousandths of an em, or for a Type3 font in units of its /FontMatrix.
+    $unit = 0.001
+    $matrix = [regex]::Match($Dict, '/FontMatrix\s*\[\s*(-?(?:\d+\.?\d*|\.\d+))')
+    if ($Dict -match '/Subtype\s*/Type3\b' -and $matrix.Success) { $unit = [Math]::Abs([double]::Parse($matrix.Groups[1].Value, [Globalization.CultureInfo]::InvariantCulture)) }
     $code = $first
-    foreach ($number in [regex]::Matches((Get-PdfArrayText $Dict 'Widths' $Objects), '-?\d+(?:\.\d+)?')) {
+    foreach ($number in [regex]::Matches((Get-PdfArrayText $Dict 'Widths' $Objects), '-?(?:\d+\.?\d*|\.\d+)')) {
         if ($code -gt 255) { break }
-        $Record.Widths[$code] = [double]::Parse($number.Value, [Globalization.CultureInfo]::InvariantCulture) / 1000
+        $Record.Widths[$code] = [double]::Parse($number.Value, [Globalization.CultureInfo]::InvariantCulture) * $unit
         $code++
     }
     if ($Record.Widths.Count -gt 0) { return }
@@ -1629,13 +1634,14 @@ function Add-PdfCidWidths {
     $Record.DefaultWidth = 1.0
     $dw = [regex]::Match($cid, '/DW\s+(\d+(?:\.\d+)?)')
     if ($dw.Success) { $Record.DefaultWidth = [double]::Parse($dw.Groups[1].Value, [Globalization.CultureInfo]::InvariantCulture) / 1000 }
-    $tokens = @([regex]::Matches((Get-PdfArrayText $cid 'W' $Objects), '\[|\]|-?\d+(?:\.\d+)?') | ForEach-Object { $_.Value })
+    $tokens = @([regex]::Matches((Get-PdfArrayText $cid 'W' $Objects), '\[|\]|-?(?:\d+\.?\d*|\.\d+)') | ForEach-Object { $_.Value })
     $numbers = New-Object System.Collections.Generic.List[double]
     $i = 1   # token 0 is the outer [
     while ($i -lt $tokens.Count -and $Record.Widths.Count -lt $script:MaxWidthEntries) {
         Assert-PdfTime
         if ($tokens[$i] -eq '[') {
             # first [w1 w2 ...]: the number before the bracket is the first glyph.
+            if ($numbers.Count -eq 0) { Add-PdfNote 'A font in this PDF could not be fully read: check by hand'; return }   # [ with no first glyph
             $glyph = [int]$numbers[$numbers.Count - 1]; $numbers.Clear(); $i++
             while ($i -lt $tokens.Count -and $tokens[$i] -ne ']') { $Record.Widths[$glyph] = [double]$tokens[$i] / 1000; $glyph++; $i++ }
         }
@@ -1708,11 +1714,13 @@ function Get-PdfShowWidth {
     $known = $font -and ($font.Widths.Count -gt 0 -or $font.DefaultWidth -ge 0 -or $font.Standard)
     $step = 1; if ($font) { $step = [Math]::Max(1, [int]$font.Bytes) }
     $glyphs = [Math]::Max(1, [int]($Raw.Length / $step))
-    $spaces = 0; if ($step -eq 1) { $spaces = @($Raw.ToCharArray() | Where-Object { $_ -eq ' ' }).Count }
-    if (-not $known) { $ems = (Get-PdfTextWidth $Text 1.0) }
+    $spaces = 0; if ($step -eq 1) { $spaces = $Raw.Length - $Raw.Replace(' ', '').Length }   # no copy per character
+    if ($font -and $font.Vertical) { $ems = [double]$glyphs }   # vertical writing: 1 em down per glyph (the /DW2 default)
+    elseif (-not $known) { $ems = (Get-PdfTextWidth $Text 1.0) }
     else {
         $ems = 0.0
         for ($i = 0; $i + $step -le $Raw.Length; $i += $step) {
+            if (($i % 8192) -eq 0) { Assert-PdfTime }
             $code = 0; for ($j = 0; $j -lt $step; $j++) { $code = $code * 256 + [int]$Raw[$i + $j] }
             if ($font.Widths.ContainsKey($code)) { $ems += $font.Widths[$code] }
             elseif ($font.Standard -and $code -ge 32 -and $code -le 126) { $ems += $font.Standard[$code - 32] / 1000 }
@@ -1776,9 +1784,9 @@ $script:PdfTokenPattern = (Get-PdfStringPattern) + '|%[^\r\n]*|\[|\]|/[^\s/\[\](
 
 
 # Gaps along a line (a same-line Td move past the real end of the text before it, or a TJ adjustment), in ems: a
-# space when wider than the block's letter spacing plus WordGapEms. The letter spacing is the median gap after
-# one-glyph pieces when a block has at least MinSpacingGaps of them (gaps of ColumnGapEms or more are columns, not
-# spacing), else 0 (fresh reviews, 2026-11-21).
+# space when wider than the block's letter spacing plus WordGapEms. The letter spacing is the median gap between two
+# one-glyph pieces when a block has at least MinSpacingGaps of them and they are at least half of its gaps (gaps of
+# ColumnGapEms or more are columns, not spacing), else 0 (fresh reviews, 2026-11-21).
 $script:WordGapEms = 0.2
 $script:MinSpacingGaps = 4
 $script:ColumnGapEms = 1.0
@@ -1899,7 +1907,12 @@ function Add-PdfMove {
     if ($Stack.Count -lt 2) { return }
     $tx = ConvertTo-PdfNumber $Stack[$Stack.Count - 2]
     $ty = ConvertTo-PdfNumber $Stack[$Stack.Count - 1]
-    if ($ty -ne 0) { $State.Pieces.Add("`n") }
+    if ($State.Font -and $State.Font.Vertical) {
+        # Vertical writing (Identity-V): the line runs down; a move across it starts a new line.
+        if ($tx -ne 0) { $State.Pieces.Add("`n") }
+        else { $State.Pieces.Add(@{ Gap = [double](([Math]::Abs($ty) - $State.Advance) / [Math]::Max(1.0, $State.Size)); Single = ($State.LastLength -eq 1) }) }
+    }
+    elseif ($ty -ne 0) { $State.Pieces.Add("`n") }
     elseif ($tx -lt 0) { $State.Pieces.Add(@{ Gap = [double]::MaxValue; Single = $false }) }   # back along the line: a new column
     else { $State.Pieces.Add(@{ Gap = [double](($tx - $State.Advance) / [Math]::Max(1.0, $State.Size)); Single = ($State.LastLength -eq 1) }) }
     $State.Advance = 0.0
@@ -1916,9 +1929,21 @@ function Complete-PdfTextBlock {
     param([hashtable]$State)
     # Letter spacing: when at least $MinSpacingGaps gaps follow one-glyph pieces, their median is the block's letter
     # spacing; a gap is a space only when wider than that plus $WordGapEms. A block of whole words keeps 0 as its base.
-    $single = @(foreach ($piece in $State.Pieces) { if ($piece -is [hashtable] -and $piece.Single -and $piece.Gap -lt $script:ColumnGapEms) { $piece.Gap } })
+    # A letter gap sits between two one-glyph pieces; spacing counts only when such gaps are most of the block's gaps
+    # (one-letter words such as "a" between whole words are no letter spacing: pdfTeX, fresh review 2026-11-21).
+    $letters = New-Object System.Collections.Generic.List[double]
+    $gaps = 0
+    for ($k = 0; $k -lt $State.Pieces.Count; $k++) {
+        $piece = $State.Pieces[$k]
+        if ($piece -isnot [hashtable]) { continue }
+        $gaps++
+        $after = $null; if ($k + 1 -lt $State.Pieces.Count) { $after = $State.Pieces[$k + 1] }
+        if ($piece.Single -and $after -is [string] -and $after.Length -eq 1 -and $piece.Gap -lt $script:ColumnGapEms) { $letters.Add($piece.Gap) }
+    }
     $base = 0.0
-    if ($single.Count -ge $script:MinSpacingGaps) { $sorted = @($single | Sort-Object); $base = [Math]::Max(0.0, $sorted[[int]($sorted.Count / 2)]) }
+    if ($letters.Count -ge $script:MinSpacingGaps -and $letters.Count * 2 -ge $gaps) {
+        $sorted = @($letters.ToArray() | Sort-Object); $base = [Math]::Max(0.0, $sorted[[int]($sorted.Count / 2)])
+    }
     $limit = $base + $script:WordGapEms
     $out = New-Object System.Text.StringBuilder
     foreach ($piece in $State.Pieces) {
@@ -2027,6 +2052,9 @@ function Get-PdfText {
     }
     finally { $notes = @(Stop-PdfBudget) }
     $note = (@($notes) -join '; ')
+    # Runs of spaces and tabs become one space: the detectors never need them, and a page of 15 million spaces would
+    # otherwise cost the later checks a gigabyte (fresh review, 2026-11-21).
+    $all = [regex]::Replace($all, '[ \t]{2,}', ' ')
     if (-not $all.Trim()) {
         $reason = $script:PdfNoTextReason; if ($note) { $reason = $note }
         return @{ Text = ''; Reason = $reason; Note = '' }

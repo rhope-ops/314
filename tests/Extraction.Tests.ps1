@@ -301,3 +301,19 @@ $padded = Get-TextFromBytes -Bytes (New-PdfBytes "BT /F1 10 Tf (Sponsor SSN) Tj 
 Assert-Equal 'SSN' (@(Find-PiiInText $padded.Text) | Select-Object -First 1).Detector 'PDF: a label and a value a pad apart stay apart'
 # ASCII85: z (four zero bytes) is lower case only; a capital Z is data.
 Assert-Equal 'hello' (& (Get-Module PdfCore) { ConvertFrom-Ascii85 'BOu!rDZ~>' }) 'PDF: ASCII85 keeps a capital Z (hello encodes as BOu!rDZ)'
+
+# ---- PDF review round 11 (2026-11-21) ----
+# pdfTeX style: word gaps are TJ adjustments, with one-letter words among them: the words stay apart.
+$tex = "[(This)-333(is)-333(a)-333(note)-333(a)-333(b)-333(a)-333(c)-333(a)] TJ 0 -14 Td [(Contact)-333(SSN)-333($($Sample.Ssn))] TJ"
+$texRead = Get-TextFromBytes -Bytes (New-PdfBytes "BT /F1 10 Tf $tex ET" -Plain) -FileName 'tex.pdf'
+Assert-Equal 'SSN' (@(Find-PiiInText $texRead.Text) | Select-Object -First 1).Detector 'PDF: TJ word gaps with one-letter words stay spaces'
+# A Type3 font: widths in units of its /FontMatrix (0.01 here: 50 = 0.5 em).
+$t3Font = '<< /Type /Font /Subtype /Type3 /FontMatrix [0.01 0 0 0.01 0 0] /FirstChar 32 /LastChar 122 /Widths [' + ((1..91 | ForEach-Object { '50' }) -join ' ') + '] >>'
+# SSN is 15 wide (3 x 0.5 em x 10 pt); the value starts 19 after it: a 0.4 em gap.
+$t3Run = '(SSN) Tj 19 0 Td (' + $Sample.Ssn + ') Tj'
+$t3Read = Get-TextFromBytes -Bytes (New-PdfBytes "BT /F1 10 Tf $t3Run ET" -Plain -FontDict $t3Font) -FileName 't3.pdf'
+Assert-Equal 'SSN' (@(Find-PiiInText $t3Read.Text) | Select-Object -First 1).Detector 'PDF: Type3 widths use the font matrix'
+# A huge string of spaces: bounded time and runs of spaces collapsed.
+$clock.Restart()
+$manySpaces = Get-TextFromBytes -Bytes (New-PdfBytes ('BT /F1 10 Tf (' + (' ' * 500000) + 'SSN ' + $Sample.Ssn + ') Tj ET')) -FileName 'sp.pdf'
+Assert-Equal $true ($clock.Elapsed.TotalSeconds -lt 30 -and $manySpaces.Text.Length -lt 100) 'PDF: a huge run of spaces is read in bounded time and collapsed'

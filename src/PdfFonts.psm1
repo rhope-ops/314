@@ -87,11 +87,12 @@ function New-PdfFontRecord {
     .PARAMETER Objects
       Output of Get-PdfObjects.
     .OUTPUTS
-      [hashtable] CMap, Bytes, Widths (code -> ems), DefaultWidth (ems, or -1), Standard (a width table, or $null).
+      [hashtable] CMap, Bytes, Widths (code -> ems), DefaultWidth (ems, or -1), Standard (a width table, or $null),
+      Vertical (vertical writing: each glyph advances 1 em down).
     #>
     param([string]$Dict, $Objects)
     $composite = $Dict -match '/Subtype\s*/Type0\b'
-    $record = @{ CMap = $null; Bytes = 1; Widths = @{}; DefaultWidth = -1.0; Standard = $null }
+    $record = @{ CMap = $null; Bytes = 1; Widths = @{}; DefaultWidth = -1.0; Standard = $null; Vertical = ($Dict -match '/Encoding\s*/Identity-V\b') }
     if ($composite) { $record.Bytes = 2 }
     $unicode = [regex]::Match($Dict, '/ToUnicode\s+(\d+)\s+\d+\s+R')
     if ($unicode.Success -and $Objects.Contains($unicode.Groups[1].Value) -and $Objects[$unicode.Groups[1].Value].Stream) {
@@ -143,10 +144,14 @@ function Add-PdfSimpleWidths {
     $first = 0
     $firstMatch = [regex]::Match($Dict, '/FirstChar\s+(\d+)')
     if ($firstMatch.Success) { $first = [int]$firstMatch.Groups[1].Value }
+    # Widths are in glyph space: thousandths of an em, or for a Type3 font in units of its /FontMatrix.
+    $unit = 0.001
+    $matrix = [regex]::Match($Dict, '/FontMatrix\s*\[\s*(-?(?:\d+\.?\d*|\.\d+))')
+    if ($Dict -match '/Subtype\s*/Type3\b' -and $matrix.Success) { $unit = [Math]::Abs([double]::Parse($matrix.Groups[1].Value, [Globalization.CultureInfo]::InvariantCulture)) }
     $code = $first
-    foreach ($number in [regex]::Matches((Get-PdfArrayText $Dict 'Widths' $Objects), '-?\d+(?:\.\d+)?')) {
+    foreach ($number in [regex]::Matches((Get-PdfArrayText $Dict 'Widths' $Objects), '-?(?:\d+\.?\d*|\.\d+)')) {
         if ($code -gt 255) { break }
-        $Record.Widths[$code] = [double]::Parse($number.Value, [Globalization.CultureInfo]::InvariantCulture) / 1000
+        $Record.Widths[$code] = [double]::Parse($number.Value, [Globalization.CultureInfo]::InvariantCulture) * $unit
         $code++
     }
     if ($Record.Widths.Count -gt 0) { return }
@@ -175,13 +180,14 @@ function Add-PdfCidWidths {
     $Record.DefaultWidth = 1.0
     $dw = [regex]::Match($cid, '/DW\s+(\d+(?:\.\d+)?)')
     if ($dw.Success) { $Record.DefaultWidth = [double]::Parse($dw.Groups[1].Value, [Globalization.CultureInfo]::InvariantCulture) / 1000 }
-    $tokens = @([regex]::Matches((Get-PdfArrayText $cid 'W' $Objects), '\[|\]|-?\d+(?:\.\d+)?') | ForEach-Object { $_.Value })
+    $tokens = @([regex]::Matches((Get-PdfArrayText $cid 'W' $Objects), '\[|\]|-?(?:\d+\.?\d*|\.\d+)') | ForEach-Object { $_.Value })
     $numbers = New-Object System.Collections.Generic.List[double]
     $i = 1   # token 0 is the outer [
     while ($i -lt $tokens.Count -and $Record.Widths.Count -lt $script:MaxWidthEntries) {
         Assert-PdfTime
         if ($tokens[$i] -eq '[') {
             # first [w1 w2 ...]: the number before the bracket is the first glyph.
+            if ($numbers.Count -eq 0) { Add-PdfNote 'A font in this PDF could not be fully read: check by hand'; return }   # [ with no first glyph
             $glyph = [int]$numbers[$numbers.Count - 1]; $numbers.Clear(); $i++
             while ($i -lt $tokens.Count -and $tokens[$i] -ne ']') { $Record.Widths[$glyph] = [double]$tokens[$i] / 1000; $glyph++; $i++ }
         }
@@ -254,11 +260,13 @@ function Get-PdfShowWidth {
     $known = $font -and ($font.Widths.Count -gt 0 -or $font.DefaultWidth -ge 0 -or $font.Standard)
     $step = 1; if ($font) { $step = [Math]::Max(1, [int]$font.Bytes) }
     $glyphs = [Math]::Max(1, [int]($Raw.Length / $step))
-    $spaces = 0; if ($step -eq 1) { $spaces = @($Raw.ToCharArray() | Where-Object { $_ -eq ' ' }).Count }
-    if (-not $known) { $ems = (Get-PdfTextWidth $Text 1.0) }
+    $spaces = 0; if ($step -eq 1) { $spaces = $Raw.Length - $Raw.Replace(' ', '').Length }   # no copy per character
+    if ($font -and $font.Vertical) { $ems = [double]$glyphs }   # vertical writing: 1 em down per glyph (the /DW2 default)
+    elseif (-not $known) { $ems = (Get-PdfTextWidth $Text 1.0) }
     else {
         $ems = 0.0
         for ($i = 0; $i + $step -le $Raw.Length; $i += $step) {
+            if (($i % 8192) -eq 0) { Assert-PdfTime }
             $code = 0; for ($j = 0; $j -lt $step; $j++) { $code = $code * 256 + [int]$Raw[$i + $j] }
             if ($font.Widths.ContainsKey($code)) { $ems += $font.Widths[$code] }
             elseif ($font.Standard -and $code -ge 32 -and $code -le 126) { $ems += $font.Standard[$code - 32] / 1000 }

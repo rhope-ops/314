@@ -27,9 +27,9 @@ $script:PdfTokenPattern = (Get-PdfStringPattern) + '|%[^\r\n]*|\[|\]|/[^\s/\[\](
 
 
 # Gaps along a line (a same-line Td move past the real end of the text before it, or a TJ adjustment), in ems: a
-# space when wider than the block's letter spacing plus WordGapEms. The letter spacing is the median gap after
-# one-glyph pieces when a block has at least MinSpacingGaps of them (gaps of ColumnGapEms or more are columns, not
-# spacing), else 0 (fresh reviews, 2026-11-21).
+# space when wider than the block's letter spacing plus WordGapEms. The letter spacing is the median gap between two
+# one-glyph pieces when a block has at least MinSpacingGaps of them and they are at least half of its gaps (gaps of
+# ColumnGapEms or more are columns, not spacing), else 0 (fresh reviews, 2026-11-21).
 $script:WordGapEms = 0.2
 $script:MinSpacingGaps = 4
 $script:ColumnGapEms = 1.0
@@ -150,7 +150,12 @@ function Add-PdfMove {
     if ($Stack.Count -lt 2) { return }
     $tx = ConvertTo-PdfNumber $Stack[$Stack.Count - 2]
     $ty = ConvertTo-PdfNumber $Stack[$Stack.Count - 1]
-    if ($ty -ne 0) { $State.Pieces.Add("`n") }
+    if ($State.Font -and $State.Font.Vertical) {
+        # Vertical writing (Identity-V): the line runs down; a move across it starts a new line.
+        if ($tx -ne 0) { $State.Pieces.Add("`n") }
+        else { $State.Pieces.Add(@{ Gap = [double](([Math]::Abs($ty) - $State.Advance) / [Math]::Max(1.0, $State.Size)); Single = ($State.LastLength -eq 1) }) }
+    }
+    elseif ($ty -ne 0) { $State.Pieces.Add("`n") }
     elseif ($tx -lt 0) { $State.Pieces.Add(@{ Gap = [double]::MaxValue; Single = $false }) }   # back along the line: a new column
     else { $State.Pieces.Add(@{ Gap = [double](($tx - $State.Advance) / [Math]::Max(1.0, $State.Size)); Single = ($State.LastLength -eq 1) }) }
     $State.Advance = 0.0
@@ -167,9 +172,21 @@ function Complete-PdfTextBlock {
     param([hashtable]$State)
     # Letter spacing: when at least $MinSpacingGaps gaps follow one-glyph pieces, their median is the block's letter
     # spacing; a gap is a space only when wider than that plus $WordGapEms. A block of whole words keeps 0 as its base.
-    $single = @(foreach ($piece in $State.Pieces) { if ($piece -is [hashtable] -and $piece.Single -and $piece.Gap -lt $script:ColumnGapEms) { $piece.Gap } })
+    # A letter gap sits between two one-glyph pieces; spacing counts only when such gaps are most of the block's gaps
+    # (one-letter words such as "a" between whole words are no letter spacing: pdfTeX, fresh review 2026-11-21).
+    $letters = New-Object System.Collections.Generic.List[double]
+    $gaps = 0
+    for ($k = 0; $k -lt $State.Pieces.Count; $k++) {
+        $piece = $State.Pieces[$k]
+        if ($piece -isnot [hashtable]) { continue }
+        $gaps++
+        $after = $null; if ($k + 1 -lt $State.Pieces.Count) { $after = $State.Pieces[$k + 1] }
+        if ($piece.Single -and $after -is [string] -and $after.Length -eq 1 -and $piece.Gap -lt $script:ColumnGapEms) { $letters.Add($piece.Gap) }
+    }
     $base = 0.0
-    if ($single.Count -ge $script:MinSpacingGaps) { $sorted = @($single | Sort-Object); $base = [Math]::Max(0.0, $sorted[[int]($sorted.Count / 2)]) }
+    if ($letters.Count -ge $script:MinSpacingGaps -and $letters.Count * 2 -ge $gaps) {
+        $sorted = @($letters.ToArray() | Sort-Object); $base = [Math]::Max(0.0, $sorted[[int]($sorted.Count / 2)])
+    }
     $limit = $base + $script:WordGapEms
     $out = New-Object System.Text.StringBuilder
     foreach ($piece in $State.Pieces) {
@@ -278,6 +295,9 @@ function Get-PdfText {
     }
     finally { $notes = @(Stop-PdfBudget) }
     $note = (@($notes) -join '; ')
+    # Runs of spaces and tabs become one space: the detectors never need them, and a page of 15 million spaces would
+    # otherwise cost the later checks a gigabyte (fresh review, 2026-11-21).
+    $all = [regex]::Replace($all, '[ \t]{2,}', ' ')
     if (-not $all.Trim()) {
         $reason = $script:PdfNoTextReason; if ($note) { $reason = $note }
         return @{ Text = ''; Reason = $reason; Note = '' }
