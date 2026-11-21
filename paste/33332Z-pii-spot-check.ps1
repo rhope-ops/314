@@ -21,7 +21,7 @@
     src/PiiMasking.psm1, sha256 752c251a94b2
     src/PdfCore.psm1, sha256 da11bdba883c
     src/PdfObjects.psm1, sha256 2a1f0acd8070
-    src/PdfFonts.psm1, sha256 9b12035a68a3
+    src/PdfFonts.psm1, sha256 808c3fb6579c
     src/PdfText.psm1, sha256 87005f1c38ba
     src/TextExtract.psm1, sha256 e29978d7b4fa
     src/XlsxWriter.psm1, sha256 e29becdc6a65
@@ -43,14 +43,14 @@
     line   755  Module PdfCore.psm1
     line  1114  Module PdfObjects.psm1
     line  1455  Module PdfFonts.psm1
-    line  1740  Module PdfText.psm1
-    line  2130  Module TextExtract.psm1
-    line  2389  Module XlsxWriter.psm1
-    line  2660  Module Report.psm1
-    line  3158  Module ScanMeter.psm1
-    line  3423  Module ChannelScan.psm1
-    line  4009  Body of Find-ChannelPII.ps1
-    line  4110  Clean-up
+    line  1750  Module PdfText.psm1
+    line  2140  Module TextExtract.psm1
+    line  2399  Module XlsxWriter.psm1
+    line  2670  Module Report.psm1
+    line  3168  Module ScanMeter.psm1
+    line  3433  Module ChannelScan.psm1
+    line  4019  Body of Find-ChannelPII.ps1
+    line  4120  Clean-up
 #>
 
 # ==== Settings ==== (optional: edit the values between the quotes; empty = the script asks)
@@ -1561,7 +1561,17 @@ function New-PdfFontRecord {
 }
 
 function Get-PdfArrayText {
-    # The text of an array value: written in place ([...]) or held in an object of its own (n 0 R).
+    <#
+    .SYNOPSIS
+      The text of an array value: written in place ([...], one level of inner arrays) or held in an object of its
+      own (n 0 R); empty when the key is not there.
+    .PARAMETER Dict
+      The dictionary text.
+    .PARAMETER Key
+      The key, without its slash.
+    .PARAMETER Objects
+      Output of Get-PdfObjects.
+    #>
     param([string]$Dict, [string]$Key, $Objects)
     $value = [regex]::Match($Dict, '/' + $Key + '\s*(\[[^\[\]]*(?:\[[^\[\]]*\][^\[\]]*)*\]|(\d+)\s+\d+\s+R)')
     if (-not $value.Success) { return '' }

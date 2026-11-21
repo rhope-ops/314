@@ -107,7 +107,17 @@ function New-PdfFontRecord {
 }
 
 function Get-PdfArrayText {
-    # The text of an array value: written in place ([...]) or held in an object of its own (n 0 R).
+    <#
+    .SYNOPSIS
+      The text of an array value: written in place ([...], one level of inner arrays) or held in an object of its
+      own (n 0 R); empty when the key is not there.
+    .PARAMETER Dict
+      The dictionary text.
+    .PARAMETER Key
+      The key, without its slash.
+    .PARAMETER Objects
+      Output of Get-PdfObjects.
+    #>
     param([string]$Dict, [string]$Key, $Objects)
     $value = [regex]::Match($Dict, '/' + $Key + '\s*(\[[^\[\]]*(?:\[[^\[\]]*\][^\[\]]*)*\]|(\d+)\s+\d+\s+R)')
     if (-not $value.Success) { return '' }
