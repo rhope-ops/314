@@ -7,35 +7,28 @@
 <meta name="claude:viewport-fit-sides" content="cover">
 <meta name="description" content="33-332.Z, Privacy Act Management: simple tools to help you protect PII.">
 <style>
-/* Layout: the 90-161.Z header band (logo, name and subtitle left, Core right), then one narrow column with the tool. */
+/* Layout: the 90-161.Z header band (logo, name and subtitle left, Core right), then one narrow column with the tool card drawn as the disc. */
+/* Fulcrum Minimal, kit 6.2.0 (archimedes_lever docs/brand/fulcrum.json): five Logo Studies colours and the roles built from them. */
 :root{
-  /* FULCRUM palette (Logo Studies): ink, cream, ember, slate, gold. Nothing else. */
   --ink:#15171D; --cream:#F3EEE4; --ember:#E4572E; --slate:#5A5E6A; --gold:#D4AF37;
-  --bg:#F6F2EA; --card:#FFFDF8; --fg:#15171D; --mut:#555963; --line:#DED6C8;
-  --link:#A63A16; --link-hover:#7E2A0E;
-  --btn:#15171D; --btn-fg:#F3EEE4; --btn-hover:#2A2D36;
-  --hl:#FBEADF; --code:#EFE9DD; --err:#A3241A; --focus:#E4572E;
-  --field:#7E796D;   /* the outlined button's border: 3.9:1 on the page (WCAG 1.4.11 asks 3:1) */
-  --band:#15171D; --band-fg:#F3EEE4; --band-mist:#C9C3B8;
+  --bg:#F3EEE4; --card:#15171D; --ring:#F3EEE4; --fg:#15171D; --mut:#5A5E6A; --line:#DED6C8;
+  --link:#A63A16; --link-hover:#15171D; --err:#A3241A; --focus:#E4572E; --field:#5A5E6A; --hl:transparent;
+  --btn:#E4572E; --btn-fg:#15171D; --btn-hover:#F2916F;
+  --band:#15171D; --band-fg:#F3EEE4; --band-mist:#A9ACB5;
   --display:"Bahnschrift","Segoe UI Semibold","Segoe UI",system-ui,sans-serif;
   --text:"Segoe UI",system-ui,-apple-system,"Helvetica Neue",Arial,sans-serif;
   --mono:"Cascadia Mono","Consolas","SFMono-Regular",Menlo,monospace;
+  color-scheme:light;
 }
-/* Dark theme: the same tokens with dark values; set by the system setting, or by data-theme="dark" (next block). */
+/* Dark theme: the page is ink and the disc a step lighter, with a slate ring. */
 @media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
-  --bg:#111318; --card:#1A1D24; --fg:#F3EEE4; --mut:#B5B0A6; --line:#30343D;
-  --link:#F2916F; --link-hover:#F7B39A;
-  --btn:#E4572E; --btn-fg:#15171D; --btn-hover:#F07A55;
-  --hl:#2E211C; --code:#22252D; --err:#F49B91; --focus:#F2916F; --field:#8A8578;
-  --band:#0C0D11; --band-mist:#B5B0A6; color-scheme:dark}}
+  --bg:#15171D; --card:#1C1F27; --ring:#5A5E6A; --fg:#F3EEE4; --mut:#A9ACB5; --line:#30343D;
+  --link:#F2916F; --link-hover:#F3EEE4; --err:#F49B91; --focus:#F2916F; --field:#A9ACB5; color-scheme:dark}}
 :root[data-theme="dark"]{
-  --bg:#111318; --card:#1A1D24; --fg:#F3EEE4; --mut:#B5B0A6; --line:#30343D;
-  --link:#F2916F; --link-hover:#F7B39A;
-  --btn:#E4572E; --btn-fg:#15171D; --btn-hover:#F07A55;
-  --hl:#2E211C; --code:#22252D; --err:#F49B91; --focus:#F2916F; --field:#8A8578;
-  --band:#0C0D11; --band-mist:#B5B0A6; color-scheme:dark}
-/* More contrast (a Windows or browser setting): darker grey text and lines. */
-@media (prefers-contrast:more){:root{--mut:#33363D;--line:#7A7466}}
+  --bg:#15171D; --card:#1C1F27; --ring:#5A5E6A; --fg:#F3EEE4; --mut:#A9ACB5; --line:#30343D;
+  --link:#F2916F; --link-hover:#F3EEE4; --err:#F49B91; --focus:#F2916F; --field:#A9ACB5; color-scheme:dark}
+/* More contrast (a Windows or browser setting): darker grey text and lines on the cream page. */
+@media (prefers-contrast:more){:root:not([data-theme="dark"]){--mut:#33363D;--line:#7A7466}}
 
 /* Base: page, links, focus ring, type, the centred column with its safe side gutter. */
 *{box-sizing:border-box}
@@ -59,7 +52,14 @@ code,pre{font-family:var(--mono);font-size:.9em}
 
 /* The tool card and its sections. */
 main{padding-block:32px 48px}
-.tool{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:26px;display:flex;flex-direction:column;gap:26px}
+.tool{--fg:#F3EEE4;--mut:#A9ACB5;--line:#30343D;--link:#F2916F;--link-hover:#F3EEE4;--err:#F49B91;--field:#A9ACB5;--bg:var(--card);--focus:#F2916F;
+  color:var(--fg);color-scheme:dark;background:var(--card);border-radius:14px;padding:28px;display:flex;flex-direction:column;gap:26px;
+  box-shadow:inset 0 0 0 5px var(--card),inset 0 0 0 6px var(--ring)}   /* the disc and its ring, as the logo */
+.tool a{color:var(--link)}
+/* Sections are split by the marks' dotted line (round dots), and each heading stands on the ember fulcrum. */
+.tool > section + section{padding-top:22px;background:radial-gradient(circle,var(--slate) 1.5px,transparent 1.7px) 0 0/10px 4px repeat-x}
+.tool h3{display:flex;align-items:center;gap:8px}
+.tool h3::before{content:"";flex:none;width:12px;height:10px;background:var(--ember);clip-path:polygon(50% 0,100% 100%,0 100%)}
 .tool > header{display:flex;flex-direction:column;gap:8px}
 .tool h2{font-size:1.5rem}
 .tool h2 .sub2{display:block;font-size:.95rem;font-weight:600;color:var(--mut);margin-top:4px}   /* the subtitle under the name */
@@ -77,7 +77,7 @@ ul.plain{margin:0;padding-left:1.15em;display:flex;flex-direction:column;gap:4px
 .btn svg{width:18px;height:18px}
 /* The second button: outlined, so "Copy the script" stays the main action. */
 .btn.ghost{background:transparent;color:var(--fg);border:1px solid var(--field)}
-.btn.ghost:hover{background:var(--hl)}
+.btn.ghost:hover{border-color:var(--fg)}
 .status{font-size:.9rem}
 .status.ok{color:var(--fg);font-weight:600}
 .status.err{color:var(--err)}
@@ -105,7 +105,7 @@ tr:last-child td{border-bottom:0}
 }
 /* Motion only when the person has not asked for less; Windows contrast themes keep the logo colours. */
 @media (prefers-reduced-motion:no-preference){.btn{transition:background-color .15s,border-color .15s}}
-@media (forced-colors:active){.logo{forced-color-adjust:none}.band{border-bottom-color:CanvasText}}
+@media (forced-colors:active){.logo{forced-color-adjust:none}.band{border-bottom-color:CanvasText}.tool{box-shadow:none;border:1px solid CanvasText}}
 </style>
 </head>
 <body>
