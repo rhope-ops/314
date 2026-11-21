@@ -253,7 +253,7 @@ function ConvertFrom-Ascii85 {
     #>
     param([string]$Text)
     $end = $Text.IndexOf('~>'); if ($end -ge 0) { $Text = $Text.Substring(0, $end) }
-    $Text = ($Text -replace '\s', '') -replace 'z', '!!!!!'
+    $Text = ($Text -replace '\s', '') -creplace 'z', '!!!!!'   # -creplace: only a small z (a capital Z is data)
     $out = New-Object System.Text.StringBuilder
     for ($i = 0; $i -lt $Text.Length; $i += 5) {
         if (($i % 100000) -eq 0) { Assert-PdfTime }

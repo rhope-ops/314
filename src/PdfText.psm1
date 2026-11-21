@@ -7,8 +7,8 @@ PdfText.psm1 - the text of a PDF file, in memory, with .NET only (no module; the
   Inputs:      the file bytes.
   Outputs:     a hashtable with Text and Reason (Get-PdfText).
   How to run:  imported by Find-ChannelPII.ps1 (used by TextExtract.psm1); not run on its own.
-  Depends on:  PdfCore.psm1 (limits, stream filters, ToUnicode maps) and PdfObjects.psm1 (objects, strings,
-               dictionary text), imported first by Find-ChannelPII.ps1.
+  Depends on:  PdfCore.psm1 (limits, stream filters), PdfObjects.psm1 (objects, strings, dictionary text) and
+               PdfFonts.psm1 (font maps and widths), imported first by Find-ChannelPII.ps1.
   Run target:  Windows PowerShell 5.1 (also PowerShell 7); .NET System.IO.Compression only.
   Network:     none.
   Writes:      none. Bytes stay in memory; nothing is saved to disk.
@@ -26,10 +26,12 @@ $script:PdfLatin1 = [System.Text.Encoding]::GetEncoding(28591)
 $script:PdfTokenPattern = (Get-PdfStringPattern) + '|%[^\r\n]*|\[|\]|/[^\s/\[\]()<>{}%]+|[-+]?(?:\d+\.?\d*|\.\d+)|[A-Za-z''"*]+'
 
 
-# Gaps along a line (a same-line Td move past the estimated end of the text before it, or a TJ adjustment), in ems:
-# a space when wider than WordGapEms in a block without space characters, or wider than ColumnGapEms in a block that
-# has its own (Chrome, LibreOffice): there, smaller gaps are kerning, letter spacing or estimate error, and join.
-$script:WordGapEms = 0.25
+# Gaps along a line (a same-line Td move past the real end of the text before it, or a TJ adjustment), in ems: a
+# space when wider than the block's letter spacing plus WordGapEms. The letter spacing is the median gap after
+# one-glyph pieces when a block has at least MinSpacingGaps of them (gaps of ColumnGapEms or more are columns, not
+# spacing), else 0 (fresh reviews, 2026-11-21).
+$script:WordGapEms = 0.2
+$script:MinSpacingGaps = 4
 $script:ColumnGapEms = 1.0
 
 # The end of an inline image's bytes (BI <keys> ID <bytes> EI): white space, EI, then a delimiter or the end. After a
@@ -41,101 +43,6 @@ $script:PdfNoTextReason = 'No text in this PDF (a scanned image?): check by hand
 $script:PdfSlowReason = 'This PDF is too large or damaged to read in time: check by hand'
 $script:PdfPartReason = 'Part of this PDF could not be read (a damaged or unusual string): check by hand'
 $script:PdfEncryptedReason = 'Encrypted PDF (password or label): check by hand'
-
-function Get-PdfFonts {
-    <#
-    .SYNOPSIS
-      The fonts the pages name (/F1 ...) -> their ToUnicode map, or $null (simple fonts: bytes read as Latin-1).
-    .PARAMETER Objects
-      Output of Get-PdfObjects.
-    #>
-    param($Objects)
-    $fonts = @{}
-    foreach ($obj in $Objects.Values) {
-        Assert-PdfTime
-        $one = Get-PdfFontTable $obj.Dict $Objects
-        foreach ($name in $one.Keys) { if (-not $fonts.ContainsKey($name)) { $fonts[$name] = $one[$name] } }
-    }
-    return $fonts
-}
-
-function Get-PdfFontTable {
-    <#
-    .SYNOPSIS
-      The fonts that one dictionary's /Font resource names (/F1 -> its ToUnicode map, or $null). A page uses its own
-      table, so two pages that both name a font /F1 each get theirs; ToUnicode maps are read once per font.
-    .PARAMETER Dict
-      A page or resources dictionary.
-    .PARAMETER Objects
-      Output of Get-PdfObjects.
-    .OUTPUTS
-      [hashtable]
-    #>
-    param([string]$Dict, $Objects)
-    $fonts = @{}
-    foreach ($resource in [regex]::Matches($Dict, '/Font\s*(?:<<(?<inline>[^<>]*)>>|(?<ref>\d+)\s+\d+\s+R)')) {
-        $names = $resource.Groups['inline'].Value
-        if ($resource.Groups['ref'].Success -and $Objects.Contains($resource.Groups['ref'].Value)) { $names = $Objects[$resource.Groups['ref'].Value].Dict }
-        foreach ($font in [regex]::Matches($names, '/([^\s/<>\[\]()]+)\s+(\d+)\s+\d+\s+R')) {
-            $id = $font.Groups[2].Value
-            if (-not $Objects.Contains($id)) { continue }
-            $entry = $Objects[$id]
-            if (-not $entry.Contains('Map')) {
-                $entry['Map'] = $null
-                $unicode = [regex]::Match($entry.Dict, '/ToUnicode\s+(\d+)\s+\d+\s+R')
-                if ($unicode.Success -and $Objects.Contains($unicode.Groups[1].Value) -and $Objects[$unicode.Groups[1].Value].Stream) {
-                    $cmap = $Objects[$unicode.Groups[1].Value]   # read once, also when many fonts share it
-                    if (-not $cmap.Contains('CMap')) { $cmap['CMap'] = Get-PdfCMap $cmap.Stream }
-                    $entry['Map'] = $cmap['CMap']
-                }
-                elseif ($entry.Dict -match '/Subtype\s*/Type0\b') {
-                    # A composite font without a ToUnicode map: its codes are glyph numbers, not letters. Text shown in it
-                    # cannot be read: a note (ConvertFrom-PdfGlyphs), never garbage read as text.
-                    $entry['Map'] = @{ Bytes = 2; Map = @{}; Ranges = @(); Unreadable = $true }
-                }
-            }
-            $fonts[$font.Groups[1].Value] = $entry['Map']
-        }
-    }
-    return $fonts
-}
-
-function ConvertFrom-PdfGlyphs {
-    <#
-    .SYNOPSIS
-      The text of one shown string: each glyph code looked up in the font's ToUnicode map; Latin-1 without a map.
-    .PARAMETER Raw
-      The raw bytes as Latin-1 text.
-    .PARAMETER Font
-      A ToUnicode map of Get-PdfFonts, or $null.
-    #>
-    param([string]$Raw, $Font)
-    if (-not $Font) { return $Raw }
-    if ($Font.ContainsKey('Unreadable')) {
-        if ($Raw.Length -gt 0) { Add-PdfNote 'A font in this PDF could not be read: check by hand' }
-        return ''
-    }
-    $out = New-Object System.Text.StringBuilder
-    $step = [Math]::Max(1, [int]$Font.Bytes)
-    for ($i = 0; $i + $step -le $Raw.Length; $i += $step) {
-        if ((($i / $step) % 1000) -eq 999) { Assert-PdfTime }
-        [long]$number = 0
-        for ($j = 0; $j -lt $step; $j++) { $number = $number * 256 + [int]$Raw[$i + $j] }
-        $text = $Font.Map[$number.ToString('X' + (2 * $step))]
-        if ($null -eq $text) {
-            foreach ($range in $Font.Ranges) {
-                if ($number -ge $range.Low -and $number -le $range.High) {
-                    $text = ConvertFrom-Utf16Hex ($range.Prefix + (($range.Start + ($number - $range.Low)) -band 0xFFFF).ToString('X4'))
-                    break
-                }
-            }
-        }
-        if ($null -ne $text) { [void]$out.Append($text) }
-        elseif ($step -eq 1) { [void]$out.Append($Raw[$i]) }
-        elseif ($number -ne 0) { Add-PdfNote 'Some characters in this PDF could not be read (a font without them in its map): check by hand' }
-    }
-    return $out.ToString()
-}
 
 function Convert-PdfContentToText {
     <#
@@ -152,7 +59,7 @@ function Convert-PdfContentToText {
     #>
     param([string]$Content, [hashtable]$Fonts)
     $state = @{ Out = (New-Object System.Text.StringBuilder); Pieces = (New-Object System.Collections.Generic.List[object]); Font = $null; Size = 12.0
-        Advance = 0.0 }
+        Advance = 0.0; CharSpace = 0.0; WordSpace = 0.0; Scale = 1.0; LastLength = 0 }
     $stack = New-Object System.Collections.Generic.List[object]
     $array = $null
     $count = 0
@@ -195,24 +102,31 @@ function Invoke-PdfTextOperator {
     .PARAMETER Stack
       Its operands.
     .PARAMETER State
-      Out, Pieces (the text block in work: strings, and gaps in ems as [double]), Font, Size (font size), Advance
-      (estimated width shown since the line's start).
+      Out, Pieces (the text block in work: strings, and gaps as @{ Gap (ems); Single (after a one-glyph piece) }),
+      Font, Size, Advance (width shown since the line's start), CharSpace, WordSpace, Scale (Tc, Tw, Tz), LastLength.
     .PARAMETER Fonts
       The font table.
     #>
     param([string]$Operator, $Stack, [hashtable]$State, [hashtable]$Fonts)
     $last = $null; if ($Stack.Count -gt 0) { $last = $Stack[$Stack.Count - 1] }
     $shown = $null   # the string a Tj, ' or " shows: only a string token counts
+    if ($Operator -ceq '"' -and $Stack.Count -ge 3) {   # aw ac (string) ": word and character spacing first
+        $State.WordSpace = ConvertTo-PdfNumber $Stack[$Stack.Count - 3]; $State.CharSpace = ConvertTo-PdfNumber $Stack[$Stack.Count - 2]
+    }
+    if ($Operator -cin @("'", '"')) { $State.Pieces.Add("`n"); $State.Advance = 0.0 }
     if ($Operator -cin @('Tj', "'", '"') -and $last -is [string] -and $last.Length -ge 2 -and ($last[0] -eq '(' -or $last[0] -eq '<')) {
-        $shown = ConvertFrom-PdfGlyphs (ConvertFrom-PdfString $last) $State.Font
-        $State.Advance += Get-PdfTextWidth $shown $State.Size
+        $raw = ConvertFrom-PdfString $last
+        $shown = ConvertFrom-PdfGlyphs $raw $State.Font
+        $State.Advance += Get-PdfShowWidth $raw $shown $State
+        $State.LastLength = $shown.Length
+        $State.Pieces.Add($shown)
     }
     $pieces = $State.Pieces
     switch -CaseSensitive ($Operator) {
         'Tf' { if ($Stack.Count -ge 2) { $State.Font = $Fonts[([string]$Stack[$Stack.Count - 2]).TrimStart('/')]; $State.Size = [Math]::Abs((ConvertTo-PdfNumber $last)) } }
-        'Tj' { $pieces.Add($shown) }
-        "'" { $pieces.Add("`n" + $shown); $State.Advance = Get-PdfTextWidth $shown $State.Size }
-        '"' { $pieces.Add("`n" + $shown); $State.Advance = Get-PdfTextWidth $shown $State.Size }
+        'Tc' { $State.CharSpace = ConvertTo-PdfNumber $last }
+        'Tw' { $State.WordSpace = ConvertTo-PdfNumber $last }
+        'Tz' { $State.Scale = (ConvertTo-PdfNumber $last) / 100 }
         'TJ' { if ($last -is [System.Collections.Generic.List[string]]) { Add-PdfArrayPieces $last $State } }
         'Td' { Add-PdfMove $Stack $State }
         'TD' { $pieces.Add("`n"); $State.Advance = 0.0 }
@@ -222,36 +136,11 @@ function Invoke-PdfTextOperator {
     }
 }
 
-function Get-PdfTextWidth {
-    <#
-    .SYNOPSIS
-      The estimated width of shown text, in text space units: average glyph widths (Helvetica-like, in ems) times
-      the font size. Digits and common number punctuation have their usual widths, so the gap after a number piece
-      is measured well.
-    .PARAMETER Text
-      The shown text.
-    .PARAMETER Size
-      The font size.
-    .OUTPUTS
-      [double]
-    #>
-    param([string]$Text, [double]$Size)
-    $ems = 0.0
-    foreach ($c in $Text.ToCharArray()) {
-        if ([char]::IsDigit($c)) { $ems += 0.556 }
-        elseif ($c -eq ' ' -or $c -eq '.' -or $c -eq ',' -or $c -eq ':' -or $c -eq ';') { $ems += 0.278 }
-        elseif ($c -eq '-' -or $c -eq '(' -or $c -eq ')' -or $c -eq '/') { $ems += 0.333 }
-        elseif ([char]::IsUpper($c)) { $ems += 0.667 }
-        else { $ems += 0.5 }
-    }
-    return ($ems * $Size)
-}
-
 function Add-PdfMove {
     <#
     .SYNOPSIS
       A Td move: down or up starts a new line; along the line, a gap piece: how far (in ems) the move starts the next
-      piece past the estimated end of the text before it. Complete-PdfTextBlock decides which gaps are spaces.
+      piece past the end of the text before it (its real width). Complete-PdfTextBlock decides which gaps are spaces.
     .PARAMETER Stack
       The operands (tx ty).
     .PARAMETER State
@@ -262,29 +151,29 @@ function Add-PdfMove {
     $tx = ConvertTo-PdfNumber $Stack[$Stack.Count - 2]
     $ty = ConvertTo-PdfNumber $Stack[$Stack.Count - 1]
     if ($ty -ne 0) { $State.Pieces.Add("`n") }
-    elseif ($tx -lt 0) { $State.Pieces.Add([double]::MaxValue) }   # back along the line: a new column, always a break
-    else { $State.Pieces.Add([double](($tx - $State.Advance) / [Math]::Max(1.0, $State.Size))) }
+    elseif ($tx -lt 0) { $State.Pieces.Add(@{ Gap = [double]::MaxValue; Single = $false }) }   # back along the line: a new column
+    else { $State.Pieces.Add(@{ Gap = [double](($tx - $State.Advance) / [Math]::Max(1.0, $State.Size)); Single = ($State.LastLength -eq 1) }) }
     $State.Advance = 0.0
 }
 
 function Complete-PdfTextBlock {
     <#
     .SYNOPSIS
-      Ends a text block: its gaps become spaces where wide enough (more than $WordGapEms, or $ColumnGapEms in a block
-      that has its own space characters); symbol-font characters back to their plain ones; other private-use
-      characters a space and a note; then a line break.
+      Ends a text block: its gaps become spaces where wider than the block's letter spacing plus $WordGapEms;
+      symbol-font characters back to their plain ones; other private-use characters a space and a note; a line break.
     .PARAMETER State
       The text state of Convert-PdfContentToText.
     #>
     param([hashtable]$State)
-    # The writer's own spaces: a block that holds space characters places its words with them, so only a wide
-    # jump (a table column) is a break; a block without any uses its moves as word breaks (fresh review, 2026-11-21).
-    $hasSpaces = $false
-    foreach ($piece in $State.Pieces) { if ($piece -is [string] -and $piece.IndexOf(' ') -ge 0) { $hasSpaces = $true; break } }
-    $limit = $script:WordGapEms; if ($hasSpaces) { $limit = $script:ColumnGapEms }
+    # Letter spacing: when at least $MinSpacingGaps gaps follow one-glyph pieces, their median is the block's letter
+    # spacing; a gap is a space only when wider than that plus $WordGapEms. A block of whole words keeps 0 as its base.
+    $single = @(foreach ($piece in $State.Pieces) { if ($piece -is [hashtable] -and $piece.Single -and $piece.Gap -lt $script:ColumnGapEms) { $piece.Gap } })
+    $base = 0.0
+    if ($single.Count -ge $script:MinSpacingGaps) { $sorted = @($single | Sort-Object); $base = [Math]::Max(0.0, $sorted[[int]($sorted.Count / 2)]) }
+    $limit = $base + $script:WordGapEms
     $out = New-Object System.Text.StringBuilder
     foreach ($piece in $State.Pieces) {
-        if ($piece -is [double]) { if ($piece -gt $limit) { [void]$out.Append(' ') } }
+        if ($piece -is [hashtable]) { if ($piece.Gap -gt $limit) { [void]$out.Append(' ') } }
         else { [void]$out.Append($piece) }
     }
     $text = $out.ToString()
@@ -345,13 +234,16 @@ function Add-PdfArrayPieces {
     param($Items, [hashtable]$State)
     foreach ($item in $Items) {
         if ($item.Length -ge 2 -and ($item[0] -eq '(' -or $item[0] -eq '<')) {
-            $text = ConvertFrom-PdfGlyphs (ConvertFrom-PdfString $item) $State.Font
+            $raw = ConvertFrom-PdfString $item
+            $text = ConvertFrom-PdfGlyphs $raw $State.Font
             $State.Pieces.Add($text)
-            $State.Advance += Get-PdfTextWidth $text $State.Size
+            $State.Advance += Get-PdfShowWidth $raw $text $State
+            $State.LastLength = $text.Length
         }
         else {
-            $move = -(ConvertTo-PdfNumber $item) / 1000
-            if ($move -gt 0) { $State.Pieces.Add([double]$move) }
+            $move = -(ConvertTo-PdfNumber $item) / 1000   # in ems; positive moves right
+            $State.Advance += $move * $State.Size * $State.Scale
+            if ($move -gt 0) { $State.Pieces.Add(@{ Gap = [double]$move; Single = ($State.LastLength -eq 1) }) }
         }
     }
 }

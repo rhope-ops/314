@@ -253,12 +253,30 @@ $bulletRead = Get-TextFromBytes -Bytes $bullet -FileName 'b.pdf'
 Assert-Equal "|$([char]0xB7) M" ($bulletRead.Note + '|' + $bulletRead.Text.Trim()) 'PDF: a Word bullet reads as a plain character, no note'
 
 # ---- PDF review round 9 (2026-11-21): gaps decided per text block ----
+# Places text glyph by glyph as a PDF writer does: each move is the glyph's real Helvetica width at 12 pt plus the
+# letter spacing (in points).
+function Get-HelveticaWidth {
+    # A character's Helvetica width in thousandths of an em (case-sensitive: S and s differ); 556 for the rest.
+    param([string]$Char)
+    switch -CaseSensitive ($Char) {
+        'S' { 667 } 'N' { 722 } 'T' { 611 } 'M' { 833 } 'm' { 833 } 'i' { 222 } 's' { 500 } ':' { 278 } ' ' { 278 } '-' { 333 }
+        default { 556 }
+    }
+}
+function Get-GlyphRun {
+    # A content-stream fragment that shows each character with its own Tj and moves by its width plus Spacing.
+    param([string]$Text, [double]$Spacing)
+    (($Text.ToCharArray() | ForEach-Object {
+        $width = Get-HelveticaWidth ([string]$_)
+        '({0}) Tj {1} 0 Td' -f $_, ($width * 12 / 1000 + $Spacing).ToString([Globalization.CultureInfo]::InvariantCulture)
+    }) -join ' ')
+}
 # Chrome glyph by glyph, wide letters and its own space glyphs: no false spaces inside words or numbers.
-$wide = (('Name: Tom Mims').ToCharArray() | ForEach-Object { "($_) Tj 10 0 Td" }) -join ' '
+$wide = Get-GlyphRun 'Name: Tom Mims' 0
 $wideRead = Get-TextFromBytes -Bytes (New-PdfBytes "BT /F1 12 Tf $wide ET" -Plain) -FileName 'wd.pdf'
 Assert-Equal 'Name: Tom Mims' $wideRead.Text.Trim() 'PDF: wide glyphs placed one by one keep their words'
 # Letter spacing 0.3 em (Chrome) with the writer's own spaces: the SSN stays whole.
-$spaced = (("SSN: $($Sample.Ssn)").ToCharArray() | ForEach-Object { "($_) Tj 12 0 Td" }) -join ' '
+$spaced = Get-GlyphRun "SSN: $($Sample.Ssn)" 3.6   # letter spacing 0.3 em
 $spacedRead = Get-TextFromBytes -Bytes (New-PdfBytes "BT /F1 12 Tf $spaced ET" -Plain) -FileName 'ls.pdf'
 Assert-Equal 'SSN' (@(Find-PiiInText $spacedRead.Text) | Select-Object -First 1).Detector 'PDF: letter-spaced text keeps the SSN whole'
 # Expanded character spacing in TJ (LibreOffice) with space characters: no space between letters.
@@ -268,3 +286,18 @@ Assert-Equal 'SSN' (@(Find-PiiInText $expandedRead.Text) | Select-Object -First 
 # A table row in one block with spaces: a wide jump between cells is still a break.
 $cellsRead = Get-TextFromBytes -Bytes (New-PdfBytes 'BT /F1 12 Tf (Last name) Tj 120 0 Td (SSN) Tj ET' -Plain) -FileName 'tb.pdf'
 Assert-Equal 'Last name SSN' $cellsRead.Text.Trim() 'PDF: a wide jump between cells is a break'
+
+# ---- PDF review round 10 (2026-11-21): real glyph widths ----
+# A composite font's /W widths (first [w1 w2 ...] and first last w), read whole; glyphs placed by them join.
+$wFont = '<< /Type /Font /Subtype /Type0 /BaseFont /X /Encoding /Identity-H /ToUnicode 6 0 R /DescendantFonts [9 0 R] >>'
+$wCid = '<< /Type /Font /Subtype /CIDFontType2 /DW 1000 /W [65 [500.5 600] 67 70 250] >>'
+$wMap = 'begincmap 1 beginbfrange <0000> <FFFF> <0000> endbfrange endcmap'
+$wRun = '<0041> Tj 6.006 0 Td <0042> Tj 7.2 0 Td <0043> Tj 3 0 Td <0044> Tj'
+$wRead = Get-TextFromBytes -Bytes (New-PdfBytes "BT /F1 12 Tf $wRun ET" -Plain -FontDict $wFont -ToUnicode $wMap -Extra @('<< >>', '<< >>', $wCid)) -FileName 'w.pdf'
+Assert-Equal 'ABCD' $wRead.Text.Trim() 'PDF: glyphs placed by their /W widths join'
+# A label and its value in one text object, a pad apart (reportlab textOut + moveCursor): they stay apart.
+# "Sponsor SSN" is 60.58 wide in Helvetica 10 pt; the value starts a 5 pt pad after it.
+$padded = Get-TextFromBytes -Bytes (New-PdfBytes "BT /F1 10 Tf (Sponsor SSN) Tj 65.58 0 Td ($($Sample.Ssn)) Tj ET" -Plain) -FileName 'pad.pdf'
+Assert-Equal 'SSN' (@(Find-PiiInText $padded.Text) | Select-Object -First 1).Detector 'PDF: a label and a value a pad apart stay apart'
+# ASCII85: z (four zero bytes) is lower case only; a capital Z is data.
+Assert-Equal 'hello' (& (Get-Module PdfCore) { ConvertFrom-Ascii85 'BOu!rDZ~>' }) 'PDF: ASCII85 keeps a capital Z (hello encodes as BOu!rDZ)'
