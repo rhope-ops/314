@@ -24,7 +24,7 @@
     src/PdfText.psm1, sha256 e2cd9a5a7c51
     src/TextExtract.psm1, sha256 e29978d7b4fa
     src/XlsxWriter.psm1, sha256 e29becdc6a65
-    src/Report.psm1, sha256 f7b5a3ca5db3
+    src/Report.psm1, sha256 bb4837c619f4
     src/ScanMeter.psm1, sha256 2c2a5a750104
     src/ChannelScan.psm1, sha256 5703ccff41d9
     src/Find-ChannelPII.ps1, sha256 e77a9b3604f1
@@ -45,10 +45,10 @@
     line  1879  Module TextExtract.psm1
     line  2138  Module XlsxWriter.psm1
     line  2409  Module Report.psm1
-    line  2906  Module ScanMeter.psm1
-    line  3171  Module ChannelScan.psm1
-    line  3757  Body of Find-ChannelPII.ps1
-    line  3858  Clean-up
+    line  2907  Module ScanMeter.psm1
+    line  3172  Module ChannelScan.psm1
+    line  3758  Body of Find-ChannelPII.ps1
+    line  3859  Clean-up
 #>
 
 # ==== Settings ==== (optional: edit the values between the quotes; empty = the script asks)
@@ -2460,7 +2460,8 @@ $script:NotScannedGroups = [ordered]@{
     '^No text in this PDF' = 'PDF without text (scanned image?)'
     'web page' = 'Download gave a web page'
     '^Download failed' = 'Download failed'
-    '^Not a valid (Office file|PDF)|^Could not read|too large or damaged to read in time|^Part of this PDF|could not be fully read|^A font in this PDF|^Some characters in this PDF' = 'Damaged or not readable'
+    '^Not a valid (Office file|PDF)|^Could not read|too large or damaged to read in time|^Part of this PDF' = 'Damaged or not readable'
+    'could not be fully read|^A font in this PDF|^Some characters in this PDF' = 'PDF fonts not fully readable'
     '^Files attached inside this PDF' = 'PDF attachments'
 }
 
