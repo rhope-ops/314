@@ -136,6 +136,7 @@ function Expand-LzwStream {
     $bytes = $script:Latin1.GetBytes($Raw)
     $out = New-Object System.Text.StringBuilder
     $table = New-Object System.Collections.Generic.List[string]
+    # Empties the code table back to its 258 starting entries (bytes 0-255, clear, end).
     $reset = { $table.Clear(); for ($c = 0; $c -lt 256; $c++) { $table.Add([string][char]$c) }; $table.Add(''); $table.Add('') }
     & $reset
     $width = 9; $bits = 0L; $count = 0; $previous = $null; $n = 0

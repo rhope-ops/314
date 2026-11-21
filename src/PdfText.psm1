@@ -268,12 +268,7 @@ function Convert-PdfContentToText {
         if ($t[0] -eq '%') { continue }   # a comment
         if ($t -ceq 'BI') { $inImage = $true; $stack.Clear(); continue }
         if ($inImage) {
-            if ($t -cne 'ID') { continue }   # the image's own keys and values
-            # ID, one white-space byte, the image bytes, white space and EI: step over to after EI.
-            $end = $imageEnd.Match($Content, [Math]::Min($Content.Length, $next + 1))
-            if (-not $end.Success) { Add-PdfNote 'Part of this PDF is damaged: check by hand'; $next = $Content.Length; break }
-            $next = $end.Index + $end.Length
-            $inImage = $false
+            if ($t -ceq 'ID') { $next = Skip-PdfInlineImage $Content $next $imageEnd; $inImage = $false }   # else: its keys
             continue
         }
         if ($t -eq '[') { $array = New-Object System.Collections.Generic.List[string]; continue }
@@ -301,6 +296,27 @@ function Convert-PdfContentToText {
     }
     Assert-PdfGap $Content $next $Content.Length
     return $out.ToString()
+}
+
+function Skip-PdfInlineImage {
+    <#
+    .SYNOPSIS
+      Where the reader goes on after an inline image's ID: past the image bytes, white space and EI. Without an EI the
+      rest of the stream is image bytes: a note, and the end of the stream.
+    .PARAMETER Content
+      The content stream.
+    .PARAMETER From
+      Where the ID operator ended.
+    .PARAMETER ImageEnd
+      The timed regex of $InlineImageEnd.
+    .OUTPUTS
+      [int] the position after EI.
+    #>
+    param([string]$Content, [int]$From, $ImageEnd)
+    $end = $ImageEnd.Match($Content, [Math]::Min($Content.Length, $From + 1))   # ID is followed by one white-space byte
+    if ($end.Success) { return ($end.Index + $end.Length) }
+    Add-PdfNote 'Part of this PDF is damaged: check by hand'
+    return $Content.Length
 }
 
 function Assert-PdfGap {
