@@ -29,7 +29,8 @@ $script:MaxRangeTarget = 66
 
 # Limits, so one damaged or hostile PDF cannot stall the scan (fresh review, 2026-11-20): the time for one PDF, the
 # time for one regex search, the size one stream may inflate to, and the inflated size of one PDF in all.
-$script:PdfSecondsLimit = 30
+# 120 s: a 76-page table-heavy PDF took 18 s on PowerShell 7 (fresh review, 2026-11-21); Windows PowerShell 5.1 is slower.
+$script:PdfSecondsLimit = 120
 $script:PdfRegexTimeout = [TimeSpan]::FromSeconds(2)
 $script:MaxStreamBytes = 16MB
 $script:MaxInflatedBytes = 64MB

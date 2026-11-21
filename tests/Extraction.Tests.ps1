@@ -220,3 +220,23 @@ $vStream = New-PdfBytes 'q Q' -Plain -Extra @('<< /FT /Tx /T (SSN) /V 8 0 R >>',
 Assert-Equal 'SSN' (@(Find-PiiInText (Get-TextFromBytes -Bytes $vStream -FileName 's2.pdf').Text) | Select-Object -First 1).Detector 'PDF: a value in a text stream read'
 $wrapped = Get-TextFromBytes -Bytes (New-PdfBytes "BT /F1 12 Tf (SSN: \`n$($Sample.Ssn)) Tj ET" -Plain) -FileName 'w.pdf'
 Assert-Equal 'OK|SSN' ($wrapped.Status + '|' + (@(Find-PiiInText $wrapped.Text) | Select-Object -First 1).Detector) 'PDF: a backslash before a line end is a line continuation'
+
+# ---- PDF review round 7 (2026-11-21) ----
+# Text drawn one glyph at a time (Chrome): the glyphs join; a normal block keeps its word spaces.
+$glyphs1 = (("SSN: $($Sample.Ssn)").ToCharArray() | ForEach-Object { "($_) Tj 7 0 Td" }) -join ' '
+$glyphRead = Get-TextFromBytes -Bytes (New-PdfBytes "BT /F1 12 Tf $glyphs1 ET" -Plain) -FileName 'g1.pdf'
+Assert-Equal 'SSN' (@(Find-PiiInText $glyphRead.Text) | Select-Object -First 1).Detector 'PDF: text drawn glyph by glyph joins'
+$words = Get-TextFromBytes -Bytes (New-PdfBytes 'BT /F1 12 Tf (Member) Tj 60 0 Td (roster) Tj ET' -Plain) -FileName 'w2.pdf'
+Assert-Equal 'Member roster' $words.Text.Trim() 'PDF: words placed apart keep their space'
+# XFA form data; an older page version kept by an incremental update; two comments in one dictionary.
+$xfa = "<xfa:datasets><xfa:data><form><SSN>$($Sample.Ssn)</SSN></form></xfa:data></xfa:datasets>"
+$xfaPdf = New-PdfBytes 'BT (Please wait) Tj ET' -Plain -Extra @("<< /Fields [] /XFA 8 0 R >>", "<< /Length $($xfa.Length) >> stream`n$xfa`nendstream")
+Assert-Equal 'SSN' (@(Find-PiiInText (Get-TextFromBytes -Bytes $xfaPdf -FileName 'x2.pdf').Text) | Select-Object -First 1).Detector 'PDF: XFA form data read'
+$oldPage = "BT /F1 12 Tf (SSN: $($Sample.Ssn)) Tj ET"
+$edited = New-PdfBytes $oldPage -Plain -After "4 0 obj << /Length 22 >> stream`nBT (SSN: removed) Tj ET`nendstream endobj`n"
+Assert-Equal 'SSN' (@(Find-PiiInText (Get-TextFromBytes -Bytes $edited -FileName 'e2.pdf').Text) | Select-Object -First 1).Detector 'PDF: text of an older page version read'
+$twoNotes = New-PdfBytes 'q Q' -Plain -Extra @("<< /Annots [<< /Subtype /Text /Contents (first note) >> << /Subtype /Text /Contents (SSN $($Sample.Ssn)) >>] >>")
+Assert-Equal 'SSN' (@(Find-PiiInText (Get-TextFromBytes -Bytes $twoNotes -FileName 'n2.pdf').Text) | Select-Object -First 1).Detector 'PDF: every comment in one dictionary read'
+# A glyph mapped to a private-use character: a space, and a note.
+$pua = New-PdfBytes 'BT /F1 12 Tf <0041E0010042> Tj ET' -Plain -ToUnicode 'begincmap 1 beginbfrange <0000> <FFFF> <0000> endbfrange endcmap'
+Assert-Equal $true ((Get-TextFromBytes -Bytes $pua -FileName 'p.pdf').Note -match 'Some characters in this PDF could not be read') 'PDF: private-use characters give a note'

@@ -7,7 +7,8 @@ PdfText.psm1 - the text of a PDF file, in memory, with .NET only (no module; the
   Inputs:      the file bytes.
   Outputs:     a hashtable with Text and Reason (Get-PdfText).
   How to run:  imported by Find-ChannelPII.ps1 (used by TextExtract.psm1); not run on its own.
-  Depends on:  PdfCore.psm1 (limits, stream filters, ToUnicode maps), imported first by Find-ChannelPII.ps1.
+  Depends on:  PdfCore.psm1 (limits, stream filters, ToUnicode maps) and PdfObjects.psm1 (objects, strings,
+               dictionary text), imported first by Find-ChannelPII.ps1.
   Run target:  Windows PowerShell 5.1 (also PowerShell 7); .NET System.IO.Compression only.
   Network:     none.
   Writes:      none. Bytes stay in memory; nothing is saved to disk.
@@ -21,29 +22,16 @@ Add-Type -AssemblyName System.IO.Compression
 # Bytes as characters one to one (ISO-8859-1), so binary PDF parts can be cut with string functions.
 $script:PdfLatin1 = [System.Text.Encoding]::GetEncoding(28591)
 
-# A PDF string: (literal), with nested brackets and escapes, or <hex> (not a << dictionary). A literal holds at most
-# 10,000 parts, so an unclosed bracket fails after a bounded scan. A "(" that no string token takes means a string
-# was not read: the PDF is then NOT SCANNED, never read in part without a word (Assert-PdfGap).
-$script:PdfStringPattern = '\((?>[^()\\]+|\\[\s\S]|\((?<d>)|\)(?<-d>)){0,10000}(?(d)(?!))\)|<(?!<)[0-9A-Fa-f\s]*>'
-
 # The tokens of a content stream that matter for text: strings, array brackets, names, numbers and operators.
-$script:PdfTokenPattern = $script:PdfStringPattern + '|%[^\r\n]*|\[|\]|/[^\s/\[\]()<>{}%]+|[-+]?(?:\d+\.?\d*|\.\d+)|[A-Za-z''"*]+'
+$script:PdfTokenPattern = (Get-PdfStringPattern) + '|%[^\r\n]*|\[|\]|/[^\s/\[\]()<>{}%]+|[-+]?(?:\d+\.?\d*|\.\d+)|[A-Za-z''"*]+'
 
 # A TJ gap wider than this (thousandths of a text unit) is a space between words.
 $script:PdfWordGap = 250
 
-# An object stream (PDF 1.5) is unpacked only within these limits: its header of object numbers and offsets, and its
-# object count (real files hold a few hundred objects per stream). More gives a "check by hand" note.
-$script:MaxPackedHeader = 1MB
-
-# Earlier versions of objects defined again further on (incremental updates): their text is still read.
-$script:PdfOldDicts = New-Object System.Collections.Generic.List[string]
-$script:MaxPackedObjects = 100000
-
-# Dictionary keys whose string values are text a person wrote (Get-PdfDictText) -> the label put before the value:
-# a form field's value (labelled with the field's name), a comment or note and its rich text, the file's info.
-$script:PdfTextKeys = [ordered]@{ 'V' = ''; 'Contents' = 'Comment'; 'RC' = 'Comment'; 'Author' = 'Author'; 'Title' = 'Title'
-    'Subject' = 'Subject'; 'Keywords' = 'Keywords' }
+# A same-line Td move, marked in a text block until the block ends (Complete-PdfTextBlock): a space between words,
+# or nothing in a block drawn one glyph at a time (at least this share of its shows are one glyph each).
+$script:SameLineMove = [char]0xE000
+$script:GlyphBlockShare = 0.6
 
 # The end of an inline image's bytes (BI <keys> ID <bytes> EI): white space, EI, then a delimiter or the end. After a
 # BI operator (a token, never the word BI in a string) the reader steps over the bytes to here, so image bytes never
@@ -53,117 +41,7 @@ $script:InlineImageEnd = '\sEI(?=[\s/\[<(%]|$)'
 $script:PdfNoTextReason = 'No text in this PDF (a scanned image?): check by hand'
 $script:PdfSlowReason = 'This PDF is too large or damaged to read in time: check by hand'
 $script:PdfPartReason = 'Part of this PDF could not be read (a damaged or unusual string): check by hand'
-$script:PdfStringError = 'PDF string not read'
 $script:PdfEncryptedReason = 'Encrypted PDF (password or label): check by hand'
-
-function Get-PdfObjects {
-    <#
-    .SYNOPSIS
-      The objects of a PDF by number: each its dictionary text and its stream (inflated when FlateDecode; $null for
-      other filters, such as images). Objects packed in object streams (PDF 1.5) are unpacked too.
-    .PARAMETER Text
-      The PDF bytes as Latin-1 text.
-    .OUTPUTS
-      [System.Collections.Specialized.OrderedDictionary] number -> @{ Dict; Stream }, in file order.
-    #>
-    param([string]$Text)
-    $objects = New-Object System.Collections.Specialized.OrderedDictionary
-    # Each object runs from its header to the first "endobj" after it, or to the next header when "endobj" is missing.
-    # Two linear passes, so a damaged file without "endobj" cannot make the search quadratic.
-    $heads = @((Get-PdfRegex '(\d+)\s+\d+\s+obj\b').Matches($Text))
-    $ends = @((Get-PdfRegex '\bendobj\b').Matches($Text) | ForEach-Object { $_.Index })
-    $e = 0
-    $split = Get-PdfRegex '(?s)^(.*?)\bstream(?:\r\n|\r|\n)(.*?)(?:\r\n|\r|\n)?endstream'
-    for ($h = 0; $h -lt $heads.Count; $h++) {
-        Assert-PdfTime
-        $start = $heads[$h].Index + $heads[$h].Length
-        $stop = $Text.Length; if ($h + 1 -lt $heads.Count) { $stop = $heads[$h + 1].Index }
-        while ($e -lt $ends.Count -and $ends[$e] -lt $start) { $e++ }
-        if ($e -lt $ends.Count -and $ends[$e] -lt $stop) { $stop = $ends[$e] }
-        $body = $Text.Substring($start, $stop - $start)
-        $stream = $null
-        $parts = $split.Match($body)
-        if ($parts.Success) { $body = $parts.Groups[1].Value; $stream = Read-PdfStream $body $parts.Groups[2].Value }
-        elseif ($body -match '\bstream(?:\r\n|\r|\n)') { Add-PdfNote 'Part of this PDF is damaged: check by hand' }   # no endstream: cut short
-        $number = $heads[$h].Groups[1].Value
-        # A file saved with added edits (an incremental update) defines an object again further on: the later one is
-        # the one in use; the earlier one's text is still in the file, so it is kept for Get-PdfDictText.
-        if ($objects.Contains($number)) { $script:PdfOldDicts.Add($objects[$number].Dict) }
-        $objects[$number] = @{ Dict = $body; Stream = $stream; Pos = $heads[$h].Index }
-    }
-    foreach ($packed in @($objects.Values | Where-Object { $_.Dict -match '/Type\s*/ObjStm' -and $_.Stream })) { Add-PackedObjects $objects $packed }
-    return $objects
-}
-
-function Add-PackedObjects {
-    <#
-    .SYNOPSIS
-      Adds the objects of one object stream (/Type /ObjStm: N pairs "number offset", then the objects from /First).
-    .PARAMETER Objects
-      Output of Get-PdfObjects.
-    .PARAMETER Packed
-      One object stream of Get-PdfObjects.
-    #>
-    param($Objects, $Packed)
-    $count = [int][regex]::Match($Packed.Dict, '/N\s+(\d+)').Groups[1].Value
-    $first = [int][regex]::Match($Packed.Dict, '/First\s+(\d+)').Groups[1].Value
-    if ($first -le 0 -or $first -gt $Packed.Stream.Length) { Add-PdfNote 'Part of this PDF is damaged: check by hand'; return }
-    if ($first -gt $script:MaxPackedHeader -or $count -gt $script:MaxPackedObjects) { Add-PdfNote 'Part of this PDF is too large to unpack: check by hand'; return }
-    $pairs = @($Packed.Stream.Substring(0, $first).Trim() -split '\s+')
-    $number = 0
-    for ($k = 0; $k -lt $pairs.Count; $k++) {
-        if (($k % 2000) -eq 0) { Assert-PdfTime }
-        if (-not [int]::TryParse($pairs[$k], [ref]$number)) { Add-PdfNote 'Part of this PDF is damaged: check by hand'; return }
-    }
-    for ($k = 0; $k -lt $count -and 2 * $k + 1 -lt $pairs.Count; $k++) {
-        if (($k % 2000) -eq 0) { Assert-PdfTime }
-        $start = $first + [int]$pairs[2 * $k + 1]
-        $end = $Packed.Stream.Length
-        if (2 * $k + 3 -lt $pairs.Count) { $end = $first + [int]$pairs[2 * $k + 3] }
-        if ($start -ge $end -or $end -gt $Packed.Stream.Length) { Add-PdfNote 'Part of this PDF is damaged: check by hand'; continue }
-        $dict = $Packed.Stream.Substring($start, $end - $start)
-        $number = $pairs[2 * $k]
-        # The later definition in the file wins (an incremental update); the other one's text is kept too.
-        if ($Objects.Contains($number) -and $Objects[$number].Pos -gt $Packed.Pos) { $script:PdfOldDicts.Add($dict); continue }
-        if ($Objects.Contains($number)) { $script:PdfOldDicts.Add($Objects[$number].Dict) }
-        $Objects[$number] = @{ Dict = $dict; Stream = $null; Pos = $Packed.Pos }
-    }
-}
-
-function ConvertFrom-PdfString {
-    <#
-    .SYNOPSIS
-      The bytes of one PDF string token, as Latin-1 characters: (literal) with its escapes undone, or <hex>.
-    .PARAMETER Token
-      One PDF string token.
-    #>
-    param([string]$Token)
-    if ($Token.StartsWith('<')) {
-        $hex = $Token.Substring(1, $Token.Length - 2) -replace '\s', ''
-        if ($hex.Length % 2) { $hex += '0' }
-        return -join @(for ($i = 0; $i -lt $hex.Length; $i += 2) {
-            if (($i % 200000) -eq 0) { Assert-PdfTime }
-            [char][Convert]::ToInt32($hex.Substring($i, 2), 16)
-        })
-    }
-    $undo = [System.Text.RegularExpressions.MatchEvaluator] {
-        param($m)
-        $code = $m.Value.Substring(1)
-        if ($code -match '^[0-7]+$') { return [string][char]([Convert]::ToInt32($code, 8) -band 0xFF) }
-        switch -CaseSensitive ($code) { 'n' { "`n" } 'r' { "`r" } 't' { "`t" } 'b' { ' ' } 'f' { ' ' } default { $code.Trim("`r", "`n") } }
-    }
-    return [regex]::Replace($Token.Substring(1, $Token.Length - 2), '\\(?:[0-7]{1,3}|\r?\n|.)', $undo)
-}
-
-function ConvertFrom-PdfTextString {
-    # A PDF text string (a form field's name or value): UTF-16 when it starts with the FE FF mark, else Latin-1.
-    param([string]$Token)
-    $raw = ConvertFrom-PdfString $Token
-    if ($raw.Length -ge 2 -and [int]$raw[0] -eq 0xFE -and [int]$raw[1] -eq 0xFF) {
-        return [System.Text.Encoding]::BigEndianUnicode.GetString($script:PdfLatin1.GetBytes($raw.Substring(2)))
-    }
-    return $raw
-}
 
 function Get-PdfFonts {
     <#
@@ -253,7 +131,9 @@ function ConvertFrom-PdfGlyphs {
                 }
             }
         }
-        if ($null -ne $text) { [void]$out.Append($text) } elseif ($step -eq 1) { [void]$out.Append($Raw[$i]) }
+        if ($null -ne $text) { [void]$out.Append($text) }
+        elseif ($step -eq 1) { [void]$out.Append($Raw[$i]) }
+        elseif ($number -ne 0) { Add-PdfNote 'Some characters in this PDF could not be read (a font without them in its map): check by hand' }
     }
     return $out.ToString()
 }
@@ -261,8 +141,9 @@ function ConvertFrom-PdfGlyphs {
 function Convert-PdfContentToText {
     <#
     .SYNOPSIS
-      The text a page content stream shows: Tj, TJ, ' and " strings in the current font; a line break at each
-      line move and text block end; a space at a wide TJ gap.
+      The text a content stream shows: Tj, TJ, ' and " strings in the current font; a line break at each line move
+      and text block end; a space at a wide TJ gap and at a same-line Td move, except in a block drawn one glyph at a
+      time (Chrome does this), where those moves join the glyphs (Complete-PdfTextBlock).
     .PARAMETER Content
       The (inflated) content stream.
     .PARAMETER Fonts
@@ -271,10 +152,9 @@ function Convert-PdfContentToText {
       [string]
     #>
     param([string]$Content, [hashtable]$Fonts)
-    $out = New-Object System.Text.StringBuilder
+    $state = @{ Out = (New-Object System.Text.StringBuilder); Block = (New-Object System.Text.StringBuilder); Shows = 0; Single = 0; Font = $null }
     $stack = New-Object System.Collections.Generic.List[object]
     $array = $null
-    $font = $null
     $count = 0
     $next = 0           # where the last token ended: text between tokens must hold no "(" (Assert-PdfGap)
     $inImage = $false   # after a BI operator: the next ID starts the bytes of an inline image
@@ -298,25 +178,70 @@ function Convert-PdfContentToText {
             if ($null -ne $array) { $array.Add($t) } else { $stack.Add($t) }
             continue
         }
-        $last = $null; if ($stack.Count -gt 0) { $last = $stack[$stack.Count - 1] }
-        $shown = ''   # the string a Tj, ' or " shows: only a string token counts
-        if ($last -is [string] -and $last.Length -ge 2 -and ($last[0] -eq '(' -or $last[0] -eq '<')) { $shown = ConvertFrom-PdfGlyphs (ConvertFrom-PdfString $last) $font }
-        switch -CaseSensitive ($t) {
-            'Tf' { if ($stack.Count -ge 2) { $font = $Fonts[([string]$stack[$stack.Count - 2]).TrimStart('/')] } }
-            'Tj' { [void]$out.Append($shown) }
-            "'" { [void]$out.Append("`n" + $shown) }
-            '"' { [void]$out.Append("`n" + $shown) }
-            'TJ' { if ($last -is [System.Collections.Generic.List[string]]) { [void]$out.Append((Convert-PdfArrayToText $last $font)) } }
-            'Td' { if ($stack.Count -ge 2 -and (ConvertTo-PdfNumber $last) -ne 0) { [void]$out.Append("`n") } else { [void]$out.Append(' ') } }
-            'TD' { [void]$out.Append("`n") }
-            'T*' { [void]$out.Append("`n") }
-            'Tm' { [void]$out.Append("`n") }
-            'ET' { [void]$out.Append("`n") }
-        }
+        Invoke-PdfTextOperator $t $stack $state $Fonts
         $stack.Clear()
     }
     Assert-PdfGap $Content $next $Content.Length
-    return $out.ToString()
+    Complete-PdfTextBlock $state
+    return $state.Out.ToString()
+}
+
+function Invoke-PdfTextOperator {
+    <#
+    .SYNOPSIS
+      Applies one content-stream operator to the text state: font change, shown text, line and word breaks.
+    .PARAMETER Operator
+      The operator token.
+    .PARAMETER Stack
+      Its operands.
+    .PARAMETER State
+      Out, Block (the text block in work), Shows, Single (shows of one glyph), Font.
+    .PARAMETER Fonts
+      The font table.
+    #>
+    param([string]$Operator, $Stack, [hashtable]$State, [hashtable]$Fonts)
+    $last = $null; if ($Stack.Count -gt 0) { $last = $Stack[$Stack.Count - 1] }
+    $shown = $null   # the string a Tj, ' or " shows: only a string token counts
+    if ($Operator -cin @('Tj', "'", '"') -and $last -is [string] -and $last.Length -ge 2 -and ($last[0] -eq '(' -or $last[0] -eq '<')) {
+        $shown = ConvertFrom-PdfGlyphs (ConvertFrom-PdfString $last) $State.Font
+        $State.Shows++; if ($shown.Length -eq 1) { $State.Single++ }
+    }
+    $block = $State.Block
+    switch -CaseSensitive ($Operator) {
+        'Tf' { if ($Stack.Count -ge 2) { $State.Font = $Fonts[([string]$Stack[$Stack.Count - 2]).TrimStart('/')] } }
+        'Tj' { [void]$block.Append($shown) }
+        "'" { [void]$block.Append("`n" + $shown) }
+        '"' { [void]$block.Append("`n" + $shown) }
+        'TJ' { if ($last -is [System.Collections.Generic.List[string]]) { $State.Shows++; [void]$block.Append((Convert-PdfArrayToText $last $State.Font)) } }
+        'Td' { if ($Stack.Count -ge 2 -and (ConvertTo-PdfNumber $last) -ne 0) { [void]$block.Append("`n") } else { [void]$block.Append($script:SameLineMove) } }
+        'TD' { [void]$block.Append("`n") }
+        'T*' { [void]$block.Append("`n") }
+        'Tm' { [void]$block.Append("`n") }
+        'ET' { Complete-PdfTextBlock $State }
+    }
+}
+
+function Complete-PdfTextBlock {
+    <#
+    .SYNOPSIS
+      Ends a text block: its same-line moves become spaces, or nothing when most of its shows were one glyph each
+      (a block drawn glyph by glyph: "S S N" would hide an SSN from the detectors); then a line break.
+    .PARAMETER State
+      The text state of Convert-PdfContentToText.
+    #>
+    param([hashtable]$State)
+    $gap = ' '
+    if ($State.Shows -gt 0 -and $State.Single / $State.Shows -ge $script:GlyphBlockShare) { $gap = '' }
+    $text = $State.Block.ToString().Replace([string]$script:SameLineMove, $gap)
+    # A font can map a glyph to a private-use character (U+E000-U+F8FF): it has no meaning (Chrome does this for some
+    # punctuation), so it becomes a space and the PDF gets a note.
+    if ($text -match '[\uE000-\uF8FF]') {
+        Add-PdfNote 'Some characters in this PDF could not be read (a font without them in its map): check by hand'
+        $text = $text -replace '[\uE000-\uF8FF]', ' '
+    }
+    [void]$State.Out.Append($text).Append("`n")
+    [void]$State.Block.Clear()
+    $State.Shows = 0; $State.Single = 0
 }
 
 function Skip-PdfInlineImage {
@@ -340,22 +265,6 @@ function Skip-PdfInlineImage {
     return $Content.Length
 }
 
-function Assert-PdfGap {
-    <#
-    .SYNOPSIS
-      Throws when the text between two tokens holds a "(": a string there was not read (too long, or damaged), so
-      the PDF is reported NOT SCANNED rather than read in part without a word (fresh review, 2026-11-20).
-    .PARAMETER Content
-      The content stream.
-    .PARAMETER From
-      Where the gap starts.
-    .PARAMETER To
-      Where the gap ends.
-    #>
-    param([string]$Content, [int]$From, [int]$To)
-    if ($To -gt $From -and $Content.IndexOf('(', $From, $To - $From) -ge 0) { throw (New-Object System.FormatException $script:PdfStringError) }
-}
-
 function ConvertTo-PdfNumber {
     # A PDF number token as a number; 0 when it is not one.
     param($Token)
@@ -375,75 +284,6 @@ function Convert-PdfArrayToText {
     return $out.ToString()
 }
 
-function Get-PdfFieldName {
-    # A form field's name (/T), as the label of its value; empty when it has none.
-    param([string]$Dict, $NameRegex)
-    $name = $NameRegex.Match($Dict)
-    if ($name.Success) { return (ConvertFrom-PdfTextString $name.Groups[1].Value) }
-    return ''
-}
-
-function Format-PdfDictLine {
-    # One line of dictionary text: "label: text", or the text alone.
-    param([string]$Label, [string]$Text)
-    if ($Label) { return ($Label + ': ' + $Text) }
-    return $Text
-}
-
-function Get-PdfDictText {
-    <#
-    .SYNOPSIS
-      Text kept in dictionaries, not on a page: form-field values ("name: value", so labels stay with values),
-      comments and sticky notes (/Contents of an annotation, /RC rich text) and the file's info (author, title,
-      subject, keywords). A value may sit in an object of its own (/V 6 0 R). A literal value that is not read throws
-      (Get-PdfText: "part of this PDF could not be read"), never a silent miss (fresh reviews, 2026-11-21).
-    .PARAMETER Objects
-      Output of Get-PdfObjects.
-    .OUTPUTS
-      [string] one line per value.
-    #>
-    param($Objects)
-    $nameRegex = Get-PdfRegex ('/T\s*(' + $script:PdfStringPattern + ')')
-    $checks = foreach ($key in $script:PdfTextKeys.Keys) {
-        @{ Key = $key; Label = $script:PdfTextKeys[$key]; Value = (Get-PdfRegex ('/' + $key + '\s*(' + $script:PdfStringPattern + ')'))
-           Ref = (Get-PdfRegex ('/' + $key + '\s+(\d+)\s+\d+\s+R')); Open = ('/' + $key + '\s*\(') }
-    }
-    $all = @($Objects.Values) + @($script:PdfOldDicts | ForEach-Object { @{ Dict = $_ } })   # older versions too
-    foreach ($obj in $all) {
-        Assert-PdfTime
-        foreach ($check in $checks) {
-            if ($obj.Dict.IndexOf('/' + $check.Key) -lt 0) { continue }
-            $token = ''
-            $value = $check.Value.Match($obj.Dict)
-            if ($value.Success) { $token = $value.Groups[1].Value }
-            elseif ($obj.Dict -match $check.Open) { throw (New-Object System.FormatException $script:PdfStringError) }   # not read
-            elseif ($obj.Dict -match ('/' + $check.Key + '\s*\[')) {
-                # A list of values (a multi-select field): each string in it.
-                $list = [regex]::Match($obj.Dict, '/' + $check.Key + '\s*\[([^\]]*)\]').Groups[1].Value
-                $items = @(foreach ($item in (Get-PdfRegex $script:PdfStringPattern).Matches($list)) { ConvertFrom-PdfTextString $item.Value })
-                if ($items.Count -gt 0) { $label = $check.Label; if ($check.Key -eq 'V') { $label = Get-PdfFieldName $obj.Dict $nameRegex }; Format-PdfDictLine $label ($items -join ', ') }
-                continue
-            }
-            else {
-                # A value in an object of its own: that object is just a string (a page's /Contents points to a stream).
-                $ref = $check.Ref.Match($obj.Dict)
-                if ($ref.Success -and $Objects.Contains($ref.Groups[1].Value)) {
-                    $held = $Objects[$ref.Groups[1].Value]
-                    $target = $held.Dict.Trim()
-                    if ($target.StartsWith('(') -or ($target.StartsWith('<') -and -not $target.StartsWith('<<'))) { $token = $target }
-                    elseif ($check.Key -in @('V', 'RC') -and $held.Stream) { Format-PdfDictLine $check.Label $held.Stream; continue }   # a text stream
-                }
-            }
-            if (-not $token) { continue }
-            $text = ConvertFrom-PdfTextString $token
-            if ($check.Key -eq 'RC') { $text = $text -replace '<[^>]+>', ' ' }   # rich text: XHTML tags dropped
-            $label = $check.Label
-            if ($check.Key -eq 'V') { $label = Get-PdfFieldName $obj.Dict $nameRegex }
-            Format-PdfDictLine $label $text
-        }
-    }
-}
-
 function Get-PdfText {
     <#
     .SYNOPSIS
@@ -461,14 +301,14 @@ function Get-PdfText {
         return @{ Text = ''; Reason = 'Not a valid PDF (damaged, or another type with a .pdf name): check by hand' }
     }
     if ($text -match '/Encrypt\s*(?:\d+\s+\d+\s+R|<<)') { return @{ Text = ''; Reason = $script:PdfEncryptedReason } }
-    $script:PdfOldDicts.Clear()   # this PDF's own older versions only
+    Reset-PdfOldObjects   # this PDF's own older versions only
     Start-PdfBudget
     try { $all = Get-PdfAllText $text }
     catch {
         # A limit or an unread string can arrive wrapped (a .NET call, the pipeline): look through the whole chain.
         for ($e = $_.Exception; $e; $e = $e.InnerException) {
             if ($e -is [System.TimeoutException] -or $e -is [System.Text.RegularExpressions.RegexMatchTimeoutException]) { return @{ Text = ''; Reason = $script:PdfSlowReason } }
-            if ($e -is [System.FormatException] -and $e.Message -eq $script:PdfStringError) { return @{ Text = ''; Reason = $script:PdfPartReason } }
+            if ($e -is [System.FormatException] -and $e.Message -eq (Get-PdfStringError)) { return @{ Text = ''; Reason = $script:PdfPartReason } }
         }
         throw   # any other error is the caller's (Get-TextFromBytes reports the file)
     }
@@ -506,11 +346,43 @@ function Get-PdfPageResources {
     return $Page.Dict
 }
 
+function Get-PdfLooseText {
+    <#
+    .SYNOPSIS
+      The text of content streams no page or form reads: older page versions kept by an incremental update ("SSN"
+      edited out of a page is still in the file) and streams of pages since removed. A stream counts as content when
+      it has a text block (BT, Tj or TJ, ET) and is not XML. One that cannot be read gives a note, not a failure.
+    .PARAMETER Objects
+      Output of Get-PdfObjects.
+    .PARAMETER Fonts
+      The fonts of the whole file.
+    .PARAMETER Read
+      The streams already read.
+    .OUTPUTS
+      [string] text, one item per stream.
+    #>
+    param($Objects, [hashtable]$Fonts, $Read)
+    $loose = @($Objects.Values) + (Get-PdfOldObjects)
+    foreach ($obj in $loose) {
+        if (-not $obj.Stream -or $Read.Contains($obj) -or $obj.Dict -match '/Type\s*/(?:ObjStm|XRef)\b') { continue }
+        $start = $obj.Stream.TrimStart()
+        if ($start.StartsWith('<') -or $obj.Stream -notmatch '\bBT\b' -or $obj.Stream -notmatch '\bT[Jj]\b') { continue }
+        try { Convert-PdfContentToText $obj.Stream $Fonts }
+        catch {
+            if ($_.Exception -is [System.FormatException] -and $_.Exception.Message -eq (Get-PdfStringError)) {
+                Add-PdfNote 'Part of this PDF could not be read: check by hand'
+            }
+            else { throw }
+        }
+    }
+}
+
 function Get-PdfAllText {
     <#
     .SYNOPSIS
       Page text (each page with its own fonts; the fonts of the whole file when a page names none, as when its
-      resources are inherited), the text of form XObjects, and text in dictionaries (Get-PdfDictText), joined.
+      resources are inherited), form XObjects, dictionaries (Get-PdfDictText), XFA data and content streams no page
+      reads (Get-PdfLooseText), joined.
     .PARAMETER Text
       The PDF bytes as Latin-1 text.
     .OUTPUTS
@@ -522,6 +394,7 @@ function Get-PdfAllText {
     $allFonts = Get-PdfFonts $objects
     Assert-PdfTime
     $parts = New-Object System.Collections.Generic.List[string]
+    $read = New-Object System.Collections.Generic.HashSet[object]   # the content streams read as pages or forms
     foreach ($page in @($objects.Values | Where-Object { $_.Dict -match '/Type\s*/Page(?![s\w])' })) {
         $fonts = Get-PdfFontTable (Get-PdfPageResources $page $objects) $objects
         if ($fonts.Count -eq 0) { $fonts = $allFonts }
@@ -529,11 +402,11 @@ function Get-PdfAllText {
         foreach ($content in [regex]::Matches($contents, '(\d+)\s+\d+\s+R')) {
             $stream = $objects[$content.Groups[1].Value]
             if (-not $stream) { continue }
-            if ($stream.Stream) { $parts.Add((Convert-PdfContentToText $stream.Stream $fonts)); continue }
+            if ($stream.Stream) { [void]$read.Add($stream); $parts.Add((Convert-PdfContentToText $stream.Stream $fonts)); continue }
             # /Contents 5 0 R where object 5 is an array of streams ([6 0 R 7 0 R]): read each of them.
             foreach ($inner in [regex]::Matches($stream.Dict, '(\d+)\s+\d+\s+R')) {
                 $part = $objects[$inner.Groups[1].Value]
-                if ($part -and $part.Stream) { $parts.Add((Convert-PdfContentToText $part.Stream $fonts)) }
+                if ($part -and $part.Stream) { [void]$read.Add($part); $parts.Add((Convert-PdfContentToText $part.Stream $fonts)) }
             }
         }
     }
@@ -542,9 +415,12 @@ function Get-PdfAllText {
     foreach ($form in @($objects.Values | Where-Object { $_.Stream -and $_.Dict -match '/Subtype\s*/Form\b' })) {
         $fonts = Get-PdfFontTable (Get-PdfPageResources $form $objects) $objects   # also /Resources 10 0 R
         if ($fonts.Count -eq 0) { $fonts = $allFonts }
+        [void]$read.Add($form)
         $parts.Add((Convert-PdfContentToText $form.Stream $fonts))
     }
     foreach ($line in @(Get-PdfDictText $objects)) { $parts.Add($line) }
+    foreach ($line in @(Get-PdfXfaText $objects)) { $parts.Add($line) }
+    foreach ($line in @(Get-PdfLooseText $objects $allFonts $read)) { $parts.Add($line) }
     return ($parts -join "`n")
 }
 
