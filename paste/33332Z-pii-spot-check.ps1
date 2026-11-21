@@ -19,13 +19,14 @@
   Built from these files; to change it, change them and rebuild with: python3 scripts/build_paste.py
     src/PiiDetectors.psm1, sha256 ea19831b4d68
     src/PiiMasking.psm1, sha256 752c251a94b2
-    src/PdfText.psm1, sha256 9d4d6117661e
+    src/PdfCore.psm1, sha256 3a56882953a5
+    src/PdfText.psm1, sha256 fc7951a28d31
     src/TextExtract.psm1, sha256 e29978d7b4fa
     src/XlsxWriter.psm1, sha256 e29becdc6a65
     src/Report.psm1, sha256 cd8bd1e538f7
     src/ScanMeter.psm1, sha256 2c2a5a750104
     src/ChannelScan.psm1, sha256 5703ccff41d9
-    src/Find-ChannelPII.ps1, sha256 00f939a3e839
+    src/Find-ChannelPII.ps1, sha256 4faab4ef9809
 
   Read-only: it never changes, moves or deletes anything in Teams or SharePoint. Every value found is masked.
   Run target: Windows PowerShell 5.1 with PnP.PowerShell 1.12.0; no admin rights, no file to unblock.
@@ -34,17 +35,18 @@
   Credentials: your own CAC sign-in in the PnP sign-in window; nothing is stored.
 
   Contents (line numbers of this file):
-    line    50  Settings
-    line    61  Module PiiDetectors.psm1
-    line   549  Module PiiMasking.psm1
-    line   749  Module PdfText.psm1
-    line  1365  Module TextExtract.psm1
-    line  1624  Module XlsxWriter.psm1
-    line  1895  Module Report.psm1
-    line  2392  Module ScanMeter.psm1
-    line  2657  Module ChannelScan.psm1
-    line  3243  Body of Find-ChannelPII.ps1
-    line  3344  Clean-up
+    line    52  Settings
+    line    63  Module PiiDetectors.psm1
+    line   551  Module PiiMasking.psm1
+    line   751  Module PdfCore.psm1
+    line  1009  Module PdfText.psm1
+    line  1418  Module TextExtract.psm1
+    line  1677  Module XlsxWriter.psm1
+    line  1948  Module Report.psm1
+    line  2445  Module ScanMeter.psm1
+    line  2710  Module ChannelScan.psm1
+    line  3296  Body of Find-ChannelPII.ps1
+    line  3397  Clean-up
 #>
 
 # ==== Settings ==== (optional: edit the values between the quotes; empty = the script asks)
@@ -746,16 +748,17 @@ function Protect-PiiName {
     return [regex]::Replace($result, $script:EmailLocalPartPattern, '***')
 }
 
-# ==== Module PdfText.psm1 ====
+# ==== Module PdfCore.psm1 ====
 <#
-PdfText.psm1 - the text of a PDF file, in memory, with .NET only (no module; the PAM, 2026-11-20).
+PdfCore.psm1 - the base of the PDF reader: its time and size limits, stream filters and ToUnicode font maps.
 
-  Purpose:     Page text (Tj/TJ text in Flate, ASCII85 or hex streams, with ToUnicode font maps) and filled-in
-               form-field values (name: value), so the detectors can check a PDF (ISO 32000). An encrypted PDF,
-               a PDF with no text (a scanned image) or a file that is not a PDF gets a reason instead.
-  Inputs:      the file bytes.
-  Outputs:     a hashtable with Text and Reason (Get-PdfText).
-  How to run:  imported by Find-ChannelPII.ps1 (used by TextExtract.psm1); not run on its own.
+  Purpose:     So one damaged or hostile PDF cannot stall the scan or fill the memory (fresh reviews, 2026-11-20/21):
+               a time limit per PDF and per regex search, caps on unpacked size, and "check by hand" notes for any
+               part not read. Also the stream filters (Flate, ASCII85, ASCIIHex) and the ToUnicode maps of fonts.
+               PdfText.psm1 builds the page text on top of it.
+  Inputs:      PDF stream bytes and dictionaries, as Latin-1 text.
+  Outputs:     decoded streams, font maps, the limit checks and the notes of one PDF (Start-/Stop-PdfBudget).
+  How to run:  imported by Find-ChannelPII.ps1 (used by PdfText.psm1); not run on its own.
   Run target:  Windows PowerShell 5.1 (also PowerShell 7); .NET System.IO.Compression only.
   Network:     none.
   Writes:      none. Bytes stay in memory; nothing is saved to disk.
@@ -764,20 +767,8 @@ PdfText.psm1 - the text of a PDF file, in memory, with .NET only (no module; the
 
 Add-Type -AssemblyName System.IO.Compression
 
-
 # Bytes as characters one to one (ISO-8859-1), so binary PDF parts can be cut with string functions.
 $script:Latin1 = [System.Text.Encoding]::GetEncoding(28591)
-
-# A PDF string: (literal), with nested brackets and escapes, or <hex> (not a << dictionary). A literal holds at most
-# 10,000 parts, so an unclosed bracket fails after a bounded scan. A "(" that no string token takes means a string
-# was not read: the PDF is then NOT SCANNED, never read in part without a word (Assert-PdfGap).
-$script:PdfStringPattern = '\((?>[^()\\]+|\\.|\((?<d>)|\)(?<-d>)){0,10000}(?(d)(?!))\)|<(?!<)[0-9A-Fa-f\s]*>'
-
-# The tokens of a content stream that matter for text: strings, array brackets, names, numbers and operators.
-$script:PdfTokenPattern = $script:PdfStringPattern + '|%[^\r\n]*|\[|\]|/[^\s/\[\]()<>{}%]+|[-+]?(?:\d+\.?\d*|\.\d+)|[A-Za-z''"*]+'
-
-# A TJ gap wider than this (thousandths of a text unit) is a space between words.
-$script:PdfWordGap = 250
 
 # A ToUnicode map uses at most this many ranges (real maps use far fewer); ranges are looked up per glyph, not expanded.
 # A map with more is read in part, and the PDF gets a "check by hand" note (Add-PdfNote).
@@ -794,15 +785,33 @@ $script:PdfBudget = @{ Clock = $null; Inflated = 0L; Notes = $null }
 # Streams that hold no page text and are not inflated: images and embedded font programs.
 $script:NotTextStream = '/Subtype\s*/(?:Image|Type1C|CIDFontType0C|OpenType)\b|/Length[123]\s|/Type\s*/(?:EmbeddedFile|XRef|Metadata)\b'
 
-# Inline images (BI ... ID <bytes> EI): their bytes are taken out of a content stream before it is read, so image
-# bytes can never join with page text into one string token (fresh review, 2026-11-21).
-$script:InlineImagePattern = '(?s)\bBI\b.*?\bID\s.*?\sEI\b'
+function Start-PdfBudget {
+    # Starts the clock, the unpack count and the notes of one PDF (Get-PdfText).
+    $script:PdfBudget = @{ Clock = [Diagnostics.Stopwatch]::StartNew(); Inflated = 0L; Notes = (New-Object System.Collections.Generic.List[string]) }
+}
 
-$script:PdfNoTextReason = 'No text in this PDF (a scanned image?): check by hand'
-$script:PdfSlowReason = 'This PDF is too large or damaged to read in time: check by hand'
-$script:PdfPartReason = 'Part of this PDF could not be read (a damaged or unusual string): check by hand'
-$script:PdfStringError = 'PDF string not read'
-$script:PdfEncryptedReason = 'Encrypted PDF (password or label): check by hand'
+function Stop-PdfBudget {
+    # Ends one PDF's budget and returns its notes (parts not read).
+    $notes = $script:PdfBudget.Notes
+    $script:PdfBudget = @{ Clock = $null; Inflated = 0L; Notes = $null }
+    if ($notes) { return $notes.ToArray() }
+}
+
+function ConvertFrom-HexText {
+    <#
+    .SYNOPSIS
+      Hex digits (ASCIIHexDecode data, other characters ignored) as their bytes in Latin-1 characters.
+    .PARAMETER Text
+      The hex text.
+    #>
+    param([string]$Text)
+    $hex = $Text -replace '[^0-9A-Fa-f]', ''
+    if ($hex.Length % 2) { $hex += '0' }
+    return -join @(for ($i = 0; $i -lt $hex.Length; $i += 2) {
+        if (($i % 200000) -eq 0) { Assert-PdfTime }
+        [char][Convert]::ToInt32($hex.Substring($i, 2), 16)
+    })
+}
 
 function Get-PdfRegex {
     # A regex with a time limit per search ($PdfRegexTimeout); a search over it throws instead of running on.
@@ -878,7 +887,7 @@ function Read-PdfStream {
         switch ($name) {
             'FlateDecode' { $data = Expand-PdfStream $data }
             'ASCII85Decode' { $data = ConvertFrom-Ascii85 $data }
-            'ASCIIHexDecode' { $data = ConvertFrom-PdfString ('<' + ($data -replace '[^0-9A-Fa-f]', '') + '>') }
+            'ASCIIHexDecode' { $data = ConvertFrom-HexText $data }
             default { return $null }
         }
     }
@@ -908,6 +917,138 @@ function ConvertFrom-Ascii85 {
     }
     return $out.ToString()
 }
+
+function ConvertFrom-Utf16Hex {
+    # The text of a ToUnicode target: UTF-16BE given as hex.
+    param([string]$Hex)
+    $bytes = [byte[]]@(for ($i = 0; $i + 1 -lt $Hex.Length; $i += 2) { [Convert]::ToByte($Hex.Substring($i, 2), 16) })
+    return [System.Text.Encoding]::BigEndianUnicode.GetString($bytes)
+}
+
+function Get-PdfBlocks {
+    <#
+    .SYNOPSIS
+      The text between each begin word and the end word after it (bfchar or bfrange blocks), found in one linear pass:
+      a block without its end word runs to the next begin word, so a damaged map cannot make the search quadratic.
+    .PARAMETER Text
+      The CMap stream.
+    .PARAMETER Begin
+      The begin word, for example 'beginbfchar'.
+    .PARAMETER End
+      The end word, for example 'endbfchar'.
+    .OUTPUTS
+      [string] one per block.
+    #>
+    param([string]$Text, [string]$Begin, [string]$End)
+    $starts = @(foreach ($m in (Get-PdfRegex ([regex]::Escape($Begin))).Matches($Text)) { $m.Index + $m.Length })
+    $stops = @(foreach ($m in (Get-PdfRegex ([regex]::Escape($End))).Matches($Text)) { $m.Index })
+    $e = 0
+    for ($b = 0; $b -lt $starts.Count; $b++) {
+        $stop = $Text.Length; if ($b + 1 -lt $starts.Count) { $stop = $starts[$b + 1] - $Begin.Length }
+        while ($e -lt $stops.Count -and $stops[$e] -lt $starts[$b]) { $e++ }
+        if ($e -lt $stops.Count -and $stops[$e] -lt $stop) { $stop = $stops[$e] }
+        $Text.Substring($starts[$b], $stop - $starts[$b])
+    }
+}
+
+function Get-PdfCMap {
+    <#
+    .SYNOPSIS
+      A font's ToUnicode map: glyph code (hex, upper case) -> text from its bfchar entries and listed ranges, plus
+      its plain ranges (looked up by ConvertFrom-PdfGlyphs, not expanded).
+    .PARAMETER Text
+      The CMap stream.
+    .OUTPUTS
+      [hashtable] Bytes (bytes per code), Map, Ranges.
+    #>
+    param([string]$Text)
+    $map = @{}
+    $ranges = New-Object System.Collections.Generic.List[object]
+    $bytes = 1
+    $pairRegex = Get-PdfRegex '<([0-9A-Fa-f]+)>\s*<([0-9A-Fa-f]*)>'
+    $rangeRegex = Get-PdfRegex '<([0-9A-Fa-f]+)>\s*<([0-9A-Fa-f]+)>\s*(<[0-9A-Fa-f]*>|\[[^\]]*\])'
+    $listRegex = Get-PdfRegex '<([0-9A-Fa-f]*)>'
+    foreach ($block in @(Get-PdfBlocks $Text 'beginbfchar' 'endbfchar')) {
+        Assert-PdfTime
+        $n = 0
+        foreach ($pair in $pairRegex.Matches($block)) {
+            if ((++$n % 1000) -eq 0) { Assert-PdfTime }
+            $map[$pair.Groups[1].Value.ToUpper()] = ConvertFrom-Utf16Hex $pair.Groups[2].Value
+            $bytes = [int]($pair.Groups[1].Value.Length / 2)
+        }
+    }
+    foreach ($block in @(Get-PdfBlocks $Text 'beginbfrange' 'endbfrange')) {
+        Assert-PdfTime
+        foreach ($range in $rangeRegex.Matches($block)) {
+            $width = $range.Groups[1].Value.Length
+            $bytes = [int]($width / 2)
+            $low = [Convert]::ToInt64($range.Groups[1].Value, 16)
+            $high = [Convert]::ToInt64($range.Groups[2].Value, 16)
+            $target = $range.Groups[3].Value
+            if ($high -lt $low) { continue }
+            if ($target.StartsWith('[')) {
+                # A listed range names each target: as many entries as the map's own text holds, so no expansion cost.
+                $code = $low
+                foreach ($item in $listRegex.Matches($target)) {
+                    if ($code -gt $high) { break }
+                    if ((($code - $low) % 1000) -eq 999) { Assert-PdfTime }
+                    $map[$code.ToString('X' + $width)] = ConvertFrom-Utf16Hex $item.Groups[1].Value
+                    $code++
+                }
+            }
+            elseif ($ranges.Count -ge $script:MaxCMapRanges) { Add-PdfNote 'A font in this PDF could not be fully read: check by hand' }
+            elseif ($target.Length -ge 6) {
+                $hex = $target.Substring(1, $target.Length - 2)
+                $ranges.Add(@{ Low = $low; High = $high; Prefix = $hex.Substring(0, $hex.Length - 4); Start = [Convert]::ToInt32($hex.Substring($hex.Length - 4), 16) })
+            }
+        }
+    }
+    return @{ Bytes = $bytes; Map = $map; Ranges = $ranges }
+}
+
+# ==== Module PdfText.psm1 ====
+<#
+PdfText.psm1 - the text of a PDF file, in memory, with .NET only (no module; the PAM, 2026-11-20).
+
+  Purpose:     Page text (Tj/TJ text in Flate, ASCII85 or hex streams, with ToUnicode font maps) and filled-in
+               form-field values (name: value), so the detectors can check a PDF (ISO 32000). An encrypted PDF,
+               a PDF with no text (a scanned image) or a file that is not a PDF gets a reason instead.
+  Inputs:      the file bytes.
+  Outputs:     a hashtable with Text and Reason (Get-PdfText).
+  How to run:  imported by Find-ChannelPII.ps1 (used by TextExtract.psm1); not run on its own.
+  Depends on:  PdfCore.psm1 (limits, stream filters, ToUnicode maps), imported first by Find-ChannelPII.ps1.
+  Run target:  Windows PowerShell 5.1 (also PowerShell 7); .NET System.IO.Compression only.
+  Network:     none.
+  Writes:      none. Bytes stay in memory; nothing is saved to disk.
+  Credentials: none.
+#>
+
+Add-Type -AssemblyName System.IO.Compression
+
+
+# Bytes as characters one to one (ISO-8859-1), so binary PDF parts can be cut with string functions.
+$script:PdfLatin1 = [System.Text.Encoding]::GetEncoding(28591)
+
+# A PDF string: (literal), with nested brackets and escapes, or <hex> (not a << dictionary). A literal holds at most
+# 10,000 parts, so an unclosed bracket fails after a bounded scan. A "(" that no string token takes means a string
+# was not read: the PDF is then NOT SCANNED, never read in part without a word (Assert-PdfGap).
+$script:PdfStringPattern = '\((?>[^()\\]+|\\.|\((?<d>)|\)(?<-d>)){0,10000}(?(d)(?!))\)|<(?!<)[0-9A-Fa-f\s]*>'
+
+# The tokens of a content stream that matter for text: strings, array brackets, names, numbers and operators.
+$script:PdfTokenPattern = $script:PdfStringPattern + '|%[^\r\n]*|\[|\]|/[^\s/\[\]()<>{}%]+|[-+]?(?:\d+\.?\d*|\.\d+)|[A-Za-z''"*]+'
+
+# A TJ gap wider than this (thousandths of a text unit) is a space between words.
+$script:PdfWordGap = 250
+
+# Inline images (BI ... ID <bytes> EI): their bytes are taken out of a content stream before it is read, so image
+# bytes can never join with page text into one string token (fresh review, 2026-11-21).
+$script:InlineImagePattern = '(?s)\bBI\b.*?\bID\s.*?\sEI\b'
+
+$script:PdfNoTextReason = 'No text in this PDF (a scanned image?): check by hand'
+$script:PdfSlowReason = 'This PDF is too large or damaged to read in time: check by hand'
+$script:PdfPartReason = 'Part of this PDF could not be read (a damaged or unusual string): check by hand'
+$script:PdfStringError = 'PDF string not read'
+$script:PdfEncryptedReason = 'Encrypted PDF (password or label): check by hand'
 
 function Get-PdfObjects {
     <#
@@ -998,97 +1139,9 @@ function ConvertFrom-PdfTextString {
     param([string]$Token)
     $raw = ConvertFrom-PdfString $Token
     if ($raw.Length -ge 2 -and [int]$raw[0] -eq 0xFE -and [int]$raw[1] -eq 0xFF) {
-        return [System.Text.Encoding]::BigEndianUnicode.GetString($script:Latin1.GetBytes($raw.Substring(2)))
+        return [System.Text.Encoding]::BigEndianUnicode.GetString($script:PdfLatin1.GetBytes($raw.Substring(2)))
     }
     return $raw
-}
-
-function ConvertFrom-Utf16Hex {
-    # The text of a ToUnicode target: UTF-16BE given as hex.
-    param([string]$Hex)
-    $bytes = [byte[]]@(for ($i = 0; $i + 1 -lt $Hex.Length; $i += 2) { [Convert]::ToByte($Hex.Substring($i, 2), 16) })
-    return [System.Text.Encoding]::BigEndianUnicode.GetString($bytes)
-}
-
-function Get-PdfBlocks {
-    <#
-    .SYNOPSIS
-      The text between each begin word and the end word after it (bfchar or bfrange blocks), found in one linear pass:
-      a block without its end word runs to the next begin word, so a damaged map cannot make the search quadratic.
-    .PARAMETER Text
-      The CMap stream.
-    .PARAMETER Begin
-      The begin word, for example 'beginbfchar'.
-    .PARAMETER End
-      The end word, for example 'endbfchar'.
-    .OUTPUTS
-      [string] one per block.
-    #>
-    param([string]$Text, [string]$Begin, [string]$End)
-    $starts = @(foreach ($m in (Get-PdfRegex ([regex]::Escape($Begin))).Matches($Text)) { $m.Index + $m.Length })
-    $stops = @(foreach ($m in (Get-PdfRegex ([regex]::Escape($End))).Matches($Text)) { $m.Index })
-    $e = 0
-    for ($b = 0; $b -lt $starts.Count; $b++) {
-        $stop = $Text.Length; if ($b + 1 -lt $starts.Count) { $stop = $starts[$b + 1] - $Begin.Length }
-        while ($e -lt $stops.Count -and $stops[$e] -lt $starts[$b]) { $e++ }
-        if ($e -lt $stops.Count -and $stops[$e] -lt $stop) { $stop = $stops[$e] }
-        $Text.Substring($starts[$b], $stop - $starts[$b])
-    }
-}
-
-function Get-PdfCMap {
-    <#
-    .SYNOPSIS
-      A font's ToUnicode map: glyph code (hex, upper case) -> text from its bfchar entries and listed ranges, plus
-      its plain ranges (looked up by ConvertFrom-PdfGlyphs, not expanded).
-    .PARAMETER Text
-      The CMap stream.
-    .OUTPUTS
-      [hashtable] Bytes (bytes per code), Map, Ranges.
-    #>
-    param([string]$Text)
-    $map = @{}
-    $ranges = New-Object System.Collections.Generic.List[object]
-    $bytes = 1
-    $pairRegex = Get-PdfRegex '<([0-9A-Fa-f]+)>\s*<([0-9A-Fa-f]*)>'
-    $rangeRegex = Get-PdfRegex '<([0-9A-Fa-f]+)>\s*<([0-9A-Fa-f]+)>\s*(<[0-9A-Fa-f]*>|\[[^\]]*\])'
-    $listRegex = Get-PdfRegex '<([0-9A-Fa-f]*)>'
-    foreach ($block in @(Get-PdfBlocks $Text 'beginbfchar' 'endbfchar')) {
-        Assert-PdfTime
-        $n = 0
-        foreach ($pair in $pairRegex.Matches($block)) {
-            if ((++$n % 1000) -eq 0) { Assert-PdfTime }
-            $map[$pair.Groups[1].Value.ToUpper()] = ConvertFrom-Utf16Hex $pair.Groups[2].Value
-            $bytes = [int]($pair.Groups[1].Value.Length / 2)
-        }
-    }
-    foreach ($block in @(Get-PdfBlocks $Text 'beginbfrange' 'endbfrange')) {
-        Assert-PdfTime
-        foreach ($range in $rangeRegex.Matches($block)) {
-            $width = $range.Groups[1].Value.Length
-            $bytes = [int]($width / 2)
-            $low = [Convert]::ToInt64($range.Groups[1].Value, 16)
-            $high = [Convert]::ToInt64($range.Groups[2].Value, 16)
-            $target = $range.Groups[3].Value
-            if ($high -lt $low) { continue }
-            if ($target.StartsWith('[')) {
-                # A listed range names each target: as many entries as the map's own text holds, so no expansion cost.
-                $code = $low
-                foreach ($item in $listRegex.Matches($target)) {
-                    if ($code -gt $high) { break }
-                    if ((($code - $low) % 1000) -eq 999) { Assert-PdfTime }
-                    $map[$code.ToString('X' + $width)] = ConvertFrom-Utf16Hex $item.Groups[1].Value
-                    $code++
-                }
-            }
-            elseif ($ranges.Count -ge $script:MaxCMapRanges) { Add-PdfNote 'A font in this PDF could not be fully read: check by hand' }
-            elseif ($target.Length -ge 6) {
-                $hex = $target.Substring(1, $target.Length - 2)
-                $ranges.Add(@{ Low = $low; High = $high; Prefix = $hex.Substring(0, $hex.Length - 4); Start = [Convert]::ToInt32($hex.Substring($hex.Length - 4), 16) })
-            }
-        }
-    }
-    return @{ Bytes = $bytes; Map = $map; Ranges = $ranges }
 }
 
 function Get-PdfFonts {
@@ -1299,12 +1352,12 @@ function Get-PdfText {
       [hashtable] Text, Reason (empty when the text was read), Note (a part not read, for a "check by hand" row; or empty).
     #>
     param([byte[]]$Bytes)
-    $text = $script:Latin1.GetString($Bytes)
+    $text = $script:PdfLatin1.GetString($Bytes)
     if ($text.IndexOf('%PDF') -lt 0 -or $text.IndexOf('%PDF') -gt 1024) {
         return @{ Text = ''; Reason = 'Not a valid PDF (damaged, or another type with a .pdf name): check by hand' }
     }
     if ($text -match '/Encrypt\s*(?:\d+\s+\d+\s+R|<<)') { return @{ Text = ''; Reason = $script:PdfEncryptedReason } }
-    $script:PdfBudget = @{ Clock = [Diagnostics.Stopwatch]::StartNew(); Inflated = 0L; Notes = (New-Object System.Collections.Generic.List[string]) }
+    Start-PdfBudget
     try { $all = Get-PdfAllText $text }
     catch {
         # A limit or an unread string can arrive wrapped (a .NET call, the pipeline): look through the whole chain.
@@ -1314,7 +1367,7 @@ function Get-PdfText {
         }
         throw   # any other error is the caller's (Get-TextFromBytes reports the file)
     }
-    finally { $notes = $script:PdfBudget.Notes; $script:PdfBudget = @{ Clock = $null; Inflated = 0L; Notes = $null } }
+    finally { $notes = @(Stop-PdfBudget) }
     $note = (@($notes) -join '; ')
     if (-not $all.Trim()) {
         $reason = $script:PdfNoTextReason; if ($note) { $reason = $note }

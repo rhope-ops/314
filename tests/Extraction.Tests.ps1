@@ -88,9 +88,9 @@ Assert-Equal 'SSN' (@(Find-PiiInText (Get-TextFromBytes -Bytes $formPdf -FileNam
 Assert-Equal 'No text in this PDF (a scanned image?): check by hand' (Get-TextFromBytes -Bytes (New-PdfBytes 'q 100 0 0 100 0 0 cm /Im1 Do Q') -FileName 's.pdf').Reason 'PDF: an image-only page named'
 Assert-Equal $true ((Get-TextFromBytes -Bytes (New-PdfBytes 'BT (x) Tj ET' -Trailer '/Encrypt 9 0 R') -FileName 'e.pdf').Reason -match '^Encrypted PDF') 'PDF: encrypted named'
 Assert-Equal $true ((Get-TextFromBytes -Bytes $Txt -FileName 'scan.pdf').Reason -match '^Not a valid PDF') 'PDF: not a PDF named'
-$a85 = & (Get-Module PdfText) { ConvertFrom-Ascii85 '9jqo^BlbD-BleB1DJ+*+F(f,q~>' }
+$a85 = & (Get-Module PdfCore) { ConvertFrom-Ascii85 '9jqo^BlbD-BleB1DJ+*+F(f,q~>' }
 Assert-Equal 'Man is distinguished' $a85 'PDF: ASCII85 filter decoded (a published test vector)'
-$hexData = & (Get-Module PdfText) { Read-PdfStream '/Filter /ASCIIHexDecode' '48 49>' }
+$hexData = & (Get-Module PdfCore) { Read-PdfStream '/Filter /ASCIIHexDecode' '48 49>' }
 Assert-Equal 'HI' $hexData 'PDF: ASCIIHex filter decoded'
 # Object stream (PDF 1.5): a form field packed inside one is still read.
 $packed = "9 0 << /T (SSN) /V ($($Sample.Ssn)) >>"
@@ -104,7 +104,7 @@ Assert-Equal 'SSN' (@(Find-PiiInText (Get-TextFromBytes -Bytes $crPdf -FileName 
 $inline = Get-TextFromBytes -Bytes (New-PdfBytes "BI /W 1 /H 1 ID 7 Tj EI BT 7 Tj (SSN: $($Sample.Ssn)) Tj ET" -Plain) -FileName 'i.pdf'
 Assert-Equal 'OK|SSN' ($inline.Status + '|' + (@(Find-PiiInText $inline.Text) | Select-Object -First 1).Detector) 'PDF: inline image and Tj on a number skipped'
 # Hostile input stays inside the time limit (lowered to 2 s here): unbalanced brackets, and headers without endobj.
-& (Get-Module PdfText) { $script:PdfSecondsLimit = 2 }
+& (Get-Module PdfCore) { $script:PdfSecondsLimit = 2 }
 $clock = [Diagnostics.Stopwatch]::StartNew()
 $slow = Get-TextFromBytes -Bytes (New-PdfBytes ('BT ' + ('(a' * 20000) + ' Tj ET') -Plain) -FileName 'h.pdf'
 $noEnd = Get-TextFromBytes -Bytes ([System.Text.Encoding]::ASCII.GetBytes('%PDF-1.4 ' + ('1 0 obj << >> ' * 50000))) -FileName 'n.pdf'
@@ -118,7 +118,7 @@ $manyRanges = Get-TextFromBytes -Bytes (New-PdfBytes ("BT /F1 12 Tf <$glyphs> Tj
 Assert-Equal $true ($clock.Elapsed.TotalSeconds -lt 15) 'PDF: hostile font maps end inside the time limit'
 Assert-Equal $true ($badMap.Status -in @('OK', 'NOT SCANNED')) 'PDF: a damaged map gives a result, not a stall'
 Assert-Equal 'SSN' (@(Find-PiiInText $manyRanges.Text) | Select-Object -First 1).Detector 'PDF: full ranges still decode'
-& (Get-Module PdfText) { $script:PdfSecondsLimit = 30 }
+& (Get-Module PdfCore) { $script:PdfSecondsLimit = 30 }
 # A long string is read; one over the string limit makes the PDF NOT SCANNED, never read in part without a word.
 $longString = Get-TextFromBytes -Bytes (New-PdfBytes ('BT (' + ('\101' * 1100) + " $($Sample.Ssn)) Tj ET") -Plain) -FileName 'l.pdf'
 Assert-Equal 'SSN' (@(Find-PiiInText $longString.Text) | Select-Object -First 1).Detector 'PDF: a string with 1,100 escapes read'
@@ -138,12 +138,12 @@ Assert-Equal 'SSN' (@(Find-PiiInText (Get-TextFromBytes -Bytes $formPdf2 -FileNa
 # A part not read is never silent: an attached file, or a stream over the unpack cap, gives a note.
 $attached = Get-TextFromBytes -Bytes (New-PdfBytes 'BT (hello) Tj ET' -Plain -Extra @("<< /Type /EmbeddedFile /Length 3 >> stream`nabc`nendstream")) -FileName 'a.pdf'
 Assert-Equal $true ($attached.Status -eq 'OK' -and $attached.Note -match 'attached inside this PDF') 'PDF: attachments give a check-by-hand note'
-& (Get-Module PdfText) { $script:MaxInflatedBytes = 10 }
+& (Get-Module PdfCore) { $script:MaxInflatedBytes = 10 }
 $capped = Get-TextFromBytes -Bytes (New-PdfBytes ("BT /F1 12 Tf (SSN: $($Sample.Ssn)) Tj ET " * 20)) -FileName 'cap.pdf'
-& (Get-Module PdfText) { $script:MaxInflatedBytes = 64MB }
+& (Get-Module PdfCore) { $script:MaxInflatedBytes = 64MB }
 Assert-Equal $true (($capped.Note + $capped.Reason) -match 'too large to unpack') 'PDF: text past the unpack cap gives a note'
 # A stream that inflates far past the cap is cut, not held whole in memory.
-$bomb = & (Get-Module PdfText) {
+$bomb = & (Get-Module PdfCore) {
     $memory = New-Object System.IO.MemoryStream
     $deflate = New-Object System.IO.Compression.DeflateStream($memory, [System.IO.Compression.CompressionMode]::Compress, $true)
     $zeros = New-Object byte[] (1MB); for ($i = 0; $i -lt 40; $i++) { $deflate.Write($zeros, 0, $zeros.Length) }
