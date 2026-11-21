@@ -44,14 +44,20 @@ SITE_COLUMNS = len(SITE_HEAD)
 # Where the tool keeps its breach text: one PowerShell string, written as single-quoted parts joined with "+".
 TOOL_VAR = re.compile(r"\$script:BreachAdvice\s*=\s*((?:'(?:[^']|'')*'\s*\+?\s*)+)")
 TOOL_PART = re.compile(r"'((?:[^']|'')*)'")
-# Markdown that GitHub renders but this builder does not: a site section that holds any of it fails the check, so the
-# site never shows text that the README shows differently. An underscore inside a word is plain text on GitHub
-# (AFI33-332_DAFGM2026-01), so only an underscore at a word's edge is refused.
-UNSUPPORTED = ((r'[*`\\]', 'a lone * or ` or \\'), (r'(?<![A-Za-z0-9])_|_(?![A-Za-z0-9])', 'an _emphasis_ mark'),
-               (r'~~', 'strikethrough'), (r'[\[\]<>]', 'a link, an HTML tag or a quote mark'),
-               (r'&(#\d+|#x[0-9A-Fa-f]+|[A-Za-z]+);', 'an HTML entity'), (r'https?://|www\.', 'a bare web address'))
-# A line that starts a list, a heading or a quote in Markdown.
-BLOCK_START = r'\s*([-+*]\s|#|>|\d+[.)]\s)'
+# Plain text in a site section may hold only these characters (an allow list): letters, digits, spaces and ordinary
+# punctuation that GitHub shows as typed. Any other character (* _ at a word's edge, ` ~ [ ] < > @ # = \ | ^ and the
+# like) could be Markdown that GitHub renders differently from this builder, so the check fails on it. An underscore
+# inside a word is plain text on GitHub (AFI33-332_DAFGM2026-01) and is allowed.
+PLAIN_TEXT = r"[A-Za-z0-9 .,;:'\"()\-/?!%+&\u2018\u2019\u201c\u201d\u2013\u2014\u2026]*"
+IN_WORD_UNDERSCORE = r'(?<=[A-Za-z0-9])_(?=[A-Za-z0-9])'
+# Strong text GitHub renders: ** right before and after non-space characters.
+BOLD = r'\*\*(?=[^\s*`])([^*`]*?[^\s*`])\*\*'
+# HTML entities and bare web addresses are rendered by GitHub, even though their characters are on the allow list.
+ENTITY_OR_ADDRESS = r'&(#\d+|#x[0-9A-Fa-f]+|[A-Za-z]+);|https?:|www\.'
+# A line that starts a list or ends with a hard break, and an underline line of a heading ("===" or "---").
+LIST_START = r'\s*([-+]\s|\d+[.)]\s)'
+SETEXT_LINE = r'\s*(=+|-+)\s*'
+HARD_BREAK = r'.*(  |\\)$'
 # A table's delimiter row (GFM): cells of dashes with optional alignment colons.
 DELIMITER_ROW = r'\|(\s*:?-+:?\s*\|)+'
 # HTML indents inside the generated blocks, matching the hand-written page around them.
@@ -75,15 +81,15 @@ def readme_section(text, name):
 
 
 def refuse_marks(markdown):
-    """Raise ValueError when plain text (outside `code`, **bold** marks removed) holds Markdown GitHub would render.
+    """Raise ValueError unless plain text (outside `code`, **bold** marks removed) holds only allow-listed characters.
 
     Args:
         markdown: one line of text, without its `code` spans.
     """
-    text = re.sub(r'\*\*([^*`]+)\*\*', r'\1', markdown)
-    for pattern, what in UNSUPPORTED:
-        if re.search(pattern, text):
-            raise ValueError(f'{README}: unsupported Markdown ({what}) in a site section; only **bold** and `code`: {markdown}')
+    text = re.sub(IN_WORD_UNDERSCORE, 'x', re.sub(BOLD, r'\1', markdown))
+    if not re.fullmatch(PLAIN_TEXT, text) or re.search(ENTITY_OR_ADDRESS, text):
+        raise ValueError(f'{README}: unsupported Markdown or character in a site section; only plain text, **bold** and `code`: '
+                         f'{markdown}')
 
 
 def inline(markdown):
@@ -100,7 +106,7 @@ def inline(markdown):
             out.append('<code>' + html.escape(piece[1:-1], quote=False) + '</code>')
             continue
         refuse_marks(piece)
-        out.append(re.sub(r'\*\*([^*`]+)\*\*', r'<strong>\1</strong>', html.escape(piece, quote=False)))
+        out.append(re.sub(BOLD, r'<strong>\1</strong>', html.escape(piece, quote=False)))
     return ''.join(out)
 
 
@@ -113,8 +119,8 @@ def paragraphs(markdown):
         The paragraphs, each on one line; raise ValueError when a line starts a list, heading or quote.
     """
     for line in markdown.splitlines():
-        if re.match(BLOCK_START, line):
-            raise ValueError(f'{README}: a list, heading or quote is not supported in a site section: {line}')
+        if re.match(LIST_START, line) or re.fullmatch(SETEXT_LINE, line) or re.fullmatch(HARD_BREAK, line):
+            raise ValueError(f'{README}: a list, a heading underline or a hard line break is not supported in a site section: {line}')
     return [' '.join(part.split()) for part in re.split(r'\n\s*\n', markdown) if part.strip()]
 
 
@@ -147,8 +153,8 @@ def table(markdown):
     rows_text, rest = lines[:end], '\n'.join(lines[end:])
     if len(rows_text) < 3 or any(not line.strip().endswith('|') for line in rows_text):
         raise ValueError(f'{README}: a site section must start with a table: every row starts and ends with "|"')
-    if not re.fullmatch(DELIMITER_ROW, rows_text[1].strip()):
-        raise ValueError(f'{README}: the second table line must be the delimiter row, such as |---|---|')
+    if not re.fullmatch(DELIMITER_ROW, rows_text[1].strip()) or len(split_row(rows_text[1])) != len(split_row(rows_text[0])):
+        raise ValueError(f'{README}: the second table line must be the delimiter row, one |---| cell per header cell')
     if '|' in rest or (rest.strip() and not rest.startswith('\n')):
         raise ValueError(f'{README}: text after a site table needs a blank line, and no other table rows')
     head, rows = split_row(rows_text[0]), [split_row(line) for line in rows_text[2:]]
@@ -175,7 +181,7 @@ def build_key_facts(markdown):
         The HTML: a definition list (label, text) and a small paragraph.
     """
     head, rows, rest = table(markdown)
-    if len(head) != 2 or any(not re.fullmatch(r'\*\*[^*]+:\*\*', row[0]) for row in rows):
+    if len(head) != 2 or any(not re.fullmatch(r'\*\*[^\s*][^*]*:\*\*', row[0]) for row in rows):
         raise ValueError(f'{README}: site:key-facts rows must be "| **Label:** | text |"')
     items = ''.join(f'\n{INDENT_BLOCK}  <dt>{inline(row[0][2:-2])}</dt><dd>{inline(row[1])}</dd>' for row in rows)
     tail = ''.join(f'\n{INDENT_BLOCK}<p class="small mut">{inline(part)}</p>' for part in paragraphs(rest))
@@ -288,59 +294,76 @@ def run(root, write):
     return findings
 
 
+# The self-test's invented README, its tool text, and its cases: (label, README edit as (old, new) or None,
+# the words each finding must hold (none: the case must pass), and whether the case rebuilds the site first).
+TEST_README = ('<!-- site:intro -->\nA safe_tool & more.\n<!-- /site:intro -->\n'
+               '<!-- site:key-facts -->\n| Fact | |\n|---|---|\n| **Read-only:** | it changes `nothing`. |\n\nFirst line.\nAsk & learn.\n'
+               '<!-- /site:key-facts -->\n'
+               '<!-- site:looks-for -->\n| Type | Found when | Shown as | Confidence |\n|---|---|---|---|\n'
+               '| SSN | 3-2-4 digits | `***-**-1234` | High |\n<!-- /site:looks-for -->\n'
+               '<!-- site:breach -->\nReport it now.\n\nRule para 1.\n<!-- /site:breach -->\n')
+TEST_TOOL = "$script:BreachAdvice = 'Report it now ' +\n    '(Rule para 1).'\n"
+TEST_CASES = (('a fresh build passes', None, [], True),
+              ('a stale site fails', None, ['out of date'], False),
+              ('a tool text that differs fails', ('Report it now.', 'Report it later.'), ['BreachAdvice differs'], True),
+              ('a missing README section fails', ('<!-- site:intro -->', '<!-- site:gone -->'), ['no section'], True),
+              ('a key fact without a label fails', ('**Read-only:**', 'Read-only'), ['**Label:**'], True),
+              ('a renamed site column fails', ('| Shown as |', '| Shown |'), ['must start with the columns'], True),
+              ('a row with a wrong cell count fails', ('| High |', '| High | extra |'), ['cells, its header'], True),
+              ('unsupported Markdown fails', ('Report it now.', 'Report it *now*.'), ['unsupported Markdown'], True),
+              ('a link fails', ('Rule para 1.', 'Rule [para 1](x).'), ['unsupported Markdown'], True),
+              ('a "|" inside code fails, as GitHub splits the cell there', ('| 3-2-4 digits |', '| 3-2-4 `a|b` digits |'),
+               ['cells, its header'], True),
+              ('a table without its delimiter row fails', ('|---|---|---|---|\n', '| a | b | c | d |\n'), ['delimiter row'], True),
+              ('a list in a section fails', ('First line.', '- First line.'), ['a list, a heading underline'], True),
+              ('a heading underline fails', ('Ask & learn.', 'Ask & learn.\n==='), ['a list, a heading underline'], True),
+              ('bold with inner spaces fails', ('Report it now.', 'Report it ** now **.'), ['unsupported Markdown'], True),
+              ('a delimiter row with the wrong cell count fails', ('|---|---|---|---|', '|---|---|---|'), ['delimiter row'], True),
+              ('an e-mail address fails', ('Rule para 1.', 'Rule para 1, ask a@b.example.'), ['unsupported Markdown'], True))
+# What the fresh build must write: an escaped "&", code kept, the Confidence column left out, two lines joined.
+TEST_BUILT = ('<dt>Read-only:</dt><dd>it changes <code>nothing</code>.</dd>', '<td>3-2-4 digits</td><td><code>***-**-1234</code></td></tr>',
+              'First line. Ask &amp; learn.</p>')
+
+
+def test_case(edit, expect, write):
+    """Run one self-test case in a temporary repository; return whether it behaved as expected, and the findings.
+
+    Args:
+        edit: an (old, new) change to the invented README, or None for the README as it is.
+        expect: the words each finding must hold; empty when the case must pass.
+        write: True to rebuild the site before the check.
+    Returns:
+        A pair: True when the case behaved as expected, and the list of findings.
+    """
+    readme = TEST_README.replace(*edit) if edit else TEST_README
+    tool = TEST_TOOL.replace('now', 'later') if edit == ('Report it now.', 'Report it later.') else TEST_TOOL
+    readme = TEST_README if tool != TEST_TOOL else readme
+    marks = ''.join(f'<!-- >>> site:{name}: generated from {README} by {COMMAND} (do not edit) -->\nold\n'
+                    f'<!-- <<< site:{name} -->\n' for name in SECTIONS)
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        (root / 'src').mkdir()
+        (root / README).write_text(readme, encoding='utf-8')
+        (root / SITE).write_text(marks, encoding='utf-8')
+        (root / TOOL).write_text(tool, encoding='utf-8')
+        found = run(root, write)
+        if expect:
+            return all(any(word in line for line in found) for word in expect), found
+        built = (root / SITE).read_text(encoding='utf-8')
+        return not found and all(part in built for part in TEST_BUILT) and '>High<' not in built, found
+
+
 def self_test():
-    """Run the build and check on invented files; return the exit code (0 when every case passes).
+    """Run every self-test case on invented files and print one line each.
 
     Returns:
         0 when every case passes, else 1.
     """
-    readme = ('<!-- site:intro -->\nA safe_tool & more.\n<!-- /site:intro -->\n'
-              '<!-- site:key-facts -->\n| Fact | |\n|---|---|\n| **Read-only:** | it changes `nothing`. |\n\nFirst line.\nAsk & learn.\n'
-              '<!-- /site:key-facts -->\n'
-              '<!-- site:looks-for -->\n| Type | Found when | Shown as | Confidence |\n|---|---|---|---|\n'
-              '| SSN | 3-2-4 digits | `***-**-1234` | High |\n<!-- /site:looks-for -->\n'
-              '<!-- site:breach -->\nReport it now.\n\nRule para 1.\n<!-- /site:breach -->\n')
-    marks = ''.join(f'<!-- >>> site:{name}: generated from {README} by {COMMAND} (do not edit) -->\nold\n'
-                    f'<!-- <<< site:{name} -->\n' for name in SECTIONS)
-    tool = "$script:BreachAdvice = 'Report it now ' +\n    '(Rule para 1).'\n"
-    cases = [('a fresh build passes', None, [], True),
-             ('a stale site fails', 'stale', ['out of date'], False),
-             ('a tool text that differs fails', 'tool', ['BreachAdvice differs'], True),
-             ('a missing README section fails', 'section', ['no section'], True),
-             ('a key fact without a label fails', 'label', ['**Label:**'], True),
-             ('a renamed site column fails', 'column', ['must start with the columns'], True),
-             ('a row with a wrong cell count fails', 'cells', ['cells, its header'], True),
-             ('unsupported Markdown fails', 'italic', ['unsupported Markdown'], True),
-             ('a link fails', 'link', ['unsupported Markdown (a link'], True),
-             ('a "|" inside code fails, as GitHub splits the cell there', 'pipe', ['cells, its header'], True),
-             ('a table without its delimiter row fails', 'delimiter', ['delimiter row'], True),
-             ('a list in a section fails', 'list', ['list, heading or quote'], True)]
     failed = 0
-    for label, broken, expect, write in cases:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            (root / 'src').mkdir()
-            text = readme.replace('<!-- site:intro -->', '<!-- site:gone -->') if broken == 'section' else readme
-            text = text.replace('**Read-only:**', 'Read-only') if broken == 'label' else text
-            text = text.replace('| Shown as |', '| Shown |') if broken == 'column' else text
-            text = text.replace('| High |', '| High | extra |') if broken == 'cells' else text
-            text = text.replace('Report it now.', 'Report it *now*.') if broken == 'italic' else text
-            text = text.replace('Rule para 1.', 'Rule [para 1](x).') if broken == 'link' else text
-            text = text.replace('| 3-2-4 digits |', '| 3-2-4 `a|b` digits |') if broken == 'pipe' else text
-            text = text.replace('|---|---|---|---|\n', '| a | b | c | d |\n') if broken == 'delimiter' else text
-            text = text.replace('First line.', '- First line.') if broken == 'list' else text
-            (root / README).write_text(text, encoding='utf-8')
-            (root / SITE).write_text(marks, encoding='utf-8')
-            (root / TOOL).write_text(tool.replace('now', 'later') if broken == 'tool' else tool, encoding='utf-8')
-            found = run(root, write)
-            ok = (not found) if not expect else all(any(e in line for line in found) for e in expect)
-            if label == 'a fresh build passes':
-                built = (root / SITE).read_text(encoding='utf-8')
-                ok = ok and '<dt>Read-only:</dt><dd>it changes <code>nothing</code>.</dd>' in built and 'Ask &amp; learn.' in built
-                ok = ok and '<td>3-2-4 digits</td><td><code>***-**-1234</code></td></tr>' in built
-                ok = ok and '>High<' not in built and 'First line. Ask &amp; learn.</p>' in built
-            failed += not ok
-            print(('ok   ' if ok else 'FAIL ') + label + ('' if ok else f': {found}'))
+    for label, edit, expect, write in TEST_CASES:
+        ok, found = test_case(edit, expect, write)
+        failed += not ok
+        print(('ok   ' if ok else 'FAIL ') + label + ('' if ok else f': {found}'))
     print('SITE TEST PASS' if not failed else 'SITE TEST FAIL')
     return 1 if failed else 0
 
