@@ -199,3 +199,24 @@ $clock.Restart()
 $hugeList = New-PdfBytes 'BT (hello) Tj ET' -Plain -Extra @("<< /Type /ObjStm /N 200000 /First 4 /Length 8 >> stream`n9 0 (x)`nendstream")
 $hugeRead = Get-TextFromBytes -Bytes $hugeList -FileName 'h.pdf'
 Assert-Equal $true ($clock.Elapsed.TotalSeconds -lt 10 -and $hugeRead.Note -match 'too large to unpack') 'PDF: a huge object list ends at once with a note'
+
+# ---- PDF review round 6 (2026-11-21) ----
+# LZW and RunLength output counts toward the unpack total: past it, a note (bounded memory).
+& (Get-Module PdfCore) { $script:MaxInflatedBytes = 10 }
+$lzwCapped = Get-TextFromBytes -Bytes $lzwPdf -FileName 'l2.pdf'
+& (Get-Module PdfCore) { $script:MaxInflatedBytes = 64MB }
+Assert-Equal $true (($lzwCapped.Note + $lzwCapped.Reason) -match 'too large to unpack|could not be read') 'PDF: LZW output counts toward the unpack total'
+# A composite font without a ToUnicode map: a reason or note, never glyph numbers read as text.
+$type0 = New-PdfBytes 'BT /F1 12 Tf <001400150016> Tj ET' -Plain -FontDict '<< /Type /Font /Subtype /Type0 /BaseFont /X /Encoding /Identity-H >>'
+$type0Read = Get-TextFromBytes -Bytes $type0 -FileName 't0.pdf'
+Assert-Equal $true (($type0Read.Note + $type0Read.Reason) -match 'font in this PDF could not be read') 'PDF: a font without a map is never silent'
+# An incremental update: the field defined again later with its value; the old and the new versions are both read.
+$filled = New-PdfBytes 'q Q' -Plain -Extra @('<< /FT /Tx /T (SSN) /V () >>') -After "7 0 obj << /FT /Tx /T (SSN) /V ($($Sample.Ssn)) >> endobj`n"
+Assert-Equal 'SSN' (@(Find-PiiInText (Get-TextFromBytes -Bytes $filled -FileName 'u.pdf').Text) | Select-Object -First 1).Detector 'PDF: a value saved as an added edit is read'
+# A multi-select value and a value in a text stream; a backslash before a line end inside a string.
+$multi = New-PdfBytes 'q Q' -Plain -Extra @("<< /FT /Ch /T (SSN) /V [(none) ($($Sample.Ssn))] >>")
+Assert-Equal 'SSN' (@(Find-PiiInText (Get-TextFromBytes -Bytes $multi -FileName 'm.pdf').Text) | Select-Object -First 1).Detector 'PDF: a multi-select value read'
+$vStream = New-PdfBytes 'q Q' -Plain -Extra @('<< /FT /Tx /T (SSN) /V 8 0 R >>', "<< /Length 11 >> stream`n$($Sample.Ssn)`nendstream")
+Assert-Equal 'SSN' (@(Find-PiiInText (Get-TextFromBytes -Bytes $vStream -FileName 's2.pdf').Text) | Select-Object -First 1).Detector 'PDF: a value in a text stream read'
+$wrapped = Get-TextFromBytes -Bytes (New-PdfBytes "BT /F1 12 Tf (SSN: \`n$($Sample.Ssn)) Tj ET" -Plain) -FileName 'w.pdf'
+Assert-Equal 'OK|SSN' ($wrapped.Status + '|' + (@(Find-PiiInText $wrapped.Text) | Select-Object -First 1).Detector) 'PDF: a backslash before a line end is a line continuation'

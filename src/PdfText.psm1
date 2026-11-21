@@ -24,7 +24,7 @@ $script:PdfLatin1 = [System.Text.Encoding]::GetEncoding(28591)
 # A PDF string: (literal), with nested brackets and escapes, or <hex> (not a << dictionary). A literal holds at most
 # 10,000 parts, so an unclosed bracket fails after a bounded scan. A "(" that no string token takes means a string
 # was not read: the PDF is then NOT SCANNED, never read in part without a word (Assert-PdfGap).
-$script:PdfStringPattern = '\((?>[^()\\]+|\\.|\((?<d>)|\)(?<-d>)){0,10000}(?(d)(?!))\)|<(?!<)[0-9A-Fa-f\s]*>'
+$script:PdfStringPattern = '\((?>[^()\\]+|\\[\s\S]|\((?<d>)|\)(?<-d>)){0,10000}(?(d)(?!))\)|<(?!<)[0-9A-Fa-f\s]*>'
 
 # The tokens of a content stream that matter for text: strings, array brackets, names, numbers and operators.
 $script:PdfTokenPattern = $script:PdfStringPattern + '|%[^\r\n]*|\[|\]|/[^\s/\[\]()<>{}%]+|[-+]?(?:\d+\.?\d*|\.\d+)|[A-Za-z''"*]+'
@@ -35,6 +35,9 @@ $script:PdfWordGap = 250
 # An object stream (PDF 1.5) is unpacked only within these limits: its header of object numbers and offsets, and its
 # object count (real files hold a few hundred objects per stream). More gives a "check by hand" note.
 $script:MaxPackedHeader = 1MB
+
+# Earlier versions of objects defined again further on (incremental updates): their text is still read.
+$script:PdfOldDicts = New-Object System.Collections.Generic.List[string]
 $script:MaxPackedObjects = 100000
 
 # Dictionary keys whose string values are text a person wrote (Get-PdfDictText) -> the label put before the value:
@@ -82,7 +85,11 @@ function Get-PdfObjects {
         $parts = $split.Match($body)
         if ($parts.Success) { $body = $parts.Groups[1].Value; $stream = Read-PdfStream $body $parts.Groups[2].Value }
         elseif ($body -match '\bstream(?:\r\n|\r|\n)') { Add-PdfNote 'Part of this PDF is damaged: check by hand' }   # no endstream: cut short
-        $objects[$heads[$h].Groups[1].Value] = @{ Dict = $body; Stream = $stream }
+        $number = $heads[$h].Groups[1].Value
+        # A file saved with added edits (an incremental update) defines an object again further on: the later one is
+        # the one in use; the earlier one's text is still in the file, so it is kept for Get-PdfDictText.
+        if ($objects.Contains($number)) { $script:PdfOldDicts.Add($objects[$number].Dict) }
+        $objects[$number] = @{ Dict = $body; Stream = $stream; Pos = $heads[$h].Index }
     }
     foreach ($packed in @($objects.Values | Where-Object { $_.Dict -match '/Type\s*/ObjStm' -and $_.Stream })) { Add-PackedObjects $objects $packed }
     return $objects
@@ -113,8 +120,13 @@ function Add-PackedObjects {
         $start = $first + [int]$pairs[2 * $k + 1]
         $end = $Packed.Stream.Length
         if (2 * $k + 3 -lt $pairs.Count) { $end = $first + [int]$pairs[2 * $k + 3] }
-        if ($start -ge $end -or $end -gt $Packed.Stream.Length) { continue }
-        if (-not $Objects.Contains($pairs[2 * $k])) { $Objects[$pairs[2 * $k]] = @{ Dict = $Packed.Stream.Substring($start, $end - $start); Stream = $null } }
+        if ($start -ge $end -or $end -gt $Packed.Stream.Length) { Add-PdfNote 'Part of this PDF is damaged: check by hand'; continue }
+        $dict = $Packed.Stream.Substring($start, $end - $start)
+        $number = $pairs[2 * $k]
+        # The later definition in the file wins (an incremental update); the other one's text is kept too.
+        if ($Objects.Contains($number) -and $Objects[$number].Pos -gt $Packed.Pos) { $script:PdfOldDicts.Add($dict); continue }
+        if ($Objects.Contains($number)) { $script:PdfOldDicts.Add($Objects[$number].Dict) }
+        $Objects[$number] = @{ Dict = $dict; Stream = $null; Pos = $Packed.Pos }
     }
 }
 
@@ -199,6 +211,11 @@ function Get-PdfFontTable {
                     if (-not $cmap.Contains('CMap')) { $cmap['CMap'] = Get-PdfCMap $cmap.Stream }
                     $entry['Map'] = $cmap['CMap']
                 }
+                elseif ($entry.Dict -match '/Subtype\s*/Type0\b') {
+                    # A composite font without a ToUnicode map: its codes are glyph numbers, not letters. Text shown in it
+                    # cannot be read: a note (ConvertFrom-PdfGlyphs), never garbage read as text.
+                    $entry['Map'] = @{ Bytes = 2; Map = @{}; Ranges = @(); Unreadable = $true }
+                }
             }
             $fonts[$font.Groups[1].Value] = $entry['Map']
         }
@@ -217,6 +234,10 @@ function ConvertFrom-PdfGlyphs {
     #>
     param([string]$Raw, $Font)
     if (-not $Font) { return $Raw }
+    if ($Font.ContainsKey('Unreadable')) {
+        if ($Raw.Length -gt 0) { Add-PdfNote 'A font in this PDF could not be read: check by hand' }
+        return ''
+    }
     $out = New-Object System.Text.StringBuilder
     $step = [Math]::Max(1, [int]$Font.Bytes)
     for ($i = 0; $i + $step -le $Raw.Length; $i += $step) {
@@ -354,6 +375,21 @@ function Convert-PdfArrayToText {
     return $out.ToString()
 }
 
+function Get-PdfFieldName {
+    # A form field's name (/T), as the label of its value; empty when it has none.
+    param([string]$Dict, $NameRegex)
+    $name = $NameRegex.Match($Dict)
+    if ($name.Success) { return (ConvertFrom-PdfTextString $name.Groups[1].Value) }
+    return ''
+}
+
+function Format-PdfDictLine {
+    # One line of dictionary text: "label: text", or the text alone.
+    param([string]$Label, [string]$Text)
+    if ($Label) { return ($Label + ': ' + $Text) }
+    return $Text
+}
+
 function Get-PdfDictText {
     <#
     .SYNOPSIS
@@ -372,7 +408,8 @@ function Get-PdfDictText {
         @{ Key = $key; Label = $script:PdfTextKeys[$key]; Value = (Get-PdfRegex ('/' + $key + '\s*(' + $script:PdfStringPattern + ')'))
            Ref = (Get-PdfRegex ('/' + $key + '\s+(\d+)\s+\d+\s+R')); Open = ('/' + $key + '\s*\(') }
     }
-    foreach ($obj in $Objects.Values) {
+    $all = @($Objects.Values) + @($script:PdfOldDicts | ForEach-Object { @{ Dict = $_ } })   # older versions too
+    foreach ($obj in $all) {
         Assert-PdfTime
         foreach ($check in $checks) {
             if ($obj.Dict.IndexOf('/' + $check.Key) -lt 0) { continue }
@@ -380,20 +417,29 @@ function Get-PdfDictText {
             $value = $check.Value.Match($obj.Dict)
             if ($value.Success) { $token = $value.Groups[1].Value }
             elseif ($obj.Dict -match $check.Open) { throw (New-Object System.FormatException $script:PdfStringError) }   # not read
+            elseif ($obj.Dict -match ('/' + $check.Key + '\s*\[')) {
+                # A list of values (a multi-select field): each string in it.
+                $list = [regex]::Match($obj.Dict, '/' + $check.Key + '\s*\[([^\]]*)\]').Groups[1].Value
+                $items = @(foreach ($item in (Get-PdfRegex $script:PdfStringPattern).Matches($list)) { ConvertFrom-PdfTextString $item.Value })
+                if ($items.Count -gt 0) { $label = $check.Label; if ($check.Key -eq 'V') { $label = Get-PdfFieldName $obj.Dict $nameRegex }; Format-PdfDictLine $label ($items -join ', ') }
+                continue
+            }
             else {
                 # A value in an object of its own: that object is just a string (a page's /Contents points to a stream).
                 $ref = $check.Ref.Match($obj.Dict)
                 if ($ref.Success -and $Objects.Contains($ref.Groups[1].Value)) {
-                    $target = $Objects[$ref.Groups[1].Value].Dict.Trim()
+                    $held = $Objects[$ref.Groups[1].Value]
+                    $target = $held.Dict.Trim()
                     if ($target.StartsWith('(') -or ($target.StartsWith('<') -and -not $target.StartsWith('<<'))) { $token = $target }
+                    elseif ($check.Key -in @('V', 'RC') -and $held.Stream) { Format-PdfDictLine $check.Label $held.Stream; continue }   # a text stream
                 }
             }
             if (-not $token) { continue }
             $text = ConvertFrom-PdfTextString $token
             if ($check.Key -eq 'RC') { $text = $text -replace '<[^>]+>', ' ' }   # rich text: XHTML tags dropped
             $label = $check.Label
-            if ($check.Key -eq 'V') { $name = $nameRegex.Match($obj.Dict); $label = ''; if ($name.Success) { $label = ConvertFrom-PdfTextString $name.Groups[1].Value } }
-            if ($label) { $label + ': ' + $text } else { $text }
+            if ($check.Key -eq 'V') { $label = Get-PdfFieldName $obj.Dict $nameRegex }
+            Format-PdfDictLine $label $text
         }
     }
 }
@@ -415,6 +461,7 @@ function Get-PdfText {
         return @{ Text = ''; Reason = 'Not a valid PDF (damaged, or another type with a .pdf name): check by hand' }
     }
     if ($text -match '/Encrypt\s*(?:\d+\s+\d+\s+R|<<)') { return @{ Text = ''; Reason = $script:PdfEncryptedReason } }
+    $script:PdfOldDicts.Clear()   # this PDF's own older versions only
     Start-PdfBudget
     try { $all = Get-PdfAllText $text }
     catch {
@@ -493,7 +540,7 @@ function Get-PdfAllText {
     # Form XObjects (/Subtype /Form, drawn with "Do"): reusable page parts that can hold text of their own. Read each
     # once; a form field's appearance can repeat its value, so a hit may show twice (better than a miss).
     foreach ($form in @($objects.Values | Where-Object { $_.Stream -and $_.Dict -match '/Subtype\s*/Form\b' })) {
-        $fonts = Get-PdfFontTable $form.Dict $objects
+        $fonts = Get-PdfFontTable (Get-PdfPageResources $form $objects) $objects   # also /Resources 10 0 R
         if ($fonts.Count -eq 0) { $fonts = $allFonts }
         $parts.Add((Convert-PdfContentToText $form.Stream $fonts))
     }
