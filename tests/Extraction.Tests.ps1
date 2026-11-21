@@ -251,3 +251,20 @@ Assert-Equal ('SSN: 21' + '1-45-671' + '1') $kerned.Text.Trim() 'PDF: pieces spl
 $bullet = New-PdfBytes 'BT /F1 12 Tf <F0B70020004D> Tj ET' -Plain -ToUnicode 'begincmap 1 beginbfrange <0000> <FFFF> <0000> endbfrange endcmap'
 $bulletRead = Get-TextFromBytes -Bytes $bullet -FileName 'b.pdf'
 Assert-Equal "|$([char]0xB7) M" ($bulletRead.Note + '|' + $bulletRead.Text.Trim()) 'PDF: a Word bullet reads as a plain character, no note'
+
+# ---- PDF review round 9 (2026-11-21): gaps decided per text block ----
+# Chrome glyph by glyph, wide letters and its own space glyphs: no false spaces inside words or numbers.
+$wide = (('Name: Tom Mims').ToCharArray() | ForEach-Object { "($_) Tj 10 0 Td" }) -join ' '
+$wideRead = Get-TextFromBytes -Bytes (New-PdfBytes "BT /F1 12 Tf $wide ET" -Plain) -FileName 'wd.pdf'
+Assert-Equal 'Name: Tom Mims' $wideRead.Text.Trim() 'PDF: wide glyphs placed one by one keep their words'
+# Letter spacing 0.3 em (Chrome) with the writer's own spaces: the SSN stays whole.
+$spaced = (("SSN: $($Sample.Ssn)").ToCharArray() | ForEach-Object { "($_) Tj 12 0 Td" }) -join ' '
+$spacedRead = Get-TextFromBytes -Bytes (New-PdfBytes "BT /F1 12 Tf $spaced ET" -Plain) -FileName 'ls.pdf'
+Assert-Equal 'SSN' (@(Find-PiiInText $spacedRead.Text) | Select-Object -First 1).Detector 'PDF: letter-spaced text keeps the SSN whole'
+# Expanded character spacing in TJ (LibreOffice) with space characters: no space between letters.
+$expanded = '[' + ((("SSN: $($Sample.Ssn)").ToCharArray() | ForEach-Object { "($_) -270" }) -join ' ') + '] TJ'
+$expandedRead = Get-TextFromBytes -Bytes (New-PdfBytes "BT /F1 12 Tf $expanded ET" -Plain) -FileName 'ex.pdf'
+Assert-Equal 'SSN' (@(Find-PiiInText $expandedRead.Text) | Select-Object -First 1).Detector 'PDF: expanded TJ spacing keeps the SSN whole'
+# A table row in one block with spaces: a wide jump between cells is still a break.
+$cellsRead = Get-TextFromBytes -Bytes (New-PdfBytes 'BT /F1 12 Tf (Last name) Tj 120 0 Td (SSN) Tj ET' -Plain) -FileName 'tb.pdf'
+Assert-Equal 'Last name SSN' $cellsRead.Text.Trim() 'PDF: a wide jump between cells is a break'

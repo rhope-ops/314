@@ -25,12 +25,12 @@ $script:PdfLatin1 = [System.Text.Encoding]::GetEncoding(28591)
 # The tokens of a content stream that matter for text: strings, array brackets, names, numbers and operators.
 $script:PdfTokenPattern = (Get-PdfStringPattern) + '|%[^\r\n]*|\[|\]|/[^\s/\[\]()<>{}%]+|[-+]?(?:\d+\.?\d*|\.\d+)|[A-Za-z''"*]+'
 
-# A TJ gap wider than this (thousandths of a text unit) is a space between words.
-$script:PdfWordGap = 250
 
-# A same-line Td move leaves a word gap when it starts the next piece more than this share of the font size past
-# the estimated end of the text before it (Add-PdfMove); a smaller move (kerning, glyph by glyph) joins the pieces.
+# Gaps along a line (a same-line Td move past the estimated end of the text before it, or a TJ adjustment), in ems:
+# a space when wider than WordGapEms in a block without space characters, or wider than ColumnGapEms in a block that
+# has its own (Chrome, LibreOffice): there, smaller gaps are kerning, letter spacing or estimate error, and join.
 $script:WordGapEms = 0.25
+$script:ColumnGapEms = 1.0
 
 # The end of an inline image's bytes (BI <keys> ID <bytes> EI): white space, EI, then a delimiter or the end. After a
 # BI operator (a token, never the word BI in a string) the reader steps over the bytes to here, so image bytes never
@@ -151,7 +151,8 @@ function Convert-PdfContentToText {
       [string]
     #>
     param([string]$Content, [hashtable]$Fonts)
-    $state = @{ Out = (New-Object System.Text.StringBuilder); Block = (New-Object System.Text.StringBuilder); Font = $null; Size = 12.0; Advance = 0.0 }
+    $state = @{ Out = (New-Object System.Text.StringBuilder); Pieces = (New-Object System.Collections.Generic.List[object]); Font = $null; Size = 12.0
+        Advance = 0.0 }
     $stack = New-Object System.Collections.Generic.List[object]
     $array = $null
     $count = 0
@@ -194,7 +195,8 @@ function Invoke-PdfTextOperator {
     .PARAMETER Stack
       Its operands.
     .PARAMETER State
-      Out, Block (the text block in work), Font, Size (font size), Advance (estimated width shown since the line's start).
+      Out, Pieces (the text block in work: strings, and gaps in ems as [double]), Font, Size (font size), Advance
+      (estimated width shown since the line's start).
     .PARAMETER Fonts
       The font table.
     #>
@@ -205,22 +207,17 @@ function Invoke-PdfTextOperator {
         $shown = ConvertFrom-PdfGlyphs (ConvertFrom-PdfString $last) $State.Font
         $State.Advance += Get-PdfTextWidth $shown $State.Size
     }
-    $block = $State.Block
+    $pieces = $State.Pieces
     switch -CaseSensitive ($Operator) {
         'Tf' { if ($Stack.Count -ge 2) { $State.Font = $Fonts[([string]$Stack[$Stack.Count - 2]).TrimStart('/')]; $State.Size = [Math]::Abs((ConvertTo-PdfNumber $last)) } }
-        'Tj' { [void]$block.Append($shown) }
-        "'" { [void]$block.Append("`n" + $shown); $State.Advance = Get-PdfTextWidth $shown $State.Size }
-        '"' { [void]$block.Append("`n" + $shown); $State.Advance = Get-PdfTextWidth $shown $State.Size }
-        'TJ' {
-            if ($last -is [System.Collections.Generic.List[string]]) {
-                $text = Convert-PdfArrayToText $last $State.Font
-                [void]$block.Append($text); $State.Advance += Get-PdfTextWidth $text $State.Size
-            }
-        }
+        'Tj' { $pieces.Add($shown) }
+        "'" { $pieces.Add("`n" + $shown); $State.Advance = Get-PdfTextWidth $shown $State.Size }
+        '"' { $pieces.Add("`n" + $shown); $State.Advance = Get-PdfTextWidth $shown $State.Size }
+        'TJ' { if ($last -is [System.Collections.Generic.List[string]]) { Add-PdfArrayPieces $last $State } }
         'Td' { Add-PdfMove $Stack $State }
-        'TD' { [void]$block.Append("`n"); $State.Advance = 0.0 }
-        'T*' { [void]$block.Append("`n"); $State.Advance = 0.0 }
-        'Tm' { [void]$block.Append("`n"); $State.Advance = 0.0 }
+        'TD' { $pieces.Add("`n"); $State.Advance = 0.0 }
+        'T*' { $pieces.Add("`n"); $State.Advance = 0.0 }
+        'Tm' { $pieces.Add("`n"); $State.Advance = 0.0 }
         'ET' { Complete-PdfTextBlock $State }
     }
 }
@@ -253,8 +250,8 @@ function Get-PdfTextWidth {
 function Add-PdfMove {
     <#
     .SYNOPSIS
-      A Td move: down or up starts a new line; along the line, a space only where the move leaves a gap after the
-      text shown since the line's start (more than $WordGapEms of the font size), else the pieces join.
+      A Td move: down or up starts a new line; along the line, a gap piece: how far (in ems) the move starts the next
+      piece past the estimated end of the text before it. Complete-PdfTextBlock decides which gaps are spaces.
     .PARAMETER Stack
       The operands (tx ty).
     .PARAMETER State
@@ -264,23 +261,37 @@ function Add-PdfMove {
     if ($Stack.Count -lt 2) { return }
     $tx = ConvertTo-PdfNumber $Stack[$Stack.Count - 2]
     $ty = ConvertTo-PdfNumber $Stack[$Stack.Count - 1]
-    if ($ty -ne 0) { [void]$State.Block.Append("`n") }
-    elseif ($tx -lt 0 -or $tx - $State.Advance -gt $script:WordGapEms * [Math]::Max(1.0, $State.Size)) { [void]$State.Block.Append(' ') }
+    if ($ty -ne 0) { $State.Pieces.Add("`n") }
+    elseif ($tx -lt 0) { $State.Pieces.Add([double]::MaxValue) }   # back along the line: a new column, always a break
+    else { $State.Pieces.Add([double](($tx - $State.Advance) / [Math]::Max(1.0, $State.Size))) }
     $State.Advance = 0.0
 }
 
 function Complete-PdfTextBlock {
     <#
     .SYNOPSIS
-      Ends a text block: symbol-font characters back to their plain ones, other private-use characters a space and a
-      note; then a line break.
+      Ends a text block: its gaps become spaces where wide enough (more than $WordGapEms, or $ColumnGapEms in a block
+      that has its own space characters); symbol-font characters back to their plain ones; other private-use
+      characters a space and a note; then a line break.
     .PARAMETER State
       The text state of Convert-PdfContentToText.
     #>
     param([hashtable]$State)
-    $text = $State.Block.ToString()
+    # The writer's own spaces: a block that holds space characters places its words with them, so only a wide
+    # jump (a table column) is a break; a block without any uses its moves as word breaks (fresh review, 2026-11-21).
+    $hasSpaces = $false
+    foreach ($piece in $State.Pieces) { if ($piece -is [string] -and $piece.IndexOf(' ') -ge 0) { $hasSpaces = $true; break } }
+    $limit = $script:WordGapEms; if ($hasSpaces) { $limit = $script:ColumnGapEms }
+    $out = New-Object System.Text.StringBuilder
+    foreach ($piece in $State.Pieces) {
+        if ($piece -is [double]) { if ($piece -gt $limit) { [void]$out.Append(' ') } }
+        else { [void]$out.Append($piece) }
+    }
+    $text = $out.ToString()
     # Microsoft symbol fonts map their characters to U+F020-U+F0FF (Word's bullet is U+F0B7): back to U+0020-U+00FF.
-    $text = [regex]::Replace($text, '[\uF020-\uF0FF]', [System.Text.RegularExpressions.MatchEvaluator] { param($m) [string][char]([int]$m.Value[0] - 0xF000) })
+    if ($text -match '[\uF020-\uF0FF]') {
+        $text = [regex]::Replace($text, '[\uF020-\uF0FF]', [System.Text.RegularExpressions.MatchEvaluator] { param($m) [string][char]([int]$m.Value[0] - 0xF000) })
+    }
     # A font can map a glyph to a private-use character (U+E000-U+F8FF): it has no meaning (Chrome does this for some
     # punctuation), so it becomes a space and the PDF gets a note.
     if ($text -match '[\uE000-\uF8FF]') {
@@ -288,7 +299,7 @@ function Complete-PdfTextBlock {
         $text = $text -replace '[\uE000-\uF8FF]', ' '
     }
     [void]$State.Out.Append($text).Append("`n")
-    [void]$State.Block.Clear()
+    $State.Pieces.Clear()
     $State.Advance = 0.0
 }
 
@@ -321,15 +332,28 @@ function ConvertTo-PdfNumber {
     return $number
 }
 
-function Convert-PdfArrayToText {
-    # The text of a TJ array: its strings in the font, a space where a gap is wider than $PdfWordGap.
-    param($Items, $Font)
-    $out = New-Object System.Text.StringBuilder
+function Add-PdfArrayPieces {
+    <#
+    .SYNOPSIS
+      The pieces of a TJ array: each string in the font, and each adjustment that moves right (a negative number,
+      in thousandths of an em) as a gap piece. Complete-PdfTextBlock decides which gaps are spaces.
+    .PARAMETER Items
+      The array's string and number tokens.
+    .PARAMETER State
+      The text state.
+    #>
+    param($Items, [hashtable]$State)
     foreach ($item in $Items) {
-        if ($item.Length -ge 2 -and ($item[0] -eq '(' -or $item[0] -eq '<')) { [void]$out.Append((ConvertFrom-PdfGlyphs (ConvertFrom-PdfString $item) $Font)) }
-        elseif ((ConvertTo-PdfNumber $item) -lt -$script:PdfWordGap) { [void]$out.Append(' ') }
+        if ($item.Length -ge 2 -and ($item[0] -eq '(' -or $item[0] -eq '<')) {
+            $text = ConvertFrom-PdfGlyphs (ConvertFrom-PdfString $item) $State.Font
+            $State.Pieces.Add($text)
+            $State.Advance += Get-PdfTextWidth $text $State.Size
+        }
+        else {
+            $move = -(ConvertTo-PdfNumber $item) / 1000
+            if ($move -gt 0) { $State.Pieces.Add([double]$move) }
+        }
     }
-    return $out.ToString()
 }
 
 function Get-PdfText {
