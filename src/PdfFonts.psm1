@@ -33,6 +33,7 @@ $script:MaxWidthEntries = 65536
 
 # Per font: shown strings decoded and measured before (text and width in ems), up to this many each (speed).
 $script:MaxFontCache = 20000
+$script:MaxCacheKey = 256   # longer strings are rarely shown twice: not kept (memory)
 # Shown hex strings decoded before (speed): short tokens only, emptied when full.
 $script:ShownHex = New-Object 'System.Collections.Generic.Dictionary[string,string]'
 $script:MaxShownHex = 50000
@@ -199,7 +200,6 @@ function Add-PdfCidWidths {
     $count = 0
     while ($token.Success) {
         if ((++$count % 2000) -eq 0) { Assert-PdfTime }
-        if ($Record.Widths.Count -ge $script:MaxWidthEntries) { Add-PdfNote 'A font in this PDF could not be fully read: check by hand'; return }
         if ($token.Value -eq '[') {
             # first [w1 w2 ...]: the number before the bracket is the first glyph.
             if ($numbers.Count -eq 0) { Add-PdfNote 'A font in this PDF could not be fully read: check by hand'; return }   # [ with no first glyph
@@ -263,7 +263,7 @@ function ConvertFrom-PdfGlyphs {
         elseif ($number -ne 0) { Add-PdfNote 'Some characters in this PDF could not be read (a font without them in its map): check by hand' }
     }
     $result = $out.ToString()
-    if ($cache -and $cache.Count -lt $script:MaxFontCache) { $cache[$Raw] = $result }
+    if ($cache -and $cache.Count -lt $script:MaxFontCache -and $Raw.Length -le $script:MaxCacheKey) { $cache[$Raw] = $result }
     return $result
 }
 
@@ -342,7 +342,7 @@ function Get-PdfShowWidth {
             elseif ($font.DefaultWidth -ge 0) { $ems += $font.DefaultWidth }
             else { $ems += 0.5 }
         }
-        if ($font.ContainsKey('EmCache') -and $font.EmCache.Count -lt $script:MaxFontCache) { $font.EmCache[$Raw] = $ems }
+        if ($font.ContainsKey('EmCache') -and $font.EmCache.Count -lt $script:MaxFontCache -and $Raw.Length -le $script:MaxCacheKey) { $font.EmCache[$Raw] = $ems }
     }
     if ($font -and $font.Vertical) { return ($ems * $Size + $CharSpace * $glyphs + $WordSpace * $spaces) }   # Tz scales across, not down
     return (($ems * $Size + $CharSpace * $glyphs + $WordSpace * $spaces) * $Scale)

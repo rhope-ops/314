@@ -334,3 +334,17 @@ Assert-Equal $true ($clock.Elapsed.TotalSeconds -lt 30 -and $bigW.Note -match 'c
 $t3Turned = $t3Font.Replace('/FontMatrix [0.01 0 0 0.01 0 0]', '/FontMatrix [0 0.01 -0.01 0 0 0]')
 $t3TurnedRead = Get-TextFromBytes -Bytes (New-PdfBytes "BT /F1 10 Tf $t3Run ET" -Plain -FontDict $t3Turned) -FileName 't3r.pdf'
 Assert-Equal 'SSN' (@(Find-PiiInText $t3TurnedRead.Text) | Select-Object -First 1).Detector 'PDF: a rotated Type3 font matrix still gives its unit'
+
+# ---- PDF review round 13 (2026-11-21) ----
+# Many text state operators between text objects stay inside the time limit (lowered to 2 s here).
+& (Get-Module PdfCore) { $script:PdfSecondsLimit = 2 }
+$clock.Restart()
+$manyTc = Get-TextFromBytes -Bytes (New-PdfBytes (("1 Tc`n" * 300000) + "BT /F1 12 Tf (SSN: $($Sample.Ssn)) Tj ET")) -FileName 'tc.pdf'
+Assert-Equal $true ($clock.Elapsed.TotalSeconds -lt 15 -and $manyTc.Status -in @('OK', 'NOT SCANNED')) 'PDF: many state operators between text objects end inside the time limit'
+& (Get-Module PdfCore) { $script:PdfSecondsLimit = 30 }
+# A damaged string between text objects cannot hide the text after it: NOT SCANNED, never OK without it.
+$damaged = Get-TextFromBytes -Bytes (New-PdfBytes "BT /F1 12 Tf (Roster) Tj ET (ab % ( ) BT (SSN: $($Sample.Ssn)) Tj ET" -Plain) -FileName 'dm.pdf'
+Assert-Equal $true ($damaged.Status -eq 'NOT SCANNED' -or @(Find-PiiInText $damaged.Text).Count -gt 0) 'PDF: a damaged string between text objects is reported or read past'
+# Text shown outside BT/ET (against the spec) is still read.
+$loose = Get-TextFromBytes -Bytes (New-PdfBytes "BT /F1 12 Tf (Roster) Tj ET 0 0 1 rg (SSN: $($Sample.Ssn)) Tj" -Plain) -FileName 'lo.pdf'
+Assert-Equal $true (@(Find-PiiInText $loose.Text | ForEach-Object { $_.Detector }) -contains 'SSN') 'PDF: text shown outside a text object is read'

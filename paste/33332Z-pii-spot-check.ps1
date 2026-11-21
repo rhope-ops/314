@@ -21,8 +21,8 @@
     src/PiiMasking.psm1, sha256 752c251a94b2
     src/PdfCore.psm1, sha256 da11bdba883c
     src/PdfObjects.psm1, sha256 2a1f0acd8070
-    src/PdfFonts.psm1, sha256 f316a3613e8f
-    src/PdfText.psm1, sha256 5a67e6a81a4e
+    src/PdfFonts.psm1, sha256 af2a8ea37ea4
+    src/PdfText.psm1, sha256 ed89750f0211
     src/TextExtract.psm1, sha256 e29978d7b4fa
     src/XlsxWriter.psm1, sha256 e29becdc6a65
     src/Report.psm1, sha256 bb4837c619f4
@@ -44,13 +44,13 @@
     line  1114  Module PdfObjects.psm1
     line  1455  Module PdfFonts.psm1
     line  1829  Module PdfText.psm1
-    line  2399  Module TextExtract.psm1
-    line  2658  Module XlsxWriter.psm1
-    line  2929  Module Report.psm1
-    line  3427  Module ScanMeter.psm1
-    line  3692  Module ChannelScan.psm1
-    line  4278  Body of Find-ChannelPII.ps1
-    line  4379  Clean-up
+    line  2365  Module TextExtract.psm1
+    line  2624  Module XlsxWriter.psm1
+    line  2895  Module Report.psm1
+    line  3393  Module ScanMeter.psm1
+    line  3658  Module ChannelScan.psm1
+    line  4244  Body of Find-ChannelPII.ps1
+    line  4345  Clean-up
 #>
 
 # ==== Settings ==== (optional: edit the values between the quotes; empty = the script asks)
@@ -1487,6 +1487,7 @@ $script:MaxWidthEntries = 65536
 
 # Per font: shown strings decoded and measured before (text and width in ems), up to this many each (speed).
 $script:MaxFontCache = 20000
+$script:MaxCacheKey = 256   # longer strings are rarely shown twice: not kept (memory)
 # Shown hex strings decoded before (speed): short tokens only, emptied when full.
 $script:ShownHex = New-Object 'System.Collections.Generic.Dictionary[string,string]'
 $script:MaxShownHex = 50000
@@ -1653,7 +1654,6 @@ function Add-PdfCidWidths {
     $count = 0
     while ($token.Success) {
         if ((++$count % 2000) -eq 0) { Assert-PdfTime }
-        if ($Record.Widths.Count -ge $script:MaxWidthEntries) { Add-PdfNote 'A font in this PDF could not be fully read: check by hand'; return }
         if ($token.Value -eq '[') {
             # first [w1 w2 ...]: the number before the bracket is the first glyph.
             if ($numbers.Count -eq 0) { Add-PdfNote 'A font in this PDF could not be fully read: check by hand'; return }   # [ with no first glyph
@@ -1717,7 +1717,7 @@ function ConvertFrom-PdfGlyphs {
         elseif ($number -ne 0) { Add-PdfNote 'Some characters in this PDF could not be read (a font without them in its map): check by hand' }
     }
     $result = $out.ToString()
-    if ($cache -and $cache.Count -lt $script:MaxFontCache) { $cache[$Raw] = $result }
+    if ($cache -and $cache.Count -lt $script:MaxFontCache -and $Raw.Length -le $script:MaxCacheKey) { $cache[$Raw] = $result }
     return $result
 }
 
@@ -1796,7 +1796,7 @@ function Get-PdfShowWidth {
             elseif ($font.DefaultWidth -ge 0) { $ems += $font.DefaultWidth }
             else { $ems += 0.5 }
         }
-        if ($font.ContainsKey('EmCache') -and $font.EmCache.Count -lt $script:MaxFontCache) { $font.EmCache[$Raw] = $ems }
+        if ($font.ContainsKey('EmCache') -and $font.EmCache.Count -lt $script:MaxFontCache -and $Raw.Length -le $script:MaxCacheKey) { $font.EmCache[$Raw] = $ems }
     }
     if ($font -and $font.Vertical) { return ($ems * $Size + $CharSpace * $glyphs + $WordSpace * $spaces) }   # Tz scales across, not down
     return (($ems * $Size + $CharSpace * $glyphs + $WordSpace * $spaces) * $Scale)
@@ -1862,24 +1862,19 @@ $script:WordGapEms = 0.2
 $script:MinSpacingGaps = 4
 $script:ColumnGapEms = 1.0
 
-# Between text objects: the next BT (a text object) or BI (an inline image), with strings and comments matched whole
-# so a BT inside them is not one; and the text state operators that may stand there (Tf, Tc, Tw, Tz).
-$script:OutsidePattern = (Get-PdfStringPattern) + '|%[^\r\n]*|(?<![^\s\[\]()<>{}/%])(?:BT|BI)(?![^\s\[\]()<>{}/%])'
-$script:OutsideStatePattern = '(?:(?<name>/[^\s/\[\]()<>{}%]+)\s+)?(?<num>[-+]?(?:\d+\.?\d*|\.\d+))\s+(?<op>Tf|Tc|Tw|Tz)(?![^\s\[\]()<>{}/%])'
-
 # The operators that change the text (Invoke-PdfTextOperator); every other operator only drops its operands.
 $script:TextOperators = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::Ordinal)
 foreach ($operator in @('Tf', 'Tc', 'Tw', 'Tz', 'TJ', 'Tj', "'", '"', 'Td', 'TD', 'T*', 'Tm', 'ET')) { [void]$script:TextOperators.Add($operator) }
 
-# The end of an inline image's bytes (BI <keys> ID <bytes> EI): white space, EI, then a delimiter or the end. After a
-# BI operator (a token, never the word BI in a string) the reader steps over the bytes to here, so image bytes never
-# join with page text into one token (fresh reviews, 2026-11-21).
 # Number parsing: PDF numbers use a point, whatever the computer's culture.
 $script:NumberStyle = [Globalization.NumberStyles]::Float
 $script:Invariant = [Globalization.CultureInfo]::InvariantCulture
 # Symbol-font and other private-use characters (Complete-PdfTextBlock), built once (speed).
 $script:SymbolChars = [regex]'[\uF020-\uF0FF]'
 $script:PrivateChars = [regex]'[\uE000-\uF8FF]'
+# The end of an inline image's bytes (BI <keys> ID <bytes> EI): white space, EI, then a delimiter or the end. After a
+# BI operator (a token, never the word BI in a string) the reader steps over the bytes to here, so image bytes never
+# join with page text into one token (fresh reviews, 2026-11-21).
 $script:InlineImageEnd = '\sEI(?=[\s/\[<(%]|$)'
 
 $script:PdfNoTextReason = 'No text in this PDF (a scanned image?): check by hand'
@@ -1905,57 +1900,27 @@ function Convert-PdfContentToText {
         Shown = (New-Object System.Collections.Generic.List[object]); CharSpace = 0.0; WordSpace = 0.0; Scale = 1.0; LastLength = 0 }
     $tokens = Get-PdfRegex $script:PdfTokenPattern
     $imageEnd = Get-PdfRegex $script:InlineImageEnd
-    # Between text objects .NET finds the next BT or BI by itself (strings and comments are matched whole, so a "BT"
-    # inside a string is not one); only text objects are walked token by token (speed, 2026-11-21). Text state set
-    # between text objects (Tf, Tc, Tw, Tz) is applied in order.
-    # The next mark is searched from where the reader is: image bytes or a text object can hold a bracket that would
-    # start a false string in a scan made once over the whole stream.
-    $outside = Get-PdfRegex $script:OutsidePattern
-    $states = @((Get-PdfRegex $script:OutsideStatePattern).Matches($Content))
-    $s = 0
+    # The whole stream is walked token by token (one Matches walk per text object: fast), also between text objects:
+    # text state set there applies, and text shown outside BT/ET (against the spec) is read too (fresh review r13).
     $pos = 0
-    for ($mark = $outside.Match($Content, 0); $mark.Success; $mark = $outside.Match($Content, $pos)) {
-        while ($s -lt $states.Count -and $states[$s].Index -lt $mark.Index) {
-            if ($states[$s].Index -ge $pos) { Set-PdfOutsideState $states[$s] $state $Fonts }
-            $s++
-        }
-        if ($mark.Value -ceq 'BT') { $pos = Read-PdfTextObject $Content $mark.Index $state $Fonts $tokens $imageEnd }
-        elseif ($mark.Value -ceq 'BI') { $pos = Skip-PdfInlineImage $Content ($Content.IndexOf('ID', $mark.Index, [StringComparison]::Ordinal) + 2) $imageEnd }
-        else { $pos = $mark.Index + $mark.Length }   # a string or comment outside text: not shown text
-        if ($pos -le $mark.Index) { $pos = $mark.Index + $mark.Length }
+    while ($pos -lt $Content.Length) {
+        $after = Read-PdfTextObject $Content $pos $state $Fonts $tokens $imageEnd
+        if ($after -le $pos) { break }
+        $pos = $after
     }
     Complete-PdfTextBlock $state
     return $state.Out.ToString()
 }
 
-function Set-PdfOutsideState {
-    <#
-    .SYNOPSIS
-      Applies one text state operator found between text objects (Tf, Tc, Tw or Tz with its operands).
-    .PARAMETER Match
-      The match of $OutsideStatePattern.
-    .PARAMETER State
-      The text state.
-    .PARAMETER Fonts
-      The font table.
-    #>
-    param($Match, [hashtable]$State, [hashtable]$Fonts)
-    $operator = $Match.Groups['op'].Value
-    $stack = New-Object System.Collections.Generic.List[object]
-    if ($Match.Groups['name'].Success) { $stack.Add($Match.Groups['name'].Value) }
-    $stack.Add($Match.Groups['num'].Value)
-    Invoke-PdfTextOperator $operator $stack $State $Fonts
-}
-
 function Read-PdfTextObject {
     <#
     .SYNOPSIS
-      Reads one text object token by token, from its BT to its ET (or the stream's end), and returns where the
+      Reads the content stream token by token from Start to the next ET (or the stream's end), and returns where the
       reader goes on. A "(" between tokens is a string not read: it throws (Assert-PdfGap).
     .PARAMETER Content
       The content stream.
     .PARAMETER Start
-      Where the BT starts.
+      Where to start reading.
     .PARAMETER State
       The text state.
     .PARAMETER Fonts
@@ -2247,7 +2212,8 @@ function Add-PdfArrayPieces {
         else {
             $move = -(ConvertTo-PdfNumber $item) / 1000   # in ems; positive moves on along the line
             if ($State.Font -and $State.Font.Vertical) { $move = -$move }   # vertical: a positive number moves down (forward)
-            $State.Shown.Add([double]($move * $State.Size * $State.Scale))
+            $scale = $State.Scale; if ($State.Font -and $State.Font.Vertical) { $scale = 1.0 }   # Tz scales across, not down
+            $State.Shown.Add([double]($move * $State.Size * $scale))
             if ($move -gt 0) { $State.Pieces.Add(@{ Gap = [double]$move; Single = ($State.LastLength -eq 1) }) }
         }
     }

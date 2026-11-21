@@ -34,24 +34,19 @@ $script:WordGapEms = 0.2
 $script:MinSpacingGaps = 4
 $script:ColumnGapEms = 1.0
 
-# Between text objects: the next BT (a text object) or BI (an inline image), with strings and comments matched whole
-# so a BT inside them is not one; and the text state operators that may stand there (Tf, Tc, Tw, Tz).
-$script:OutsidePattern = (Get-PdfStringPattern) + '|%[^\r\n]*|(?<![^\s\[\]()<>{}/%])(?:BT|BI)(?![^\s\[\]()<>{}/%])'
-$script:OutsideStatePattern = '(?:(?<name>/[^\s/\[\]()<>{}%]+)\s+)?(?<num>[-+]?(?:\d+\.?\d*|\.\d+))\s+(?<op>Tf|Tc|Tw|Tz)(?![^\s\[\]()<>{}/%])'
-
 # The operators that change the text (Invoke-PdfTextOperator); every other operator only drops its operands.
 $script:TextOperators = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::Ordinal)
 foreach ($operator in @('Tf', 'Tc', 'Tw', 'Tz', 'TJ', 'Tj', "'", '"', 'Td', 'TD', 'T*', 'Tm', 'ET')) { [void]$script:TextOperators.Add($operator) }
 
-# The end of an inline image's bytes (BI <keys> ID <bytes> EI): white space, EI, then a delimiter or the end. After a
-# BI operator (a token, never the word BI in a string) the reader steps over the bytes to here, so image bytes never
-# join with page text into one token (fresh reviews, 2026-11-21).
 # Number parsing: PDF numbers use a point, whatever the computer's culture.
 $script:NumberStyle = [Globalization.NumberStyles]::Float
 $script:Invariant = [Globalization.CultureInfo]::InvariantCulture
 # Symbol-font and other private-use characters (Complete-PdfTextBlock), built once (speed).
 $script:SymbolChars = [regex]'[\uF020-\uF0FF]'
 $script:PrivateChars = [regex]'[\uE000-\uF8FF]'
+# The end of an inline image's bytes (BI <keys> ID <bytes> EI): white space, EI, then a delimiter or the end. After a
+# BI operator (a token, never the word BI in a string) the reader steps over the bytes to here, so image bytes never
+# join with page text into one token (fresh reviews, 2026-11-21).
 $script:InlineImageEnd = '\sEI(?=[\s/\[<(%]|$)'
 
 $script:PdfNoTextReason = 'No text in this PDF (a scanned image?): check by hand'
@@ -77,57 +72,27 @@ function Convert-PdfContentToText {
         Shown = (New-Object System.Collections.Generic.List[object]); CharSpace = 0.0; WordSpace = 0.0; Scale = 1.0; LastLength = 0 }
     $tokens = Get-PdfRegex $script:PdfTokenPattern
     $imageEnd = Get-PdfRegex $script:InlineImageEnd
-    # Between text objects .NET finds the next BT or BI by itself (strings and comments are matched whole, so a "BT"
-    # inside a string is not one); only text objects are walked token by token (speed, 2026-11-21). Text state set
-    # between text objects (Tf, Tc, Tw, Tz) is applied in order.
-    # The next mark is searched from where the reader is: image bytes or a text object can hold a bracket that would
-    # start a false string in a scan made once over the whole stream.
-    $outside = Get-PdfRegex $script:OutsidePattern
-    $states = @((Get-PdfRegex $script:OutsideStatePattern).Matches($Content))
-    $s = 0
+    # The whole stream is walked token by token (one Matches walk per text object: fast), also between text objects:
+    # text state set there applies, and text shown outside BT/ET (against the spec) is read too (fresh review r13).
     $pos = 0
-    for ($mark = $outside.Match($Content, 0); $mark.Success; $mark = $outside.Match($Content, $pos)) {
-        while ($s -lt $states.Count -and $states[$s].Index -lt $mark.Index) {
-            if ($states[$s].Index -ge $pos) { Set-PdfOutsideState $states[$s] $state $Fonts }
-            $s++
-        }
-        if ($mark.Value -ceq 'BT') { $pos = Read-PdfTextObject $Content $mark.Index $state $Fonts $tokens $imageEnd }
-        elseif ($mark.Value -ceq 'BI') { $pos = Skip-PdfInlineImage $Content ($Content.IndexOf('ID', $mark.Index, [StringComparison]::Ordinal) + 2) $imageEnd }
-        else { $pos = $mark.Index + $mark.Length }   # a string or comment outside text: not shown text
-        if ($pos -le $mark.Index) { $pos = $mark.Index + $mark.Length }
+    while ($pos -lt $Content.Length) {
+        $after = Read-PdfTextObject $Content $pos $state $Fonts $tokens $imageEnd
+        if ($after -le $pos) { break }
+        $pos = $after
     }
     Complete-PdfTextBlock $state
     return $state.Out.ToString()
 }
 
-function Set-PdfOutsideState {
-    <#
-    .SYNOPSIS
-      Applies one text state operator found between text objects (Tf, Tc, Tw or Tz with its operands).
-    .PARAMETER Match
-      The match of $OutsideStatePattern.
-    .PARAMETER State
-      The text state.
-    .PARAMETER Fonts
-      The font table.
-    #>
-    param($Match, [hashtable]$State, [hashtable]$Fonts)
-    $operator = $Match.Groups['op'].Value
-    $stack = New-Object System.Collections.Generic.List[object]
-    if ($Match.Groups['name'].Success) { $stack.Add($Match.Groups['name'].Value) }
-    $stack.Add($Match.Groups['num'].Value)
-    Invoke-PdfTextOperator $operator $stack $State $Fonts
-}
-
 function Read-PdfTextObject {
     <#
     .SYNOPSIS
-      Reads one text object token by token, from its BT to its ET (or the stream's end), and returns where the
+      Reads the content stream token by token from Start to the next ET (or the stream's end), and returns where the
       reader goes on. A "(" between tokens is a string not read: it throws (Assert-PdfGap).
     .PARAMETER Content
       The content stream.
     .PARAMETER Start
-      Where the BT starts.
+      Where to start reading.
     .PARAMETER State
       The text state.
     .PARAMETER Fonts
@@ -419,7 +384,8 @@ function Add-PdfArrayPieces {
         else {
             $move = -(ConvertTo-PdfNumber $item) / 1000   # in ems; positive moves on along the line
             if ($State.Font -and $State.Font.Vertical) { $move = -$move }   # vertical: a positive number moves down (forward)
-            $State.Shown.Add([double]($move * $State.Size * $State.Scale))
+            $scale = $State.Scale; if ($State.Font -and $State.Font.Vertical) { $scale = 1.0 }   # Tz scales across, not down
+            $State.Shown.Add([double]($move * $State.Size * $scale))
             if ($move -gt 0) { $State.Pieces.Add(@{ Gap = [double]$move; Single = ($State.LastLength -eq 1) }) }
         }
     }
