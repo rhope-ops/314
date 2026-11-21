@@ -167,6 +167,68 @@ Assert-Equal $true ((Get-TextFromBytes -Bytes $Txt -FileName 'broken.docx').Reas
 $html = (Convert-HtmlToText "<div><p>SSN $($Sample.Ssn)</p></div>here") -replace '\s+', ' '
 Assert-Equal "SSN $($Sample.Ssn) here" $html.Trim() 'HTML tags removed'
 
+# ==== Round 3 readers (the PAM, 2026-11-20): RTF, OpenDocument, Visio, old Office and Outlook, zip, e-mail, images ====
+$ssnLine = "SSN: $($Sample.Ssn)"
+$rtf = [System.Text.Encoding]::ASCII.GetBytes('{\rtf1\ansi{\fonttbl{\f0 Arial;}}{\*\generator Word}\f0 ' + $ssnLine + '\par caf\''e9 ' + [char]92 + 'u8364?}')
+$rtfText = (Get-TextFromBytes -Bytes $rtf -FileName 'memo.rtf').Text
+Assert-Equal 'SSN' (@(Find-PiiInText $rtfText) | Select-Object -First 1).Detector 'RTF: text read, tables dropped'
+Assert-Equal $true ($rtfText.Contains([string][char]0xE9) -and $rtfText.Contains([string][char]0x20AC) -and -not $rtfText.Contains('Arial')) 'RTF: escapes decoded, font table dropped'
+$odt = New-ZipBytes @{ 'content.xml' = "<office:document-content><text:p>$ssnLine</text:p></office:document-content>" }
+Assert-Equal 'SSN' (@(Find-PiiInText (Get-TextFromBytes -Bytes $odt -FileName 'a.odt').Text) | Select-Object -First 1).Detector 'ODT: text read'
+$odsRow = '<table:table-row><table:table-cell><text:p>123</text:p></table:table-cell><table:table-cell><text:p>45</text:p></table:table-cell>' +
+    '<table:table-cell><text:p>6789</text:p></table:table-cell></table:table-row>'
+$ods = New-ZipBytes @{ 'content.xml' = $odsRow }
+Assert-Equal 0 @(Find-PiiInText (Get-TextFromBytes -Bytes $ods -FileName 'a.ods').Text | Where-Object { $_.Detector -eq 'SSN' }).Count 'ODS: neighbouring cells never join into one SSN'
+$vsdx = New-ZipBytes @{ 'visio/pages/page1.xml' = "<PageContents><Shapes><Shape><Text>$ssnLine</Text></Shape></Shapes></PageContents>" }
+Assert-Equal 'SSN' (@(Find-PiiInText (Get-TextFromBytes -Bytes $vsdx -FileName 'org.vsdx').Text) | Select-Object -First 1).Detector 'Visio: shape text read'
+
+# Old Office and Outlook (OLE): text runs; encryption named; an .xls gets its note.
+$oleHead = [byte[]](0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1) + (New-Object byte[] 504)
+$oleDoc = [byte[]]($oleHead + [System.Text.Encoding]::Unicode.GetBytes("Memo $ssnLine end") + (New-Object byte[] 64))
+$docRead = Get-TextFromBytes -Bytes $oleDoc -FileName 'old.doc'
+Assert-Equal 'OK|SSN|' ($docRead.Status + '|' + (@(Find-PiiInText $docRead.Text) | Select-Object -First 1).Detector + '|' + $docRead.Note) 'Old .doc: UTF-16 text read, no note'
+Assert-Equal $true ((Get-TextFromBytes -Bytes $oleDoc -FileName 'old.xls').Note -match '^Old Excel file') 'Old .xls: note that numbers are not read'
+$oleLocked = [byte[]]($oleHead + [System.Text.Encoding]::Unicode.GetBytes('EncryptedPackage') + (New-Object byte[] 64))
+Assert-Equal $true ((Get-TextFromBytes -Bytes $oleLocked -FileName 'locked.doc').Reason -match '^Encrypted') 'Old Office: encryption named'
+$msgRead = Get-TextFromBytes -Bytes ([byte[]]($oleHead + [System.Text.Encoding]::ASCII.GetBytes("Subject: roster $ssnLine"))) -FileName 'mail.msg'
+Assert-Equal 'SSN' (@(Find-PiiInText $msgRead.Text) | Select-Object -First 1).Detector 'Outlook .msg: 8-bit text read'
+
+# Zip: each file read with its reader and named; a zip three deep is not opened; the entry limit gives a reason.
+$innerZip = New-ZipBytes @{ 'deep.txt' = $ssnLine }
+$middleZip = New-ZipBytes @{ 'inner.zip' = $innerZip }
+$pack = New-ZipBytes @{ 'notes/a.txt' = $ssnLine; 'doc.odt' = $odt; 'middle.zip' = $middleZip }
+$packRead = Get-TextFromBytes -Bytes $pack -FileName 'pack.zip'
+$names = @($packRead.Parts | ForEach-Object { $_.Name + '=' + $_.Status }) | Sort-Object
+Assert-Equal 'doc.odt=OK|middle.zip/inner.zip=NOT SCANNED|middle.zip=OK|notes/a.txt=OK' ($names -join '|') 'Zip: inner files read and named; a zip three deep not opened'
+$odtPart = @($packRead.Parts | Where-Object { $_.Name -eq 'doc.odt' })[0]
+Assert-Equal 'SSN' (@(Find-PiiInText $odtPart.Text) | Select-Object -First 1).Detector 'Zip: an ODT inside read'
+& (Get-Module ContainerText) { $script:MaxArchiveEntries = 1 }
+$limited = Get-TextFromBytes -Bytes $pack -FileName 'pack.zip'
+& (Get-Module ContainerText) { $script:MaxArchiveEntries = 2000 }
+Assert-Equal 1 @($limited.Parts | Where-Object { $_.Reason -match 'More than 1 files' }).Count 'Zip: past the file limit, the rest gets a reason'
+
+# E-mail (.eml): headers (encoded words), a quoted-printable text body and a base64 attachment.
+$attachment = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes("my cell $($Sample.Phone)"))
+$subject = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes('Recall roster'))
+$eml = "Subject: =?utf-8?B?$($subject)?=`r`nFrom: $($Sample.Email)`r`nContent-Type: multipart/mixed; boundary=`"XYZ`"`r`n`r`n" +
+    "--XYZ`r`nContent-Type: text/plain; charset=utf-8`r`nContent-Transfer-Encoding: quoted-printable`r`n`r`n" +
+    "SSN: $($Sample.Ssn.Substring(0, 3))=`r`n$($Sample.Ssn.Substring(3))`r`n" +
+    "--XYZ`r`nContent-Type: text/plain; name=`"notes.txt`"`r`nContent-Disposition: attachment; filename=`"notes.txt`"`r`n" +
+    "Content-Transfer-Encoding: base64`r`n`r`n$attachment`r`n--XYZ--`r`n"
+$mail = Get-TextFromBytes -Bytes ([System.Text.Encoding]::ASCII.GetBytes($eml)) -FileName 'recall.eml'
+$byName = @{}; foreach ($part in $mail.Parts) { $byName[$part.Name] = $part.Text }
+Assert-Equal $true ($byName['(message headers)'] -match 'Subject: Recall roster') 'EML: encoded subject decoded'
+Assert-Equal 'SSN' (@(Find-PiiInText $byName['(message text)']) | Select-Object -First 1).Detector 'EML: quoted-printable body read'
+Assert-Equal 'Phone' (@(Find-PiiInText $byName['notes.txt']) | Select-Object -First 1).Detector 'EML: base64 attachment read'
+
+# Images: without Windows OCR (this test machine) a reason; with OCR (a stand-in here) the text is read, also from a scanned PDF.
+Assert-Equal $true ((Get-TextFromBytes -Bytes ([byte[]](1, 2, 3)) -FileName 'scan.png').Reason -match 'Windows OCR is not available') 'Image: no OCR gives a reason'
+$scanPdf = New-PdfBytes 'q /Im1 Do Q' -Plain -Extra @("<< /Type /XObject /Subtype /Image /Filter /DCTDecode /Length 4 >> stream`nJPEG`nendstream")
+Assert-Equal $true ((Get-TextFromBytes -Bytes $scanPdf -FileName 's.pdf').Reason -match '^Scanned PDF: Image: Windows OCR') 'Scanned PDF: no OCR gives a reason'
+& (Get-Module OcrText) { param($line) $script:OcrOverride = [scriptblock]::Create("param(`$b) @{ Text = '$line'; Reason = ''; Note = '' }") } $ssnLine
+Assert-Equal 'SSN' (@(Find-PiiInText (Get-TextFromBytes -Bytes ([byte[]](1, 2, 3)) -FileName 'scan.png').Text) | Select-Object -First 1).Detector 'Image: OCR text checked'
+Assert-Equal 'SSN' (@(Find-PiiInText (Get-TextFromBytes -Bytes $scanPdf -FileName 's.pdf').Text) | Select-Object -First 1).Detector 'Scanned PDF: page images read with OCR'
+& (Get-Module OcrText) { $script:OcrOverride = $null }
 # ---- PDF review round 5 (2026-11-21): no silent loss, bounded time ----
 # The word BI in page text is text, not an inline image (an image starts only at a BI operator).
 $biText = Get-TextFromBytes -Bytes (New-PdfBytes "BT /F1 12 Tf (Clearance BI) Tj (ID $($Sample.Ssn)) Tj ( EI) Tj ET" -Plain) -FileName 'bi.pdf'
@@ -387,3 +449,7 @@ foreach ($stray in @("[(SSN: $($Sample.Ssn))] (x) TJ", "(SSN: $($Sample.Ssn)) [(
     $strayFound = @(Find-PiiInText $strayRead.Text | ForEach-Object { $_.Detector }) -contains 'SSN'
     Assert-Equal $true ($strayFound -and $strayRead.Note -match 'stray') ('PDF: stray operands read, with a note: ' + $stray.Substring($stray.Length - 2))
 }
+# ---- PDF review round 19 (2026-11-21) ----
+# A TJ whose array is its last operand is the usual case (no note), also with a stray number before it.
+$usualTj = Get-TextFromBytes -Bytes (New-PdfBytes "BT /F1 12 Tf 5 [(Stray) -50 (Num)] TJ ET" -Plain) -FileName 'ut.pdf'
+Assert-Equal '' $usualTj.Note 'PDF: a TJ with its array last is the usual case'
