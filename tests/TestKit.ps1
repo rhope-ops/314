@@ -106,10 +106,12 @@ function New-PdfBytes {
       Extra trailer entries (for example an /Encrypt entry).
     .PARAMETER Plain
       Leave the content stream uncompressed.
+    .PARAMETER PageContents
+      The page's /Contents value (default 4 0 R, the content stream).
     .OUTPUTS
       [byte[]]
     #>
-    param([string]$Content, [string]$ToUnicode = '', [string[]]$Extra = @(), [string]$Trailer = '', [switch]$Plain)
+    param([string]$Content, [string]$ToUnicode = '', [string[]]$Extra = @(), [string]$Trailer = '', [switch]$Plain, [string]$PageContents = '4 0 R')
     $latin1 = [System.Text.Encoding]::GetEncoding(28591)
     $stream = $latin1.GetBytes($Content)
     $filter = ''
@@ -123,7 +125,7 @@ function New-PdfBytes {
     $font = '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>'
     if ($ToUnicode) { $font = '<< /Type /Font /Subtype /Type0 /BaseFont /X /ToUnicode 6 0 R >>' }
     $text = "%PDF-1.4`n1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj`n2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj`n" +
-        "3 0 obj << /Type /Page /Parent 2 0 R /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >> endobj`n" +
+        "3 0 obj << /Type /Page /Parent 2 0 R /Resources << /Font << /F1 5 0 R >> >> /Contents $PageContents >> endobj`n" +
         "4 0 obj << /Length $($stream.Length)$filter >> stream`n" + $latin1.GetString($stream) + "`nendstream endobj`n5 0 obj $font endobj`n" +
         "6 0 obj << /Length $($ToUnicode.Length) >> stream`n$ToUnicode`nendstream endobj`n"
     for ($i = 0; $i -lt $Extra.Count; $i++) { $text += "$($i + 7) 0 obj $($Extra[$i]) endobj`n" }

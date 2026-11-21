@@ -24,6 +24,9 @@ $script:Latin1 = [System.Text.Encoding]::GetEncoding(28591)
 # A map with more is read in part, and the PDF gets a "check by hand" note (Add-PdfNote).
 $script:MaxCMapRanges = 256
 
+# A range's target is a few UTF-16 code units in hex (<0041>, or a ligature <00660069>); a longer one is not used.
+$script:MaxRangeTarget = 66
+
 # Limits, so one damaged or hostile PDF cannot stall the scan (fresh review, 2026-11-20): the time for one PDF, the
 # time for one regex search, the size one stream may inflate to, and the inflated size of one PDF in all.
 $script:PdfSecondsLimit = 30
@@ -102,7 +105,8 @@ function Expand-PdfStream {
         # Inflate in steps and stop at the caps: a small stream can unpack to gigabytes.
         while ($true) {
             if ($output.Length -ge $script:MaxStreamBytes -or $script:PdfBudget.Inflated -ge $script:MaxInflatedBytes) {
-                Add-PdfNote 'Part of this PDF is too large to unpack: check by hand'
+                # At a cap: a note only when there is more to unpack (a stream of exactly the cap is whole).
+                if ($inflate.Read($buffer, 0, 1) -gt 0) { Add-PdfNote 'Part of this PDF is too large to unpack: check by hand' }
                 break
             }
             $read = $inflate.Read($buffer, 0, $buffer.Length)
@@ -116,11 +120,79 @@ function Expand-PdfStream {
     return $script:Latin1.GetString($output.ToArray())
 }
 
+function Expand-LzwStream {
+    <#
+    .SYNOPSIS
+      An LZWDecode stream (PDF and TIFF LZW: 9 to 12 bit codes, most significant bit first, 256 = clear table,
+      257 = end) decoded, up to $MaxStreamBytes; damaged data ends the stream with a note.
+    .PARAMETER Raw
+      The stream bytes as Latin-1 text.
+    .PARAMETER EarlyChange
+      True (the default): the code width grows one code early, as the PDF default /EarlyChange 1 says.
+    .OUTPUTS
+      [string] the decoded bytes as Latin-1 text.
+    #>
+    param([string]$Raw, [bool]$EarlyChange = $true)
+    $bytes = $script:Latin1.GetBytes($Raw)
+    $out = New-Object System.Text.StringBuilder
+    $table = New-Object System.Collections.Generic.List[string]
+    $reset = { $table.Clear(); for ($c = 0; $c -lt 256; $c++) { $table.Add([string][char]$c) }; $table.Add(''); $table.Add('') }
+    & $reset
+    $width = 9; $bits = 0L; $count = 0; $previous = $null; $n = 0
+    foreach ($byte in $bytes) {
+        $bits = ($bits -shl 8) -bor $byte; $count += 8
+        while ($count -ge $width) {
+            if ((++$n % 10000) -eq 0) { Assert-PdfTime }
+            $count -= $width
+            $code = [int](($bits -shr $count) -band ((1 -shl $width) - 1))
+            $bits = $bits -band ((1L -shl $count) - 1)
+            if ($code -eq 256) { & $reset; $width = 9; $previous = $null; continue }
+            if ($code -eq 257) { return $out.ToString() }
+            if ($code -lt $table.Count) { $entry = $table[$code] }
+            elseif ($code -eq $table.Count -and $null -ne $previous) { $entry = $previous + $previous[0] }
+            else { Add-PdfNote 'Part of this PDF is damaged: check by hand'; return $out.ToString() }
+            [void]$out.Append($entry)
+            if ($out.Length -ge $script:MaxStreamBytes) { Add-PdfNote 'Part of this PDF is too large to unpack: check by hand'; return $out.ToString() }
+            if ($null -ne $previous -and $table.Count -lt 4096) { $table.Add($previous + $entry[0]) }
+            $previous = $entry
+            $limit = $table.Count; if ($EarlyChange) { $limit++ }
+            if ($limit -ge (1 -shl $width) -and $width -lt 12) { $width++ }
+        }
+    }
+    return $out.ToString()
+}
+
+function Expand-RunLengthStream {
+    <#
+    .SYNOPSIS
+      A RunLengthDecode stream: a length byte 0-127 copies the next 1-128 bytes, 129-255 repeats the next byte
+      2-128 times, 128 ends it; up to $MaxStreamBytes.
+    .PARAMETER Raw
+      The stream bytes as Latin-1 text.
+    .OUTPUTS
+      [string] the decoded bytes as Latin-1 text.
+    #>
+    param([string]$Raw)
+    $out = New-Object System.Text.StringBuilder
+    $i = 0
+    while ($i -lt $Raw.Length) {
+        if (($out.Length % 65536) -eq 0) { Assert-PdfTime }
+        $length = [int]$Raw[$i]
+        if ($length -eq 128) { break }
+        if ($length -lt 128) { $take = [Math]::Min($length + 1, $Raw.Length - $i - 1); [void]$out.Append($Raw, $i + 1, $take); $i += 1 + $take }
+        elseif ($i + 1 -lt $Raw.Length) { [void]$out.Append($Raw[$i + 1], 257 - $length); $i += 2 }
+        else { break }
+        if ($out.Length -ge $script:MaxStreamBytes) { Add-PdfNote 'Part of this PDF is too large to unpack: check by hand'; break }
+    }
+    return $out.ToString()
+}
+
 function Read-PdfStream {
     <#
     .SYNOPSIS
-      A stream's data with its filters undone in order: FlateDecode, ASCII85Decode, ASCIIHexDecode (often chained,
-      such as [/ASCII85Decode /FlateDecode]). $null for any other filter (images and the like are not text).
+      A stream's data with its filters undone in order: FlateDecode, ASCII85Decode, ASCIIHexDecode, LZWDecode and
+      RunLengthDecode (often chained, such as [/ASCII85Decode /FlateDecode]). Images and fonts are not text: $null.
+      Any other filter: $null and a "check by hand" note, never a silent miss.
     .PARAMETER Dict
       The stream's dictionary.
     .PARAMETER Raw
@@ -138,7 +210,9 @@ function Read-PdfStream {
             'FlateDecode' { $data = Expand-PdfStream $data }
             'ASCII85Decode' { $data = ConvertFrom-Ascii85 $data }
             'ASCIIHexDecode' { $data = ConvertFrom-HexText $data }
-            default { return $null }
+            'LZWDecode' { $data = Expand-LzwStream $data ($Dict -notmatch '/EarlyChange\s+0\b') }
+            'RunLengthDecode' { $data = Expand-RunLengthStream $data }
+            default { Add-PdfNote 'Part of this PDF uses a compression this reader cannot open: check by hand'; return $null }
         }
     }
     return $data
@@ -247,6 +321,7 @@ function Get-PdfCMap {
                 }
             }
             elseif ($ranges.Count -ge $script:MaxCMapRanges) { Add-PdfNote 'A font in this PDF could not be fully read: check by hand' }
+            elseif ($target.Length -gt $script:MaxRangeTarget) { Add-PdfNote 'A font in this PDF could not be fully read: check by hand' }
             elseif ($target.Length -ge 6) {
                 $hex = $target.Substring(1, $target.Length - 2)
                 $ranges.Add(@{ Low = $low; High = $high; Prefix = $hex.Substring(0, $hex.Length - 4); Start = [Convert]::ToInt32($hex.Substring($hex.Length - 4), 16) })

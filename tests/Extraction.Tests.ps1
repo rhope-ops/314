@@ -139,9 +139,10 @@ Assert-Equal 'SSN' (@(Find-PiiInText (Get-TextFromBytes -Bytes $formPdf2 -FileNa
 $attached = Get-TextFromBytes -Bytes (New-PdfBytes 'BT (hello) Tj ET' -Plain -Extra @("<< /Type /EmbeddedFile /Length 3 >> stream`nabc`nendstream")) -FileName 'a.pdf'
 Assert-Equal $true ($attached.Status -eq 'OK' -and $attached.Note -match 'attached inside this PDF') 'PDF: attachments give a check-by-hand note'
 & (Get-Module PdfCore) { $script:MaxInflatedBytes = 10 }
-$capped = Get-TextFromBytes -Bytes (New-PdfBytes ("BT /F1 12 Tf (SSN: $($Sample.Ssn)) Tj ET " * 20)) -FileName 'cap.pdf'
+$capped = Get-TextFromBytes -Bytes (New-PdfBytes ("BT /F1 12 Tf (SSN: $($Sample.Ssn)) Tj ET " * 3000)) -FileName 'cap.pdf'
 & (Get-Module PdfCore) { $script:MaxInflatedBytes = 64MB }
-Assert-Equal $true (($capped.Note + $capped.Reason) -match 'too large to unpack') 'PDF: text past the unpack cap gives a note'
+# The cut can end inside a string (then the whole PDF is Not scanned) or between tokens (a note): never silent.
+Assert-Equal $true (($capped.Note + $capped.Reason) -match 'too large to unpack|could not be read') 'PDF: text past the unpack cap is never silent'
 # A stream that inflates far past the cap is cut, not held whole in memory.
 $bomb = & (Get-Module PdfCore) {
     $memory = New-Object System.IO.MemoryStream
@@ -165,3 +166,36 @@ Assert-Equal $true ((Get-TextFromBytes -Bytes $bomPage -FileName 'a.xlsx').Reaso
 Assert-Equal $true ((Get-TextFromBytes -Bytes $Txt -FileName 'broken.docx').Reason -match '^Not a valid Office file') 'Other bytes: not a valid Office file'
 $html = (Convert-HtmlToText "<div><p>SSN $($Sample.Ssn)</p></div>here") -replace '\s+', ' '
 Assert-Equal "SSN $($Sample.Ssn) here" $html.Trim() 'HTML tags removed'
+
+# ---- PDF review round 5 (2026-11-21): no silent loss, bounded time ----
+# The word BI in page text is text, not an inline image (an image starts only at a BI operator).
+$biText = Get-TextFromBytes -Bytes (New-PdfBytes "BT /F1 12 Tf (Clearance BI) Tj (ID $($Sample.Ssn)) Tj ( EI) Tj ET" -Plain) -FileName 'bi.pdf'
+Assert-Equal 'OK|SSN' ($biText.Status + '|' + (@(Find-PiiInText ("SSN " + $biText.Text)) | Select-Object -First 1).Detector) 'PDF: the word BI does not hide text'
+$biPage = Get-TextFromBytes -Bytes (New-PdfBytes ('BT /F1 12 Tf ' + ('(Status: BI complete for member) Tj 0 -14 Td ' * 3000) + 'ET') -Plain) -FileName 'bi2.pdf'
+Assert-Equal 'OK' $biPage.Status 'PDF: a long page with the word BI is read in time'
+# Comments and sticky notes, a value in an object of its own, and a content list one level deeper.
+$annot = New-PdfBytes 'q Q' -Plain -Extra @("<< /Type /Annot /Subtype /Text /Contents (SSN $($Sample.Ssn)) >>")
+Assert-Equal 'SSN' (@(Find-PiiInText (Get-TextFromBytes -Bytes $annot -FileName 'n.pdf').Text) | Select-Object -First 1).Detector 'PDF: a sticky-note comment read'
+$valueRef = New-PdfBytes 'q Q' -Plain -Extra @('<< /FT /Tx /T (SSN) /V 8 0 R >>', "($($Sample.Ssn))")
+Assert-Equal 'SSN' (@(Find-PiiInText (Get-TextFromBytes -Bytes $valueRef -FileName 'v.pdf').Text) | Select-Object -First 1).Detector 'PDF: a form value in an object of its own read'
+$inner = "BT /F1 12 Tf (SSN: $($Sample.Ssn)) Tj ET"
+$nested = New-PdfBytes 'q Q' -Plain -PageContents '7 0 R' -Extra @('[8 0 R]', "<< /Length $($inner.Length) >> stream`n$inner`nendstream")
+Assert-Equal 'SSN' (@(Find-PiiInText (Get-TextFromBytes -Bytes $nested -FileName 'c.pdf').Text) | Select-Object -First 1).Detector 'PDF: /Contents through an array object read'
+# LZW and RunLength streams decoded; any other filter gives a note.
+$latin = [System.Text.Encoding]::GetEncoding(28591)
+$lzwBits = New-Object System.Text.StringBuilder
+foreach ($code in @(256) + @([System.Text.Encoding]::ASCII.GetBytes($inner) | ForEach-Object { [int]$_ }) + @(257)) { [void]$lzwBits.Append([Convert]::ToString($code, 2).PadLeft(9, '0')) }
+while ($lzwBits.Length % 8) { [void]$lzwBits.Append('0') }
+$lzw = -join @(for ($i = 0; $i -lt $lzwBits.Length; $i += 8) { [char][Convert]::ToInt32($lzwBits.ToString().Substring($i, 8), 2) })
+$lzwPdf = New-PdfBytes 'q Q' -Plain -Extra @("<< /Type /XObject /Subtype /Form /Filter /LZWDecode /Length $($lzw.Length) >> stream`n$lzw`nendstream")
+Assert-Equal 'SSN' (@(Find-PiiInText (Get-TextFromBytes -Bytes $lzwPdf -FileName 'l.pdf').Text) | Select-Object -First 1).Detector 'PDF: LZW stream decoded'
+$rle = [string][char]($inner.Length - 1) + $inner + [char]128
+$rlePdf = New-PdfBytes 'q Q' -Plain -Extra @("<< /Type /XObject /Subtype /Form /Filter /RunLengthDecode /Length $($rle.Length) >> stream`n$rle`nendstream")
+Assert-Equal 'SSN' (@(Find-PiiInText (Get-TextFromBytes -Bytes ($latin.GetBytes($latin.GetString($rlePdf))) -FileName 'r.pdf').Text) | Select-Object -First 1).Detector 'PDF: RunLength stream decoded'
+$oddFilter = Get-TextFromBytes -Bytes (New-PdfBytes 'BT (hello) Tj ET' -Plain -Extra @("<< /Type /XObject /Subtype /Form /Filter /JPXDecode /Length 3 >> stream`nabc`nendstream")) -FileName 'o.pdf'
+Assert-Equal $true ($oddFilter.Note -match 'compression this reader cannot open') 'PDF: an unknown filter gives a note'
+# A hostile object stream (a huge object list) ends at once with a note.
+$clock.Restart()
+$hugeList = New-PdfBytes 'BT (hello) Tj ET' -Plain -Extra @("<< /Type /ObjStm /N 200000 /First 4 /Length 8 >> stream`n9 0 (x)`nendstream")
+$hugeRead = Get-TextFromBytes -Bytes $hugeList -FileName 'h.pdf'
+Assert-Equal $true ($clock.Elapsed.TotalSeconds -lt 10 -and $hugeRead.Note -match 'too large to unpack') 'PDF: a huge object list ends at once with a note'
