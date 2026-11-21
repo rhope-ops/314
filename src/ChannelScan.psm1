@@ -531,7 +531,8 @@ function Invoke-FileScan {
     $groups = @(foreach ($one in $libraries) {
         if ($libraries.Count -eq 1) { Get-ScanGroups $one $Channels ''; continue }
         # Several libraries: one you cannot open (Preservation Hold Library often) is one BLOCKED row; the rest go on.
-        try { Get-ScanGroups $one @(Get-ChannelFolderNames $one) ($one.Title + ' / ') }   # groups named "Library / Folder"
+        # Collected first, so a library that fails part way adds no groups next to its BLOCKED row.
+        try { $libraryGroups = @(Get-ScanGroups $one @(Get-ChannelFolderNames $one) ($one.Title + ' / ')); $libraryGroups }   # "Library / Folder"
         catch {
             $Rows.Add((New-ReportRow 'Scan' (Protect-PiiName $one.Title) '(library)' '' '' 'BLOCKED' '' '' ('Could not read this library: ' + (Protect-PiiText $_.Exception.Message))))
         }
