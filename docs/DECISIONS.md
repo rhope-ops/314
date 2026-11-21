@@ -4,6 +4,7 @@ A record, read on demand: a decision binds the task or thing it names. A decisio
 
 | Date | Decision | By | Replaces |
 |---|---|---|---|
+| 2026-11-21 | Ion network drives (question dialog): a pasted X:\<folder> or UNC path, all subfolders, read-only under the person's Windows logon; parallel reading that scales with the load (2 to start, 1 to 8 workers, by speed, CPU and errors); SharePoint stays one file at a time. Plan: docs/reviews/2026-11-21-ion-network-drive-plan.md. Scope: the tool. | the PAM | — |
 | 2026-11-20 | Site page Key Facts, the PAM's text: Universal, Your access, Read-only, Data boundary, Verifiable, Accessible (labels in one column, values at one indent; stacked on phones). Scope: the site. | the PAM | Key Facts rows of 2026-11-20 |
 | 2026-11-20 | Ion libraries (question dialog, after review): Site Assets, Preservation Hold Library and Site Collection Documents are scanned too; only Style Library and Form Templates are skipped; a library the person cannot open is one BLOCKED row and the scan goes on. Scope: the tool. | the PAM | Library part of the Ion round 2 row |
 | 2026-11-20 | Ion round 3 (question dialog): build readers for zip archives, .rtf/.eml/OpenDocument/.vsdx, legacy .doc/.xls/.ppt and .msg (text runs, partial), and images plus scanned PDFs with Windows OCR (after a test snippet on the gov device); each reader its own module, added to the bundle module list (scripts/build_paste.py) at the PAM's request. Encrypted files, audio and video stay out; scripts stay unread by policy. Scope: the tool. | the PAM | — |

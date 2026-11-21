@@ -23,3 +23,4 @@ Title: 33-332.Z · <task> · <date>. Read AGENTS.md first.
 9. Ion round 2 built 2026-11-20 (plan: docs/reviews/2026-11-20-ion-round2-plan.md): folder rows, all libraries, PDF
    reader (src/PdfText.psm1). Teams-link lookup waits on the PAM's test snippet result.
 10. Approved plan 2026-11-20 (next): Ion round 3 readers, docs/reviews/2026-11-20-ion-round3-plan.md.
+11. Approved plan 2026-11-21 (next): network drives, docs/reviews/2026-11-21-ion-network-drive-plan.md.
