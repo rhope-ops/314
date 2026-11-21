@@ -65,6 +65,11 @@ main{padding-block:32px 48px}
 .mut{color:var(--mut)}
 .small{font-size:.875rem}
 ul.plain{margin:0;padding-left:1.15em;display:flex;flex-direction:column;gap:4px}
+/* Key facts: each label in one column, its text aligned in the next (the PAM, 2026-11-20); one column on narrow phones. */
+.facts{display:grid;grid-template-columns:max-content 1fr;gap:6px 14px;margin:0}
+.facts dt{font-weight:600}
+.facts dd{margin:0;min-width:0}
+@media (max-width:420px){.facts{grid-template-columns:1fr;gap:0}.facts dd{margin-bottom:8px}}
 
 /* The two buttons and the status line. */
 .go{display:flex;flex-wrap:wrap;align-items:center;gap:12px}
@@ -130,19 +135,24 @@ tr:last-child td{border-bottom:0}
     <article class="tool" aria-labelledby="t1">
       <header>
         <h2 id="t1">Ion <span class="sub2">DoD365 PII Reporter</span></h2>
-        <p>Keep your eyes on the files in one Teams team or SharePoint site you can access. Ion checks them for Personally Identifiable Information (PII) and gives you a comprehensive report: an Excel workbook that summarizes and categorizes its findings. It only reads, and every value it finds is masked.</p>
+        <!-- >>> site:intro: generated from README.md by scripts/build_site.py --write (do not edit) -->
+        <p>Keep your eyes on the files in local, network, and cloud directories you can access. Ion checks them for Personally Identifiable Information (PII) and gives you a comprehensive report: an Excel workbook that summarizes and categorizes its findings. It only reads, and every value it finds is masked.</p>
+        <!-- <<< site:intro -->
       </header>
 
       <section aria-labelledby="h-ok">
         <h3 id="h-ok">Key Facts</h3>
-        <ul class="plain">
-          <li>Read-only: it changes nothing in Teams or SharePoint.</li>
-          <li>Your own CAC sign-in and your own access; nothing is stored.</li>
-          <li>Data stays within DoD365; the only export is the results workbook saved on your machine.</li>
-          <li>Pasted into PowerShell ISE: no download, no admin rights, no policy change.</li>
-          <li>Verifiable: inspect the commented code yourself within a .txt before execution.</li>
-        </ul>
+        <!-- >>> site:key-facts: generated from README.md by scripts/build_site.py --write (do not edit) -->
+        <dl class="facts">
+          <dt>Universal:</dt><dd>Ion scans every type of file in the chosen directory.</dd>
+          <dt>Your access:</dt><dd>uses your CAC sign-on to scan, and saves nothing between sessions.</dd>
+          <dt>Read-only:</dt><dd>it makes no changes to anything it scans.</dd>
+          <dt>Data boundary:</dt><dd>nothing leaves DoD365; the export is saved to your computer.</dd>
+          <dt>Verifiable:</dt><dd>inspect the commented code yourself within a .txt before execution.</dd>
+          <dt>Accessible:</dt><dd>paste and run via ISE; no download, no admin rights, no policy change.</dd>
+        </dl>
         <p class="small mut">Have concerns? Speak with your WCO.</p>
+        <!-- <<< site:key-facts -->
       </section>
 
       <section aria-label="Get the script">
@@ -164,24 +174,28 @@ tr:last-child td{border-bottom:0}
           <div class="tbl"><table>
             <thead><tr><th scope="col">Type</th><th scope="col">Found when</th><th scope="col">Shown as</th></tr></thead>
             <tbody>
+              <!-- >>> site:looks-for: generated from README.md by scripts/build_site.py --write (do not edit) -->
               <tr><td>SSN</td><td>3-2-4 digits the SSA could issue</td><td><code>***-**-1234</code></td></tr>
-              <tr><td>DoD ID</td><td>10 digits after "DoD ID", "EDIPI" or "CAC"</td><td><code>******7890</code></td></tr>
-              <tr><td>Date of birth</td><td>A date after "DOB" or "born"</td><td><code>[date masked]</code></td></tr>
+              <tr><td>DoD ID</td><td>10 digits after "DoD ID", "DODID", "EDIPI" or "CAC"</td><td><code>******7890</code></td></tr>
+              <tr><td>Date of birth</td><td>A date after "DOB", "date of birth" or "born"</td><td><code>[date masked]</code></td></tr>
               <tr><td>Payment card</td><td>13 to 19 digits with a card network's prefix that pass the card check</td><td><code>************1111</code></td></tr>
-              <tr><td>Passport</td><td>Letters and digits after "passport"</td><td><code>*****567</code></td></tr>
+              <tr><td>Passport</td><td>6 to 9 letters and digits after "passport"</td><td><code>*****567</code></td></tr>
               <tr><td>Phone</td><td>A US 10-digit number</td><td><code>***-***-0142</code></td></tr>
               <tr><td>Personal e-mail</td><td>Any address not ending in .gov or .mil (Gmail, Yahoo and the like rank higher)</td><td><code>***@domain</code></td></tr>
-              <tr><td>Home address</td><td>Number, street name and street type</td><td><code>[address masked]</code></td></tr>
-              <tr><td>Name</td><td>After "Name:", "Spouse:", "NOK:" and similar</td><td>Initials</td></tr>
+              <tr><td>Home address</td><td>Number, street name and street type (St, Ave, Rd ...)</td><td><code>[address masked]</code></td></tr>
+              <tr><td>Name</td><td>After "Name:", "Full name:", "Member:", "Spouse:", "Dependent:", "NOK:" or "POC:"</td><td>Initials</td></tr>
+              <tr><td>PII in a file or folder name</td><td>Any of the above in the path</td><td>As above</td></tr>
+              <!-- <<< site:looks-for -->
             </tbody>
           </table></div>
-          <p class="small mut" style="padding:0 12px 12px">Not read: PDFs, images, old Office files and files over 25 MB (each is listed in the workbook, to check by hand), and channel posts and chats (not checked at all).</p>
         </div>
       </section>
 
       <section aria-labelledby="h-found">
         <h3 id="h-found">If it finds PII</h3>
-        <p class="note">PII where it should not be is a potential or actual breach; report it to your servicing Privacy Manager/Monitor without delay.<br><span class="mut small">AFI 33-332 para 3.1.2, as changed by AFI33-332_DAFGM2026-01, page 1, second paragraph.</span></p>
+        <!-- >>> site:breach: generated from README.md by scripts/build_site.py --write (do not edit) -->
+        <p class="note">PII where it should not be is a potential or actual breach; report it to your servicing Privacy Manager/Monitor without delay.<br><span class="mut small">AFI 33-332 para 3.1.2, as changed by AFI33-332_DAFGM2026-01 (7 July 2026), page 1, second paragraph.</span></p>
+        <!-- <<< site:breach -->
       </section>
     </article>
   </div>
