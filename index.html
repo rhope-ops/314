@@ -27,9 +27,6 @@
 :root[data-theme="dark"]{
   --bg:#15171D; --card:#1C1F27; --ring:#5A5E6A; --fg:#F3EEE4; --mut:#A9ACB5; --line:#30343D;
   --link:#F2916F; --link-hover:#F3EEE4; --err:#F49B91; --focus:#F2916F; --field:#A9ACB5; color-scheme:dark}
-/* More contrast (a Windows or browser setting): darker grey text and lines on the cream page. */
-@media (prefers-contrast:more){:root:not([data-theme="dark"]){--mut:#33363D;--line:#7A7466}}
-
 /* Base: page, links, focus ring, type, the centred column with its safe side gutter. */
 *{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.55 var(--text)}
@@ -98,6 +95,9 @@ tr:last-child td{border-bottom:0}
 /* If it finds PII: the breach note. */
 .note{padding:12px 14px;border-left:3px solid var(--ember);background:var(--hl);border-radius:0 6px 6px 0;font-size:.95rem}
 
+/* More contrast (a Windows or browser setting): stronger grey text, lines and ring inside the disc and in the band
+   (after the .tool rule, so it wins); lines 5.0:1 or more and grey text 11:1 or more on both disc colours. */
+@media (prefers-contrast:more){.tool{--mut:#D8D4CC;--line:#8A8D96;--ring:#8A8D96}:root{--band-mist:#D8D4CC}}
 /* Phones: a smaller card padding and logos. */
 @media (max-width:640px){
   .tool{padding:18px}
